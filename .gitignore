@@ -1,0 +1,11 @@
+# Kaggle competition material — never redistribute (public repo)
+harness/
+data/
+tasks/
+runs/
+adapters/
+*.zip
+.env
+.venv/
+__pycache__/
+*.pyc
