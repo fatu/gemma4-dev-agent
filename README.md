@@ -13,11 +13,16 @@ git clone https://github.com/fatu/gemma4-dev-agent.git && cd gemma4-dev-agent
 bash scripts/get_harness.sh                        # competition data (~22 GB) + the swegemma wheelhouse → harness/, installs the CLI
 #   (needs ~/.kaggle/kaggle.json; the CLI is a separate Kaggle dataset, not on PyPI)
 pip install vllm                                   # or uv venv + uv pip install vllm
-mkdir -p runs && nohup bash scripts/serve_vllm.sh > runs/vllm.log 2>&1 &   # first start downloads ~17 GB
+mkdir -p runs && nohup bash scripts/serve_vllm.sh > runs/vllm.log 2>&1 &   # first start downloads ~17 GB; stays up
 python scripts/smoke.py                            # 📷 one chat completion + tokens/s
-pkill -f 'vllm serve'                              # the harness runs its own vLLM (TP 4, :8000) — free the GPUs first
 bash scripts/eval_sample.sh                        # 📷 sample submission on 5 tasks → runs/w1_sample5/summary.json
 ```
+
+`swegemma eval` does **not** start an inference server (the `VllmServer` in HARNESS_README is the Kaggle scorer's):
+`serve_vllm.sh` serves the model with the scorer's flags — TP 4, 0.80 utilisation, 32K, `gemma4` tool-call/reasoning
+parsers, thinking on, LoRA enabled — under the alias `gemma-4-31b-it-qat-w4a16-ct`, with every `adapters/<name>/` of the
+submission (`SUBMISSION=…`, default the sample) registered as LoRA module `<name>`. `eval_sample.sh` waits for :8000 and
+checks that list before running. One card for dev: `TP=1 GPU_UTIL=0.5 CUDA_VISIBLE_DEVICES=0 bash scripts/serve_vllm.sh`.
 
 Facts from HARNESS_README.md that shape everything later: the Kaggle runtime is 4× L4 (24 GB each), vLLM TP 4 at
 0.80 utilisation, **32,768-token context**, thinking enabled, `gemma4` tool-call/reasoning parsers; the agent gets 9
