@@ -7,6 +7,8 @@
 #   TP=1 GPU_UTIL=0.5 CUDA_VISIBLE_DEVICES=0 bash scripts/serve_vllm.sh          # one card (dev); default TP 4 = Kaggle
 # Served under the registry alias that agent.yaml declares and as "gemma4" (scripts/smoke.py). Each
 # <submission>/adapters/<name>/ becomes LoRA module "<name>": an agent with `adapter: <name>` requests that model id.
+# The harness forwards sampling.yaml's thinking_budget as vLLM's `thinking_token_budget`, which needs the thinking
+# delimiters (--reasoning-config) so vLLM can force the block closed: Gemma 4 thinks in `<|channel>thought\n … <channel|>`.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 MODEL="${MODEL:-google/gemma-4-31B-it-qat-w4a16-ct}"     # int4 symmetric, group 32, compressed-tensors (~17 GB)
@@ -25,6 +27,7 @@ exec vllm serve "$MODEL" \
   --gpu-memory-utilization "${GPU_UTIL:-0.80}" \
   --max-model-len "${MAX_LEN:-32768}" \
   --enable-auto-tool-choice --tool-call-parser gemma4 --reasoning-parser gemma4 \
+  --reasoning-config '{"reasoning_start_str": "<|channel>thought\n", "reasoning_end_str": "<channel|>"}' \
   --default-chat-template-kwargs '{"enable_thinking": true}' \
   --port "${PORT:-8000}" \
   ${LORA[@]+"${LORA[@]}"} "$@"
