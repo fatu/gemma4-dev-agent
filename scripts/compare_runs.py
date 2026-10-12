@@ -3,7 +3,7 @@
 
     python scripts/compare_runs.py runs/dev33_sample runs/dev33_out8k     # 📷
 
-Table 1: one row per run — resolved, errors, context-overflow calls, per-repo resolved.
+Table 1: one row per run — resolved, errors, ctx✗ = vLLM context-overflow CALLS (incl. retries, not tasks), per-repo.
 Table 2: tasks whose outcome differs between runs (on 33 tasks, a 1-2 task gap is noise — look at which tasks flip).
 """
 import json
@@ -25,6 +25,11 @@ def main():
     runs = [pathlib.Path(p) for p in sys.argv[1:]]
     if not runs:
         sys.exit(__doc__)
+    for r in [r for r in runs if not (r / "summary.json").exists()]:
+        print(f"skip {r}: no summary.json (run unfinished or failed)")
+    runs = [r for r in runs if (r / "summary.json").exists()]
+    if not runs:
+        sys.exit(1)
     data = {r: load(r) for r in runs}
 
     print(f"{'run':22} {'resolved':>9} {'rate':>5} {'err':>4} {'ctx✗':>5}  " + "  ".join(f"{n:>8}" for _, n in REPOS))
