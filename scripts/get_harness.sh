@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
 # W1 step 2: competition data + the harness CLI, into harness/ (gitignored: never redistribute).
 #   bash scripts/get_harness.sh
-# Needs: rules accepted on kaggle.com/competitions/gemma-4-developer-agent, your Kaggle API token at
-# ~/.kaggle/kaggle.json (kaggle.com → Settings → API → "Create New Token"; chmod 600), and ~25 GB of disk.
+# Download only — runs anywhere Kaggle is reachable. If the GPU box can't reach Kaggle (firewalled), run this on a laptop, copy
+# harness/ to the box, then build the venv there with scripts/setup_eval_env.sh.
+# Needs: rules accepted on kaggle.com/competitions/gemma-4-developer-agent, a Kaggle token (KAGGLE_API_TOKEN, or
+# ~/.kaggle/kaggle.json; kaggle.com → Settings → API), the kaggle CLI ≥ 2 (1.7.x ignores KAGGLE_API_TOKEN), ~25 GB of disk.
 #
 # Two downloads — the harness README documents the CLI but the CLI itself ships separately:
 #   1. competition data (~22 GB): HARNESS_README.md, tasks.jsonl (129 tasks), sample_submission/, snapshots/*.tgz
@@ -13,8 +15,8 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 COMP=gemma-4-developer-agent
-command -v kaggle >/dev/null || pip install -q kaggle
-[ -f ~/.kaggle/kaggle.json ] || [ -n "${KAGGLE_KEY:-}" ] || { echo "no Kaggle token: put kaggle.json in ~/.kaggle/ first"; exit 1; }
+kaggle --version 2>/dev/null | grep -qE 'CLI [2-9]' || { echo "need the kaggle CLI >= 2:  uv tool install 'kaggle>=2'  (or pip install 'kaggle>=2')"; exit 1; }
+[ -f ~/.kaggle/kaggle.json ] || [ -n "${KAGGLE_API_TOKEN:-}${KAGGLE_KEY:-}" ] || { echo "no Kaggle token: export KAGGLE_API_TOKEN=… or put kaggle.json in ~/.kaggle/"; exit 1; }
 mkdir -p harness/wheelhouse
 
 if [ ! -f harness/HARNESS_README.md ]; then
@@ -24,7 +26,7 @@ fi
 if ! ls harness/wheelhouse/swegemma-*.whl >/dev/null 2>&1; then
   kaggle datasets download -d metric/gemma-4-developer-agent-wheelhouse -p harness/wheelhouse --unzip
 fi
-pip install -q --find-links harness/wheelhouse swegemma
 
 echo; echo "== harness/"; ls harness; echo "tasks: $(wc -l < harness/tasks.jsonl) · snapshots: $(ls harness/snapshots | wc -l)"
-echo; echo "== swegemma  📷"; swegemma --version 2>/dev/null || pip show swegemma | head -2; swegemma eval --help | head -40
+echo "wheelhouse: $(ls harness/wheelhouse | wc -l) files"
+echo "next (on the box): bash scripts/setup_eval_env.sh"   # builds .venv-eval from requirements-eval.txt

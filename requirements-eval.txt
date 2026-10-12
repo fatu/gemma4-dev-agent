@@ -1,0 +1,18 @@
+# .venv-eval — the versions the Kaggle scorer runs (HARNESS_README) + what local verification needs.
+# Read off the working GPU-box env on 2026-10-12 (scripts/env_report.sh, commit 757c214) — the env that scored 4/5
+# on the sample submission. Install with scripts/setup_eval_env.sh (needs harness/wheelhouse for the swegemma/adk wheels).
+vllm==0.19.1
+torch==2.10.0
+transformers==5.13.1
+compressed-tensors==0.15.0.1
+# not on PyPI — from harness/wheelhouse (the metric/gemma-4-developer-agent-wheelhouse dataset)
+swegemma==0.2.11
+adk-submission==0.2.13
+adk-eval-core==0.1.0
+google-adk==1.36.1
+# vLLM 0.19's API server 500s on every request with 7.1.0 ('_IncludedRouter' object has no attribute 'path'); 8.1.0 is in the wheelhouse
+prometheus-fastapi-instrumentator==8.1.0
+prometheus_client==0.26.0
+# the subprocess sandbox runs each task's hidden tests with THIS venv's python: without pytest every task fails to verify (0/5 → 4/5)
+pytest==9.1.1
+pytest-timeout==2.1.0

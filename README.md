@@ -6,17 +6,33 @@ Agent config, prompts, tools and training scripts for the Kaggle
 Competition harness and task data are **not** included — download them from Kaggle
 after accepting the rules into `harness/` (gitignored).
 
-## On the H100 (W1)
+## Setup on the GPU box (W1)
 
 ```bash
 git clone https://github.com/fatu/gemma4-dev-agent.git && cd gemma4-dev-agent
-bash scripts/get_harness.sh                        # competition data (~22 GB) + the swegemma wheelhouse → harness/, installs the CLI
-#   (needs ~/.kaggle/kaggle.json; the CLI is a separate Kaggle dataset, not on PyPI)
-pip install vllm                                   # or uv venv + uv pip install vllm
-mkdir -p runs && nohup bash scripts/serve_vllm.sh > runs/vllm.log 2>&1 &   # first start downloads ~17 GB; stays up
-python scripts/smoke.py                            # 📷 one chat completion + tokens/s
-bash scripts/eval_sample.sh                        # 📷 sample submission on 5 tasks → runs/w1_sample5/summary.json
+bash scripts/get_harness.sh            # competition data (~22 GB) + swegemma wheelhouse → harness/ (download only)
+#   needs the kaggle CLI >= 2 + KAGGLE_API_TOKEN (or ~/.kaggle/kaggle.json). If the box can't reach Kaggle
+#   (firewalled), run this on a laptop and copy harness/ to the box.
+bash scripts/setup_eval_env.sh         # .venv-eval from requirements-eval.txt — scorer-matched pins + pytest  📷 env report
+source .venv-eval/bin/activate
+mkdir -p runs && nohup bash scripts/serve_vllm.sh > runs/vllm.log 2>&1 &   # stays up
+python scripts/smoke.py                # 📷 one chat completion + tokens/s
+bash scripts/eval_sample.sh            # 📷 sample submission on 5 tasks → runs/w1_sample5/summary.json (4/5 on 2026-10-12)
 ```
+
+What `.venv-eval` must have (all in `requirements-eval.txt`; check any time with `bash scripts/env_report.sh`):
+- **pytest + pytest-timeout** — the subprocess sandbox verifies each patch with this venv's python; without them every
+  task fails verification (the sample went 0/5 → 4/5 once they were installed).
+- **prometheus-fastapi-instrumentator 8.1.0** (from the wheelhouse) — with 7.1.0 vLLM 0.19's server returns 500 on every
+  request: `'_IncludedRouter' object has no attribute 'path'`.
+- vLLM 0.19.1 / torch 2.10.0 / transformers 5.13.1 / compressed-tensors 0.15.0.1 / swegemma 0.2.11 / adk-submission 0.2.13
+  — the scorer's versions. A newer vLLM in another venv is not a substitute.
+
+Box gotchas:
+- No outbound HTTPS to Hugging Face (TLS interception → `CERTIFICATE_VERIFY_FAILED`): once the model is cached, serve with
+  `HF_HUB_OFFLINE=1 nohup bash scripts/serve_vllm.sh …`.
+- Restarting the server over SSH: `pkill -f '[v]llm serve'` — the plain `pkill -f 'vllm serve'` also matches the SSH
+  command line that contains it and kills your own session's command.
 
 `swegemma eval` does **not** start an inference server (the `VllmServer` in HARNESS_README is the Kaggle scorer's):
 `serve_vllm.sh` serves the model with the scorer's flags — TP 4, 0.80 utilisation, 32K, `gemma4` tool-call/reasoning
