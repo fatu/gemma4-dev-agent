@@ -131,12 +131,29 @@ def report(run, res):
         tot.update(x["tool_tok"]); calls.update(x["calls"])
     think = sum(x["think"] for x in res)
     allt = sum(tot.values()) + think
+    if allt == 0:
+        print("  no tool-output/thinking text found under the guessed field names — one real step with a tool call:")
+        return dump_step(run)
     print(f"  what the agent added to context (≈tokens, all tasks; system prompt not included):")
     for name, t in tot.most_common(6):
         print(f"    {name:22} {t/1000:7.0f}K  {100*t/allt:4.0f}%   calls {calls[name]:>4}  avg {t/max(calls[name],1):6.0f}/call")
     print(f"    {'thinking':22} {think/1000:7.0f}K  {100*think/allt:4.0f}%")
     big = sorted(res, key=lambda x: -x["biggest"][0])[:3]
     print("  biggest single tool outputs: " + " · ".join(f"{x['id']} {x['biggest'][1]} ≈{x['biggest'][0]/1000:.1f}K" for x in big))
+
+
+def dump_step(run):
+    """print every field of the first step that has tool calls, plus the step after it (outputs may live there)"""
+    for tf in sorted((run / "traces").glob("trace_*.json")):
+        st = steps_of(json.loads(tf.read_text()))
+        for i, s in enumerate(st):
+            if g(s, "tool_calls", "tool_call", "function_calls"):
+                for j, x in enumerate(st[i:i + 2]):
+                    print(f"  {tf.name} step {i + j}:")
+                    for k, v in x.items():
+                        print(f"    {k:18} {type(v).__name__:5} {json.dumps(v, ensure_ascii=False)[:110]}")
+                return
+    print("  (no step with tool_calls either) — run --probe")
 
 
 def probe(run):
