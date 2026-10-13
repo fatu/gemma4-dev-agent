@@ -9,6 +9,10 @@
 #   sample — the organiser's sample submission unchanged (max_output_tokens 16384)
 #   out8k  — the same with max_output_tokens 8192. Finding #1 (2026-10-12): at 16384 the prompt only gets 32768-16384
 #            tokens, and 42 calls died with "maximum context length"; 8192 leaves the prompt ~24K.
+#   nothink — out8k + thinking_config.include_thoughts: false. Finding #4: every generated token, thinking included, is
+#             re-sent in later prompts (growth.py b = 1.00, ~35-38% of growth). Does ADK drop thoughts from history then?
+#   think1k — out8k + thinking_budget: 1024 (was 4096): keep thinking, but make each step's thinking smaller.
+#   ARMS="nothink think1k" nohup bash scripts/eval_dev.sh > runs/eval_dev_w3a.log 2>&1 &   # compares with dev33_out8k
 # Each variant is a copy of the sample under runs/subs/<arm>/ (gitignored: it holds the sample's adapters).
 # vLLM's log (VLLM_LOG, default runs/vllm.log) is counted before/after every arm → <run>/ctx_overflow.txt. It counts
 # rejected CALLS, not tasks: LiteLLM retries each failed call up to 5x, so 42 lines were only a few tasks. Compare it
@@ -37,7 +41,7 @@ PY
 mapfile -t IDS < splits/dev33.txt
 echo "dev split: ${#IDS[@]} tasks · arms: $ARMS"
 for arm in $ARMS; do                                  # check every arm up front, not 2 h into the first one
-  case "$arm" in sample|out8k) ;; *) echo "unknown arm $arm"; exit 1 ;; esac
+  case "$arm" in sample|out8k|nothink|think1k) ;; *) echo "unknown arm $arm"; exit 1 ;; esac
   RUN="runs/dev33_$arm${TAG:+_$TAG}"
   [ -e "$RUN" ] && { echo "$RUN exists (task_results.jsonl is append-only) — repeat with TAG=r2"; exit 1; }
 done
@@ -47,11 +51,11 @@ overflows() { [ -f "$LOG" ] || { echo "?"; return; }; n=$(grep -c "maximum conte
 for arm in $ARMS; do
   SUB="runs/subs/$arm"; RUN="runs/dev33_$arm${TAG:+_$TAG}"
   rm -rf "$SUB"; mkdir -p runs/subs; cp -r "$BASE" "$SUB"
-  case "$arm" in
-    sample) ;;
-    out8k)  sed -i 's/^max_output_tokens: .*/max_output_tokens: 8192/' "$SUB/configs/sampling.yaml" ;;
-  esac
-  echo; echo "== $arm: $(grep -h '^max_output_tokens' "$SUB/configs/sampling.yaml")  →  $RUN   ($(date +%H:%M))"
+  Y="$SUB/configs/sampling.yaml"
+  [ "$arm" != sample ] && sed -i 's/^max_output_tokens: .*/max_output_tokens: 8192/' "$Y"     # every W3 arm builds on out8k
+  [ "$arm" = nothink ] && sed -i 's/^\( *\)include_thoughts: .*/\1include_thoughts: false/' "$Y"
+  [ "$arm" = think1k ] && sed -i 's/^\( *\)thinking_budget: .*/\1thinking_budget: 1024/' "$Y"
+  echo; echo "== $arm: $(grep -hE 'max_output_tokens|thinking_budget|include_thoughts' "$SUB/configs/sampling.yaml" | tr -s ' \n' ' ')→ $RUN   ($(date +%H:%M))"
   before=$(overflows)
   swegemma eval \
     --tasks harness/tasks.jsonl \
@@ -66,4 +70,7 @@ for arm in $ARMS; do
   if [ "$before" = "?" ] || [ "$after" = "?" ]; then echo "?"; else echo $(( after - before )); fi > "$RUN/ctx_overflow.txt"
 done
 
-echo; python3 scripts/compare_runs.py $(for a in $ARMS; do echo "runs/dev33_$a${TAG:+_$TAG}"; done)
+DIRS=$(for a in $ARMS; do echo "runs/dev33_$a${TAG:+_$TAG}"; done)
+REF=""; [[ " $ARMS " != *" out8k "* && -d runs/dev33_out8k ]] && REF=runs/dev33_out8k   # W3 arms: show the out8k reference too
+echo; python3 scripts/compare_runs.py $REF $DIRS
+echo; python3 scripts/growth.py $REF $DIRS | grep -E '^==|Δprompt|→ b|growth explained' || true
