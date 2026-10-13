@@ -89,7 +89,8 @@ def analyse(run: pathlib.Path):
             p = g(st, "metrics.prompt_tokens", "metrics.input_tokens", "usage.prompt_tokens", "prompt_tokens")
             if isinstance(p, (int, float)):
                 prompts.append(int(p))
-            think_tok += len(text(g(st, "reasoning_content", "reasoning", "thought", "thoughts"))) / TOK
+            # swegemma: the agent's thought text is in `message` (extra.event_type == "thinking")
+            think_tok += len(text(g(st, "reasoning_content", "reasoning", "thought", "thoughts", "message"))) / TOK
             tcs = g(st, "tool_calls", default=[]) or []
             names = {}
             for tc in tcs:
@@ -97,10 +98,17 @@ def analyse(run: pathlib.Path):
                 calls[n] += 1
                 names[g(tc, "tool_call_id", "id", default=len(names))] = n
             results = g(st, "observation.results", "observations", "tool_results", default=[]) or []
+            if not results and isinstance(st.get("observation"), dict) and "content" in st["observation"]:
+                results = [st["observation"]]                # swegemma: {"content": "<tool JSON string>"}, one call/step
             for res in results:
                 n = names.get(g(res, "source_call_id", "tool_call_id", "id"), None) or \
                     (next(iter(names.values())) if len(names) == 1 else "?")
-                t = len(text(res)) / TOK
+                body = text(res)
+                try:                                         # decode the tool's JSON so escapes don't inflate the count
+                    body = text(json.loads(body)) if body[:1] == "{" else body
+                except ValueError:
+                    pass
+                t = len(body) / TOK
                 tool_tok[n] += t
                 if t > biggest[0]:
                     biggest = (t, n)
@@ -137,7 +145,7 @@ def report(run, res):
     print(f"  what the agent added to context (≈tokens, all tasks; system prompt not included):")
     for name, t in tot.most_common(6):
         print(f"    {name:22} {t/1000:7.0f}K  {100*t/allt:4.0f}%   calls {calls[name]:>4}  avg {t/max(calls[name],1):6.0f}/call")
-    print(f"    {'thinking':22} {think/1000:7.0f}K  {100*think/allt:4.0f}%")
+    print(f"    {'agent text/thinking':22} {think/1000:7.0f}K  {100*think/allt:4.0f}%")
     big = sorted(res, key=lambda x: -x["biggest"][0])[:3]
     print("  biggest single tool outputs: " + " · ".join(f"{x['id']} {x['biggest'][1]} ≈{x['biggest'][0]/1000:.1f}K" for x in big))
 
