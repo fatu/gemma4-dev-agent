@@ -32,11 +32,11 @@ def main():
         sys.exit(1)
     data = {r: load(r) for r in runs}
 
-    print(f"{'run':22} {'resolved':>9} {'rate':>5} {'err':>4} {'ctx✗':>5}  " + "  ".join(f"{n:>8}" for _, n in REPOS))
+    print(f"{'run':28} {'resolved':>9} {'rate':>5} {'err':>4} {'ctx✗':>5}  " + "  ".join(f"{n:>8}" for _, n in REPOS))
     for r, (s, _, ov) in data.items():
         by = s.get("by_repo", {})
         cells = "  ".join(f"{by[k]['resolved']}/{by[k]['total']:<2}".rjust(8) if k in by else f"{'-':>8}" for k, _ in REPOS)
-        print(f"{r.name:22} {s['resolved']:>4}/{s['total_tasks']:<4} {s['resolution_rate']:>5.2f} {s.get('errors', '?'):>4} {ov:>5}  {cells}")
+        print(f"{r.name:28} {s['resolved']:>4}/{s['total_tasks']:<4} {s['resolution_rate']:>5.2f} {s.get('errors', '?'):>4} {ov:>5}  {cells}")
 
     if len(runs) > 1:
         ids = sorted(set().union(*(t.keys() for _, t, _ in data.values())))
