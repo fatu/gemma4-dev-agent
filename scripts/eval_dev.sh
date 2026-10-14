@@ -13,6 +13,12 @@
 #             re-sent in later prompts (growth.py b = 1.00, ~35-38% of growth). Does ADK drop thoughts from history then?
 #   think1k — out8k + thinking_budget: 1024 (was 4096): keep thinking, but make each step's thinking smaller.
 #   ARMS="nothink think1k" nohup bash scripts/eval_dev.sh > runs/eval_dev_w3a.log 2>&1 &   # compares with dev33_out8k
+#   readdisc — out8k + a "Context Discipline" block appended to prompts/system.md (scripts/arms/readdisc.md): ranged
+#              read_file, no re-reads, short command output, brief thoughts. Finding #3: context dies by accumulation,
+#              read_file ≈ 38 % and run_command ≈ 11 % of what the agent adds — the tool-output side of the growth.
+#   noanalyzer — out8k with the code_analyzer AgentTool removed: the root agent explores by itself, so every read_file
+#              lands in its own context. Measures what the sub-agent isolation (README §10.4) is worth.
+#   ARMS="readdisc noanalyzer" nohup bash scripts/eval_dev.sh > runs/eval_dev_w3b.log 2>&1 &
 # Each variant is a copy of the sample under runs/subs/<arm>/ (gitignored: it holds the sample's adapters).
 # vLLM's log (VLLM_LOG, default runs/vllm.log) is counted before/after every arm → <run>/ctx_overflow.txt. It counts
 # rejected CALLS, not tasks: LiteLLM retries each failed call up to 5x, so 42 lines were only a few tasks. Compare it
@@ -41,7 +47,7 @@ PY
 mapfile -t IDS < splits/dev33.txt
 echo "dev split: ${#IDS[@]} tasks · arms: $ARMS"
 for arm in $ARMS; do                                  # check every arm up front, not 2 h into the first one
-  case "$arm" in sample|out8k|nothink|think1k) ;; *) echo "unknown arm $arm"; exit 1 ;; esac
+  case "$arm" in sample|out8k|nothink|think1k|readdisc|noanalyzer) ;; *) echo "unknown arm $arm"; exit 1 ;; esac
   RUN="runs/dev33_$arm${TAG:+_$TAG}"
   [ -e "$RUN" ] && { echo "$RUN exists (task_results.jsonl is append-only) — repeat with TAG=r2"; exit 1; }
 done
@@ -55,7 +61,12 @@ for arm in $ARMS; do
   [ "$arm" != sample ] && sed -i 's/^max_output_tokens: .*/max_output_tokens: 8192/' "$Y"     # every W3 arm builds on out8k
   [ "$arm" = nothink ] && sed -i 's/^\( *\)include_thoughts: .*/\1include_thoughts: false/' "$Y"
   [ "$arm" = think1k ] && sed -i 's/^\( *\)thinking_budget: .*/\1thinking_budget: 1024/' "$Y"
-  echo; echo "== $arm: $(grep -hE 'max_output_tokens|thinking_budget|include_thoughts' "$SUB/configs/sampling.yaml" | tr -s ' \n' ' ')→ $RUN   ($(date +%H:%M))"
+  [ "$arm" = readdisc ] && cat scripts/arms/readdisc.md >> "$SUB/prompts/system.md"
+  if [ "$arm" = noanalyzer ]; then                      # drop the 3-line agent_tool entry (code_analyzer) from the tool list
+    sed -i '/^ *- agent_tool:/,/skip_summarization/d' "$SUB/agent.yaml"
+    grep -q "agent_tool" "$SUB/agent.yaml" && { echo "noanalyzer: agent_tool still in agent.yaml"; exit 1; }
+  fi
+  echo; echo "== $arm: $(grep -hE 'max_output_tokens|thinking_budget|include_thoughts' "$SUB/configs/sampling.yaml" | tr -s ' \n' ' ')· tools $(grep -c '^  - ' "$SUB/agent.yaml") · prompt $(wc -c < "$SUB/prompts/system.md") chars → $RUN   ($(date +%H:%M))"
   before=$(overflows)
   swegemma eval \
     --tasks harness/tasks.jsonl \
