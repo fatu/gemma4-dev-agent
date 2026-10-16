@@ -20,6 +20,20 @@ python scripts/smoke.py                # 📷 one chat completion + tokens/s
 bash scripts/eval_sample.sh            # 📷 sample submission on 5 tasks → runs/w1_sample5/summary.json (4/5 on 2026-10-12)
 ```
 
+## Setup on Colab (G4 = 1× RTX PRO 6000, 96 GB)
+
+```bash
+# notebook cell: from google.colab import drive; drive.mount('/content/drive')
+# $G4D/secrets.env on Drive (default /content/drive/MyDrive/gemma4): export KAGGLE_API_TOKEN=… / export HF_TOKEN=…
+cd /content && git clone https://github.com/fatu/gemma4-dev-agent.git && cd gemma4-dev-agent
+bash scripts/colab_setup.sh            # 📷 GPU/disk, runs/ → Drive, harness, .venv-eval, weights
+source .venv-eval/bin/activate
+nohup env TP=1 GPU_UTIL=0.85 bash scripts/serve_vllm.sh > runs/vllm.log 2>&1 &
+python scripts/smoke.py
+```
+One card, so `TP=1`; with 96 GB the 32K context fits even with LoRA enabled. Only `runs/` is on Drive; harness and
+weights are re-downloaded per session. Not a stand-in for the scorer's 4× L4 timing.
+
 What `.venv-eval` must have (all in `requirements-eval.txt`; check any time with `bash scripts/env_report.sh`):
 - **pytest + pytest-timeout** — the subprocess sandbox verifies each patch with this venv's python; without them every
   task fails verification (the sample went 0/5 → 4/5 once they were installed).

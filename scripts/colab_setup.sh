@@ -1,0 +1,62 @@
+#!/usr/bin/env bash
+# Colab step 1: a fresh Colab G4 runtime (1× RTX PRO 6000, 96 GB) → the same eval env as the GPU box.
+#   In a notebook cell first (the terminal can't mount Drive):
+#     from google.colab import drive; drive.mount('/content/drive')
+#   Then in Colab's Terminal:
+#     cd /content && git clone https://github.com/fatu/gemma4-dev-agent.git && cd gemma4-dev-agent   # later: git pull
+#     bash scripts/colab_setup.sh                    # 📷 the summary at the end · ~20-30 min on a fresh runtime
+# Everything big stays on the runtime's local disk and is fetched again each session (Kaggle/HF → Colab is fast):
+#   harness/ (~22 GB, Kaggle), model weights (~17 GB, HF cache), .venv-eval. Re-running is safe: done steps are skipped.
+# Only runs/ lives on Drive (runs → $G4D/runs symlink), so a disconnect never loses finished tasks.
+# Tokens: KAGGLE_API_TOKEN (kaggle.com → Settings → API) and HF_TOKEN (the Gemma licence accepted on huggingface.co),
+# from the environment or from $G4D/secrets.env — two `export X=…` lines on your private Drive, never in this repo.
+set -euo pipefail
+cd "$(dirname "$0")/.."
+G4D="${G4D:-/content/drive/MyDrive/gemma4}"
+MODEL="${MODEL:-google/gemma-4-31B-it-qat-w4a16-ct}"
+ok() { echo "  ✓ $*"; }
+bad() { echo "  ✗ $*"; exit 1; }
+
+echo "== 1/6 GPU + disk"
+gpu=$(nvidia-smi --query-gpu=name,memory.total --format=csv,noheader 2>/dev/null) || bad "no GPU — Runtime → Change runtime type → G4"
+ok "$gpu"
+avail=$(df -BG --output=avail /content | tail -1 | tr -dc 0-9)
+[ "$avail" -ge 70 ] || bad "only ${avail} GB free on /content, need ~70 (harness 22 + weights 17 + venv)"
+ok "${avail} GB free on /content"
+
+echo "== 2/6 Drive + tokens"
+[ -d /content/drive/MyDrive ] || bad "Drive not mounted — run drive.mount('/content/drive') in a notebook cell"
+mkdir -p "$G4D/runs"
+if [ -L runs ]; then ok "runs → $(readlink runs)"
+elif [ -e runs ]; then bad "runs/ exists and is not a link — move it into $G4D/runs first"
+else ln -s "$G4D/runs" runs; ok "runs → $G4D/runs"; fi
+if [ -f "$G4D/secrets.env" ]; then source "$G4D/secrets.env"; ok "tokens from $G4D/secrets.env"; fi
+[ -n "${KAGGLE_API_TOKEN:-}" ] || [ -f ~/.kaggle/kaggle.json ] || bad "no KAGGLE_API_TOKEN — add 'export KAGGLE_API_TOKEN=…' to $G4D/secrets.env"
+[ -n "${HF_TOKEN:-}" ] || echo "  ! no HF_TOKEN — the weights download fails if the model is gated for you"
+
+echo "== 3/6 tools (uv, kaggle CLI ≥ 2)"
+command -v uv >/dev/null || pip install -q uv
+kaggle --version 2>/dev/null | grep -qE 'CLI [2-9]' || pip install -q 'kaggle>=2'
+ok "$(uv --version) · $(kaggle --version)"
+
+echo "== 4/6 harness (competition data + wheelhouse)"
+bash scripts/get_harness.sh
+
+echo "== 5/6 .venv-eval"
+bash scripts/setup_eval_env.sh
+
+echo "== 6/6 weights ($MODEL)"
+MODEL="$MODEL" .venv-eval/bin/python -c '
+import os, pathlib
+from huggingface_hub import snapshot_download
+p = pathlib.Path(snapshot_download(os.environ["MODEL"]))
+gb = sum(x.stat().st_size for x in p.rglob("*") if x.is_file()) / 1e9
+print(f"  ✓ {p}  {gb:.1f} GB")'
+
+cat <<EOF
+
+== ready ($gpu) — next:
+  source .venv-eval/bin/activate
+  nohup env TP=1 GPU_UTIL=0.85 bash scripts/serve_vllm.sh > runs/vllm.log 2>&1 &
+  python scripts/smoke.py          # 📷 once the server is up (tail -f runs/vllm.log)
+EOF
