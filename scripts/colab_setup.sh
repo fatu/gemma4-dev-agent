@@ -41,7 +41,7 @@ if [ -f "$G4D/secrets.env" ]; then source "$G4D/secrets.env"; ok "tokens from $G
 
 echo "== 3/6 tools (uv, kaggle CLI ≥ 2)"
 command -v uv >/dev/null || pip install -q uv
-kaggle --version 2>/dev/null | grep -qE 'CLI [2-9]' || pip install -q 'kaggle>=2'
+kaggle --version 2>/dev/null | grep -qE 'CLI [2-9]' || pip install -q -U 'kaggle>=2.2'
 ok "$(uv --version) · $(kaggle --version)"
 
 if [ -z "$gpu" ]; then
@@ -49,8 +49,9 @@ if [ -z "$gpu" ]; then
   kaggle competitions files gemma-4-developer-agent 2>&1 | grep -qE '\.(jsonl|md|tgz|npz|zip|whl)' \
     && ok "Kaggle: competition data visible (rules accepted)" \
     || bad "Kaggle can't list gemma-4-developer-agent — accept the rules on its page, check KAGGLE_API_TOKEN"
-  kaggle datasets files metric/gemma-4-developer-agent-wheelhouse 2>&1 | grep -q swegemma && ok "Kaggle: wheelhouse visible" \
-    || bad "Kaggle can't list the wheelhouse dataset metric/gemma-4-developer-agent-wheelhouse"
+  wh=$(kaggle datasets files metric/gemma-4-developer-agent-wheelhouse 2>&1 || true)   # one page only (~20 files)
+  if grep -q '\.whl' <<<"$wh"; then ok "Kaggle: wheelhouse visible ($(grep -c '\.whl' <<<"$wh") wheels on page 1)"
+  else echo "$wh" | head -5; bad "Kaggle can't list the wheelhouse dataset metric/gemma-4-developer-agent-wheelhouse (output above)"; fi
   MODEL="$MODEL" python3 -c '
 import os, sys
 from huggingface_hub import HfApi
