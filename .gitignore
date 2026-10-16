@@ -3,6 +3,8 @@ harness/
 data/
 tasks/
 runs/
+# Colab: runs is a symlink to Drive, which runs/ (directories only) doesn't match
+/runs
 adapters/
 *.zip
 .env
