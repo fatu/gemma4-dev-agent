@@ -185,11 +185,11 @@ def main():
     print(f"✓ {zpath}  ({size / 2**20:.2f} MiB)")
 
     if os.environ.get("UPLOAD") == "1":
-        user = os.environ.get("KAGGLE_USER") or next(
+        user = os.environ.get("KAGGLE_USER") or os.environ.get("KAGGLE_USERNAME") or next(
             (l.split(":", 1)[1].strip() for l in subprocess.run(["kaggle", "config", "view"], capture_output=True,
                                                                  text=True).stdout.splitlines() if "username" in l), "")
         if not user or user == "None":
-            sys.exit("set KAGGLE_USER=<your kaggle username> for the upload (or add `export KAGGLE_USER=…` to secrets.env)")
+            sys.exit("set KAGGLE_USER=<your kaggle username> for the upload (or KAGGLE_USERNAME, e.g. `source $G4D/secrets.env`)")
         dsid = f"{user}/{DATASET}"
         (out / "dataset-metadata.json").write_text(json.dumps(
             {"title": DATASET, "id": dsid, "licenses": [{"name": "CC0-1.0"}]}))
