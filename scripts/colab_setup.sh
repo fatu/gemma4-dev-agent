@@ -7,6 +7,8 @@
 #     bash scripts/colab_setup.sh                    # 📷 the summary at the end · ~20-30 min on a fresh runtime
 # Everything big stays on the runtime's local disk and is fetched again each session (Kaggle/HF → Colab is fast):
 #   harness/ (~22 GB, Kaggle), model weights (~17 GB, HF cache), .venv-eval. Re-running is safe: done steps are skipped.
+# On a CPU runtime it runs in check-only mode: Drive, tokens, Kaggle rules accepted, HF access to the model — nothing
+# big is downloaded, because changing the runtime type wipes /content. Fix what it flags, then switch to G4 and re-run.
 # Only runs/ lives on Drive (runs → $G4D/runs symlink), so a disconnect never loses finished tasks.
 # Tokens: KAGGLE_API_TOKEN (kaggle.com → Settings → API) and HF_TOKEN (the Gemma licence accepted on huggingface.co),
 # from the environment or from $G4D/secrets.env — two `export X=…` lines on your private Drive, never in this repo.
@@ -18,11 +20,14 @@ ok() { echo "  ✓ $*"; }
 bad() { echo "  ✗ $*"; exit 1; }
 
 echo "== 1/6 GPU + disk"
-gpu=$(nvidia-smi --query-gpu=name,memory.total --format=csv,noheader 2>/dev/null) || bad "no GPU — Runtime → Change runtime type → G4"
-ok "$gpu"
-avail=$(df -BG --output=avail /content | tail -1 | tr -dc 0-9)
-[ "$avail" -ge 70 ] || bad "only ${avail} GB free on /content, need ~70 (harness 22 + weights 17 + venv)"
-ok "${avail} GB free on /content"
+if gpu=$(nvidia-smi --query-gpu=name,memory.total --format=csv,noheader 2>/dev/null); then
+  ok "$gpu"
+  avail=$(df -BG --output=avail /content | tail -1 | tr -dc 0-9)
+  [ "$avail" -ge 70 ] || bad "only ${avail} GB free on /content, need ~70 (harness 22 + weights 17 + venv)"
+  ok "${avail} GB free on /content"
+else
+  gpu=""; echo "  ! no GPU — CPU check-only mode (no downloads: a runtime change wipes /content)"
+fi
 
 echo "== 2/6 Drive + tokens"
 [ -d /content/drive/MyDrive ] || bad "Drive not mounted — run drive.mount('/content/drive') in a notebook cell"
@@ -38,6 +43,27 @@ echo "== 3/6 tools (uv, kaggle CLI ≥ 2)"
 command -v uv >/dev/null || pip install -q uv
 kaggle --version 2>/dev/null | grep -qE 'CLI [2-9]' || pip install -q 'kaggle>=2'
 ok "$(uv --version) · $(kaggle --version)"
+
+if [ -z "$gpu" ]; then
+  echo "== check-only: access"
+  kaggle competitions files gemma-4-developer-agent 2>&1 | grep -qE '\.(jsonl|md|tgz|npz|zip|whl)' \
+    && ok "Kaggle: competition data visible (rules accepted)" \
+    || bad "Kaggle can't list gemma-4-developer-agent — accept the rules on its page, check KAGGLE_API_TOKEN"
+  kaggle datasets files metric/gemma-4-developer-agent-wheelhouse 2>&1 | grep -q swegemma && ok "Kaggle: wheelhouse visible" \
+    || bad "Kaggle can't list the wheelhouse dataset metric/gemma-4-developer-agent-wheelhouse"
+  MODEL="$MODEL" python3 -c '
+import os, sys
+from huggingface_hub import HfApi
+m = os.environ["MODEL"]
+try:
+    files = HfApi().list_repo_files(m)
+except Exception as e:
+    sys.exit(f"  ✗ HF: no access to {m}: {type(e).__name__} — accept the Gemma licence, check HF_TOKEN")
+n = sum(x.endswith(".safetensors") for x in files)
+print(f"  ✓ HF: {m} visible ({n} safetensors files)")'
+  echo; echo "== check-only passed — Runtime → Change runtime type → G4, then the same two commands again"
+  exit 0
+fi
 
 echo "== 4/6 harness (competition data + wheelhouse)"
 bash scripts/get_harness.sh
