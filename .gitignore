@@ -11,3 +11,4 @@ adapters/
 .venv*/
 __pycache__/
 *.pyc
+dist/
