@@ -139,8 +139,10 @@ def main():
     zpath = out / "submission.zip"
     with zipfile.ZipFile(zpath, "w", zipfile.ZIP_DEFLATED) as z:
         for p in sorted(sub.rglob("*")):
-            if p.is_file():
-                z.write(p, p.relative_to(sub).as_posix())
+            if p.is_file():                              # fixed timestamp → same content, same sha256 (card)
+                zi = zipfile.ZipInfo(p.relative_to(sub).as_posix(), date_time=(1980, 1, 1, 0, 0, 0))
+                zi.compress_type, zi.external_attr = zipfile.ZIP_DEFLATED, 0o644 << 16
+                z.writestr(zi, p.read_bytes())
     size = zpath.stat().st_size
     check("zip 7 size < 3 GiB", size < 3 * 2**30, f"{size / 2**20:.2f} MiB")
     with zipfile.ZipFile(zpath) as z:
@@ -187,7 +189,7 @@ def main():
             (l.split(":", 1)[1].strip() for l in subprocess.run(["kaggle", "config", "view"], capture_output=True,
                                                                  text=True).stdout.splitlines() if "username" in l), "")
         if not user or user == "None":
-            sys.exit("set KAGGLE_USER=<your kaggle username> for the upload")
+            sys.exit("set KAGGLE_USER=<your kaggle username> for the upload (or add `export KAGGLE_USER=…` to secrets.env)")
         dsid = f"{user}/{DATASET}"
         (out / "dataset-metadata.json").write_text(json.dumps(
             {"title": DATASET, "id": dsid, "licenses": [{"name": "CC0-1.0"}]}))
