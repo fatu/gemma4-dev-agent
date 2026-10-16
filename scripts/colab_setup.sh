@@ -41,7 +41,7 @@ if [ -f "$G4D/secrets.env" ]; then source "$G4D/secrets.env"; ok "tokens from $G
 
 echo "== 3/6 tools (uv, kaggle CLI ≥ 2)"
 command -v uv >/dev/null || pip install -q uv
-kaggle --version 2>/dev/null | grep -qE 'CLI [2-9]' || pip install -q -U 'kaggle>=2.2'
+kaggle --version 2>/dev/null | grep -qE 'CLI (2\.([2-9]|[1-9][0-9])|[3-9])' || pip install -q -U 'kaggle>=2.2'   # 2.0.2: upload-info 'token' bug
 ok "$(uv --version) · $(kaggle --version)"
 
 if [ -z "$gpu" ]; then
