@@ -72,6 +72,17 @@ bash scripts/get_harness.sh
 echo "== 5/6 .venv-eval"
 bash scripts/setup_eval_env.sh
 
+# the subprocess sandbox builds a venv per task with this Python (`python3.12 -m venv`); Colab's Debian python3.12 has no
+# ensurepip until python3.12-venv is installed (seen 2026-10-16: "ensurepip is not available", every task fails)
+pyv=$(.venv-eval/bin/python -c 'import sys; print("%d.%d" % sys.version_info[:2])')
+t=$(mktemp -d)
+if ! .venv-eval/bin/python -m venv "$t/v" >/dev/null 2>&1; then
+  echo "  ! python$pyv can't make venvs (no ensurepip) — apt-get install python$pyv-venv"
+  apt-get install -y -qq "python$pyv-venv" >/dev/null || { apt-get update -qq && apt-get install -y -qq "python$pyv-venv" >/dev/null; }
+  rm -rf "$t/v"; .venv-eval/bin/python -m venv "$t/v" >/dev/null 2>&1 || bad "python$pyv still can't make venvs — the sandbox will fail"
+fi
+rm -rf "$t"; ok "python$pyv makes venvs (sandbox OK)"
+
 echo "== 6/6 weights ($MODEL)"
 MODEL="$MODEL" .venv-eval/bin/python -c '
 import os, pathlib
