@@ -71,6 +71,9 @@ print("served:", ", ".join(ids))
 if missing:
     sys.exit(f"the server lacks {missing} — restart it with SUBMISSION=$BASE scripts/serve_vllm.sh")
 PY
+python3 -c 'import pytest_httpbin, inline_snapshot' 2>/dev/null || {   # without them requests/fastapi tests can't run
+  echo "test deps missing (pytest-httpbin / inline-snapshot): run scripts/install_testdeps.sh first, or set NO_TESTDEPS=1"
+  [ -n "${NO_TESTDEPS:-}" ] || exit 1; }
 [ -f "$LOG" ] || echo "warning: no $LOG — ctx_overflow will be '?' (set VLLM_LOG=… to the server's log)"
 mapfile -t IDS < splits/dev33.txt
 echo "dev split: ${#IDS[@]} tasks · arms: $ARMS · budget: ${BUDGET_FLAGS[*]:-none}"
