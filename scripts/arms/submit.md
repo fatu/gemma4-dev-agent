@@ -1,0 +1,1 @@
+Edits are often lost when a run crashes or times out without `submit_patch`. So once your fix is in place and one targeted check has run, call `submit_patch` immediately. Never keep exploring after a working fix.

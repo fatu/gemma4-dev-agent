@@ -26,13 +26,34 @@
 # vLLM's log (VLLM_LOG, default runs/vllm.log) is counted before/after every arm → <run>/ctx_overflow.txt. It counts
 # rejected CALLS, not tasks: LiteLLM retries each failed call up to 5x, so 42 lines were only a few tasks. Compare it
 # between arms; don't read it as a task count. If the log is missing it writes "?" instead of a fake 0.
-# Note: the sample's eval_config (10 tool calls / 1 min) is not enforced by the local CLI (seen: 32 calls, 490 s), so
-# these numbers are not comparable to the leaderboard's ~0 baseline. One run per arm at temp 0.2 is noisy: repeat with TAG.
+# Budgets: the local CLI ignores eval_config.yaml (seen: 32 calls, 490 s under a 10-call / 1-min config); only flags
+# count. Since 2026-10-20 every arm runs under the scorer's per-task budget, passed as flags:
+#   MAX_CALLS=28 TIME_MIN=8 CMD_TIMEOUT=240 VERIFY_TIMEOUT=300  (the best public eval_config + README's fixed 300 s)
+#   BUDGET=none reproduces the W2/W3 runs (no cap). Those results (Finding #5 included) were unbudgeted: on Kaggle's
+#   4×L4 at the scorer budget, nothink scored 4/33 vs 8/33 for the LB-0.24 config (it ran out of the 8 minutes).
+#   This box decodes ~62 tok/s vs ~29 on 4×L4, so 8 min here buys ~2x the steps. TIME_MIN=4 approximates L4 speed
+#   (8 x 29/62; unvalidated: test execution doesn't speed up). Token effects (overflow, schema size) need no scaling.
+# One run per arm at temp 0.2 is noisy: repeat with TAG.
+#
+# Public-top base (W4): SUBMISSION=<dir> from a notebook that embeds its files (scripts/from_notebook.py):
+#   kaggle kernels pull honghanhhh/gemma-4-baseline-lb-0-24 -p /tmp/lb024
+#   python3 scripts/from_notebook.py /tmp/lb024/*.ipynb runs/base_lb024
+#   SUBMISSION=runs/base_lb024 ARMS="base tools6 tools6+submit" nohup bash scripts/eval_dev.sh > runs/eval_dev_w4.log 2>&1 &
+#   base   — SUBMISSION unchanged (like sample, for any base)
+#   out6k / out4k — max_output_tokens 6144 / 4096 (+ thinking_budget 2048). ab1 on 4×L4: every overflow was
+#            prompt + 8192 > 32768, while per-call output p99 was ~3.5K and the max ~4.4K tokens.
+#   tools6 — drop get_code_neighbors / search_similar_code / get_code_subgraph from agent.yaml (the LB-0.24 prompt
+#            already forbids them; their schemas are sent on every call)
+#   submit — prompt rule from scripts/arms/submit.md: submit as soon as the fix is checked (ab1: 8/24 failed runs had
+#            edits but a 0-byte patch). It replaces the base's "edits count without submit_patch" line if present.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 export OPENAI_API_KEY="${OPENAI_API_KEY:-EMPTY}"
 BASE="${SUBMISSION:-harness/sample_submission}"
 ARMS="${ARMS:-sample out8k}"
+if [ "${BUDGET:-scorer}" = none ]; then BUDGET_FLAGS=(); else
+  BUDGET_FLAGS=(--max-tool-calls "${MAX_CALLS:-28}" --max-time-minutes "${TIME_MIN:-8}"
+                --timeout-seconds "${CMD_TIMEOUT:-240}" --verification-timeout-seconds "${VERIFY_TIMEOUT:-300}"); fi
 LOG="${VLLM_LOG:-runs/vllm.log}"
 curl -s --max-time 2 http://127.0.0.1:8000/v1/models >/dev/null || { echo "no vLLM on :8000 — start scripts/serve_vllm.sh first"; exit 1; }
 # the server must serve the alias AND every adapter of the submission, else each task dies in ~2 s with NotFoundError
@@ -48,10 +69,11 @@ if missing:
 PY
 [ -f "$LOG" ] || echo "warning: no $LOG — ctx_overflow will be '?' (set VLLM_LOG=… to the server's log)"
 mapfile -t IDS < splits/dev33.txt
-echo "dev split: ${#IDS[@]} tasks · arms: $ARMS"
+echo "dev split: ${#IDS[@]} tasks · arms: $ARMS · budget: ${BUDGET_FLAGS[*]:-none}"
 for arm in $ARMS; do                                  # check every arm up front, not 2 h into the first one
   for part in ${arm//+/ }; do
-    case "$part" in out8k|nothink|think1k|readdisc|noanalyzer) ;; sample) [ "$arm" = sample ] || { echo "sample can't stack: $arm"; exit 1; } ;;
+    case "$part" in out8k|nothink|think1k|readdisc|noanalyzer|out6k|out4k|tools6|submit) ;;
+      sample|base) [ "$arm" = "$part" ] || { echo "$part can't stack: $arm"; exit 1; } ;;
       *) echo "unknown arm part $part in $arm"; exit 1 ;; esac
   done
   RUN="runs/dev33_$arm${TAG:+_$TAG}"
@@ -66,13 +88,31 @@ for arm in $ARMS; do
   SUB="runs/subs/$arm"; RUN="runs/dev33_$arm${TAG:+_$TAG}"
   rm -rf "$SUB"; mkdir -p runs/subs; cp -r "$BASE" "$SUB"
   Y="$SUB/configs/sampling.yaml"
-  [ "$arm" != sample ] && sed -i 's/^max_output_tokens: .*/max_output_tokens: 8192/' "$Y"     # every W3 arm builds on out8k
+  [ "$arm" != sample ] && [ "$arm" != base ] && sed -i 's/^max_output_tokens: .*/max_output_tokens: 8192/' "$Y"   # W3+ arms build on out8k
+  has out6k && sed -i 's/^max_output_tokens: .*/max_output_tokens: 6144/' "$Y"
+  if has out4k; then sed -i 's/^max_output_tokens: .*/max_output_tokens: 4096/' "$Y"
+    sed -i 's/^\( *\)thinking_budget: .*/\1thinking_budget: 2048/' "$Y"; fi
   has nothink && sed -i 's/^\( *\)include_thoughts: .*/\1include_thoughts: false/' "$Y"
   has think1k && sed -i 's/^\( *\)thinking_budget: .*/\1thinking_budget: 1024/' "$Y"
   has readdisc && cat scripts/arms/readdisc.md >> "$SUB/prompts/system.md"
   if has noanalyzer; then                      # drop the 3-line agent_tool entry (code_analyzer) from the tool list
     sed -i '/^ *- agent_tool:/,/skip_summarization/d' "$SUB/agent.yaml"
     grep -q "agent_tool" "$SUB/agent.yaml" && { echo "noanalyzer: agent_tool still in agent.yaml"; exit 1; }
+  fi
+  if has tools6; then
+    sed -i -E '/^ *- (get_code_neighbors|search_similar_code|get_code_subgraph) *$/d' "$SUB/agent.yaml"
+    grep -qE 'get_code_neighbors|search_similar_code|get_code_subgraph' "$SUB/agent.yaml" && { echo "tools6: graph tool left in agent.yaml"; exit 1; }
+  fi
+  if has submit; then                          # replace the base's "edits count without submit" sentence, else append
+    P="$SUB/prompts/system.md" R="scripts/arms/submit.md" python3 - <<'PY'
+import os, re
+p, rule = os.environ["P"], open(os.environ["R"]).read().strip()
+s = open(p).read()
+s2, n = re.subn(r"An edit that exists counts[^.]*\.", rule, s, count=1)
+open(p, "w").write(s2 if n else s.rstrip() + "\n\n# SUBMIT\n- " + rule + "\n")
+assert "{" not in rule and "}" not in rule        # ADK templates {name} from session state
+print("submit:", "replaced the base's line" if n else "appended")
+PY
   fi
   echo; echo "== $arm: $(grep -hE 'max_output_tokens|thinking_budget|include_thoughts' "$SUB/configs/sampling.yaml" | tr -s ' \n' ' ')· tools $(grep -c '^  - ' "$SUB/agent.yaml") · prompt $(wc -c < "$SUB/prompts/system.md") chars → $RUN   ($(date +%H:%M))"
   before=$(overflows)
@@ -84,7 +124,7 @@ for arm in $ARMS; do
     --sandbox "${SANDBOX:-subprocess}" \
     --task-ids "${IDS[@]}" \
     --concurrency "${CONC:-1}" \
-    --display quiet || echo "swegemma eval exited $? for $arm (summary below may be partial)"
+    --display quiet ${BUDGET_FLAGS[@]+"${BUDGET_FLAGS[@]}"} || echo "swegemma eval exited $? for $arm (summary below may be partial)"
   after=$(overflows); mkdir -p "$RUN"                   # the eval may die before creating $RUN
   if [ "$before" = "?" ] || [ "$after" = "?" ]; then echo "?"; else echo $(( after - before )); fi > "$RUN/ctx_overflow.txt"
 done
