@@ -33,8 +33,9 @@
 #   BUDGET=none reproduces the W2/W3 runs (no cap). Those results (Finding #5 included) were unbudgeted: on Kaggle's
 #   4×L4 at the scorer budget, nothink scored 4/33 vs 8/33 for the LB-0.24 config (it ran out of the 8 minutes).
 #   TIME_MIN defaults to 4, not the scorer's 8: this box decodes ~62 tok/s vs ~29 on 4×L4, so 8 min here buys ~2x
-#   the steps; 8 x 29/62 ≈ 3.7 (integer because the CLI flag's type is unchecked). Unvalidated: test execution
-#   doesn't speed up, so 4 min is slightly stricter than L4. TIME_MIN=8 = the literal scorer number (e.g. on Kaggle
+#   the steps; 8 x 29/62 ≈ 3.7, rounded up to 4 because the CLI flag's type is unchecked (a bit looser for
+#   generation). Unvalidated: test runs and tool calls take the same wall time on both machines but are squeezed
+#   into half the minutes here, so it is not an exact L4 match. TIME_MIN=8 = the literal scorer number (e.g. on Kaggle
 #   L4 hardware). Token effects (overflow, schema size) need no scaling.
 # One run per arm at temp 0.2 is noisy: repeat with TAG.
 #
