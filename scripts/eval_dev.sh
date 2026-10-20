@@ -27,12 +27,15 @@
 # rejected CALLS, not tasks: LiteLLM retries each failed call up to 5x, so 42 lines were only a few tasks. Compare it
 # between arms; don't read it as a task count. If the log is missing it writes "?" instead of a fake 0.
 # Budgets: the local CLI ignores eval_config.yaml (seen: 32 calls, 490 s under a 10-call / 1-min config); only flags
-# count. Since 2026-10-20 every arm runs under the scorer's per-task budget, passed as flags:
-#   MAX_CALLS=28 TIME_MIN=8 CMD_TIMEOUT=240 VERIFY_TIMEOUT=300  (the best public eval_config + README's fixed 300 s)
+# count. Since 2026-10-20 every arm runs under the scorer's per-task budget, passed as flags, with the time scaled
+# to this box's speed:
+#   MAX_CALLS=28 TIME_MIN=4 CMD_TIMEOUT=240 VERIFY_TIMEOUT=300  (the best public eval_config + README's fixed 300 s)
 #   BUDGET=none reproduces the W2/W3 runs (no cap). Those results (Finding #5 included) were unbudgeted: on Kaggle's
 #   4×L4 at the scorer budget, nothink scored 4/33 vs 8/33 for the LB-0.24 config (it ran out of the 8 minutes).
-#   This box decodes ~62 tok/s vs ~29 on 4×L4, so 8 min here buys ~2x the steps. TIME_MIN=4 approximates L4 speed
-#   (8 x 29/62; unvalidated: test execution doesn't speed up). Token effects (overflow, schema size) need no scaling.
+#   TIME_MIN defaults to 4, not the scorer's 8: this box decodes ~62 tok/s vs ~29 on 4×L4, so 8 min here buys ~2x
+#   the steps; 8 x 29/62 ≈ 3.7 (integer because the CLI flag's type is unchecked). Unvalidated: test execution
+#   doesn't speed up, so 4 min is slightly stricter than L4. TIME_MIN=8 = the literal scorer number (e.g. on Kaggle
+#   L4 hardware). Token effects (overflow, schema size) need no scaling.
 # One run per arm at temp 0.2 is noisy: repeat with TAG.
 #
 # Public-top base (W4): SUBMISSION=<dir> from a notebook that embeds its files (scripts/from_notebook.py):
@@ -52,7 +55,7 @@ export OPENAI_API_KEY="${OPENAI_API_KEY:-EMPTY}"
 BASE="${SUBMISSION:-harness/sample_submission}"
 ARMS="${ARMS:-sample out8k}"
 if [ "${BUDGET:-scorer}" = none ]; then BUDGET_FLAGS=(); else
-  BUDGET_FLAGS=(--max-tool-calls "${MAX_CALLS:-28}" --max-time-minutes "${TIME_MIN:-8}"
+  BUDGET_FLAGS=(--max-tool-calls "${MAX_CALLS:-28}" --max-time-minutes "${TIME_MIN:-4}"
                 --timeout-seconds "${CMD_TIMEOUT:-240}" --verification-timeout-seconds "${VERIFY_TIMEOUT:-300}"); fi
 LOG="${VLLM_LOG:-runs/vllm.log}"
 curl -s --max-time 2 http://127.0.0.1:8000/v1/models >/dev/null || { echo "no vLLM on :8000 — start scripts/serve_vllm.sh first"; exit 1; }
