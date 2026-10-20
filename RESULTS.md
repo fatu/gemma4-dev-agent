@@ -44,7 +44,7 @@ Budget = scorer: 28 calls · 8 min · 240 s cmd · 300 s verify. 4×L4 burns ~2 
 
 | date | where | commit | arms | result (resolved / 33) | notes |
 |---|---|---|---|---|---|
-| ⏳ next | box | `4951b8d` | base (public "Baseline | LB 0.24" notebook) · tools6 · tools6+submit | — | 🧪✓ after `install_testdeps.sh`; TIME_MIN=4 (≈ L4's 8 min) |
+| ⏳ next | box | `4951b8d` | base (public "Baseline | LB 0.24" notebook) · tools6 · tools6+submit (BOX_PLAN.md B-2) | — | 🧪✓ after `install_testdeps.sh`; TIME_MIN=4 (≈ L4's 8 min) |
 | 2026-10-16 | Colab | `eb705a1` | nothink (stopped at 13/33) | 2/13 | 6/13 ContextWindowExceeded; median 424 s/task |
 | 2026-10-14 | box | `ec41085` | out8k · nothink · think1k | out8k 8 · **nothink 12** · think1k 9 | Finding #5 (uncapped: does not hold on L4, see ab1) |
 | 2026-10-12 | box | `7c7f580` | sample (out 16,384) · out8k | sample 5 · out8k 8 | Finding #1: 16K output reservation → 400s |
