@@ -74,7 +74,27 @@ tail -60 runs/eval_dev_w5.log
 If a rule says "appended", the base prompt differs from the LB-0.24 one: photo `head -40 runs/subs/base/prompts/system.md`.
 **Decide:** stack every arm that passes the rule into one config.
 
-## B-4 · Repeat the best 2 configs (~2–3 h) ⏸ nothing to repeat; the two base passes differ on 5 tasks, so the next step measures noise and rule-following first
+## B-3b · Rule stats + noise (~2.5 h) ▶ next
+
+Two questions before any new arm: *did the agent follow the B-3 rules* (ignored vs followed-and-useless), and *how
+noisy is one pass* (the two base passes differed on 5 tasks).
+
+```bash
+cd gemma4-dev-agent && git pull
+# 1. rule-following per arm, from the w4/w5 traces (no GPU, ~1 min) 📷
+python3 scripts/rulestats.py runs/dev33_base runs/dev33_base_w5 runs/dev33_editrecover_w5 runs/dev33_issuefirst_w5 runs/dev33_tmpfix+test1_w5
+# 2. two more base passes (~1.2 h each; vLLM must be up). The second compare table lists all 4 base runs 📷
+nohup bash -c 'TAG=r2 SUBMISSION=runs/base_lb024 ARMS=base bash scripts/eval_dev.sh;
+  TAG=r3 REFS="base base_w5 base_r2" SUBMISSION=runs/base_lb024 ARMS=base bash scripts/eval_dev.sh' \
+  > runs/eval_dev_rep.log 2>&1 &
+```
+📷 the rulestats table (rows: edit_file ok / missing-param, "missing-param edits followed by a heredoc" = editrecover,
+first edit at call = issuefirst, /tmp writes = tmpfix, runs that ran a test = test1), then `tail -45 runs/eval_dev_rep.log`.
+**Read:** a rule whose row did not move was ignored (→ rewrite it, or it needs a tool change, not a prompt line); a row
+that moved with no score gain is a dead end. With 4 base passes: the per-task flip count sets how many passes an arm
+needs before the decision rule can be applied (if base-vs-base swings 5, one pass per arm decides nothing).
+
+## B-4 · Repeat the best 2 configs (~2–3 h) ⏸ after B-3b
 
 ```bash
 TAG=r2 SUBMISSION=runs/base_lb024 ARMS="<B2 base> <best stack>" nohup bash scripts/eval_dev.sh > runs/eval_dev_r2.log 2>&1 &

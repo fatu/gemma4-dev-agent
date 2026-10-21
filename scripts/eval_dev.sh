@@ -62,6 +62,12 @@
 # B-3 re-runs base in the same pass (runs/dev33_base exists, so TAG keeps the dirs apart):
 #   TAG=w5 SUBMISSION=runs/base_lb024 ARMS="base editrecover issuefirst tmpfix+test1" \
 #     nohup bash scripts/eval_dev.sh > runs/eval_dev_w5.log 2>&1 &
+# B-3 result: none passed, and the two base passes (B-2 11, B-3 12) differed on 5 tasks. So before more arms: the
+# end of every run now prints scripts/rulestats.py (per-arm rule-following: edit failures, first edit, tests,
+# /tmp writes), and base is repeated to measure the noise (REFS lists the earlier base runs for the compare table):
+#   nohup bash -c 'TAG=r2 SUBMISSION=runs/base_lb024 ARMS=base bash scripts/eval_dev.sh;
+#     TAG=r3 REFS="base base_w5 base_r2" SUBMISSION=runs/base_lb024 ARMS=base bash scripts/eval_dev.sh' \
+#     > runs/eval_dev_rep.log 2>&1 &
 set -euo pipefail
 cd "$(dirname "$0")/.."
 export OPENAI_API_KEY="${OPENAI_API_KEY:-EMPTY}"
@@ -158,3 +164,4 @@ for r in ${REFS-base}; do                             # (REFS="out8k nothink" = 
 done
 echo; python3 scripts/compare_runs.py $REF $DIRS
 echo; python3 scripts/growth.py $REF $DIRS | grep -E '^==|Δprompt|→ b|growth explained' || true
+echo; python3 scripts/rulestats.py $REF $DIRS || true      # did the agent follow the prompt rules? (📷)
