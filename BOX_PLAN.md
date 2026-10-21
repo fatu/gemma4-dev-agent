@@ -88,8 +88,18 @@ nohup bash -c 'TAG=r2 SUBMISSION=runs/base_lb024 ARMS=base bash scripts/eval_dev
   TAG=r3 REFS="base base_w5 base_r2" SUBMISSION=runs/base_lb024 ARMS=base bash scripts/eval_dev.sh' \
   > runs/eval_dev_rep.log 2>&1 &
 ```
-📷 the rulestats table (rows: edit_file ok / missing-param, "missing-param edits followed by a heredoc" = editrecover,
-first edit at call = issuefirst, /tmp writes = tmpfix, runs that ran a test = test1), then `tail -45 runs/eval_dev_rep.log`.
+**After the run (📷 three):**
+```bash
+# 1. the rule-following table (5 columns, ~25 rows; two photos if the font is small)
+python3 scripts/rulestats.py runs/dev33_base runs/dev33_base_w5 runs/dev33_editrecover_w5 runs/dev33_issuefirst_w5 runs/dev33_tmpfix+test1_w5
+# 2. the compare table with all 4 base runs + "tasks that differ" + "resolved in every run"
+tail -45 runs/eval_dev_rep.log
+# 3. same concurrency in B-2 / B-3 / the repeats? and did r2, r3 finish all 33 tasks?
+grep -m1 "dev split" runs/eval_dev_w4.log runs/eval_dev_w5.log runs/eval_dev_rep.log; grep -c resolved runs/dev33_base_r2/task_results.jsonl runs/dev33_base_r3/task_results.jsonl
+# if the tail shows fewer than 4 base rows (REFS not applied):
+python3 scripts/compare_runs.py runs/dev33_base runs/dev33_base_w5 runs/dev33_base_r2 runs/dev33_base_r3
+```
+To see these commands on the box: `sed -n '/## B-3b/,/## B-4/p' BOX_PLAN.md`.
 **Read:** a rule whose row did not move was ignored (→ rewrite it, or it needs a tool change, not a prompt line); a row
 that moved with no score gain is a dead end. With 4 base passes: the per-task flip count sets how many passes an arm
 needs before the decision rule can be applied (if base-vs-base swings 5, one pass per arm decides nothing).
