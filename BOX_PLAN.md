@@ -47,7 +47,7 @@ SUBMISSION=runs/base_lb024 ARMS="base tools6 tools6+submit" nohup bash scripts/e
 table (`tail -60 runs/eval_dev_w4.log`).
 **Decide:** the B-3 base = `tools6` (or `tools6+submit`) if it passes the decision rule, else `base`.
 
-## B-3 · Arms that target new solves ▶ next — (~4–5 h; the laptop writes them first, you say "go")
+## B-3 · Arms that target new solves ✅ 2026-10-21: base 12 · editrecover 9 · issuefirst 11 · tmpfix+test1 8, none passes — (~4–5 h; the laptop writes them first, you say "go")
 
 Each comes from a measured failure in the Kaggle traces:
 
@@ -74,7 +74,7 @@ tail -60 runs/eval_dev_w5.log
 If a rule says "appended", the base prompt differs from the LB-0.24 one: photo `head -40 runs/subs/base/prompts/system.md`.
 **Decide:** stack every arm that passes the rule into one config.
 
-## B-4 · Repeat the best 2 configs (~2–3 h)
+## B-4 · Repeat the best 2 configs (~2–3 h) ⏸ nothing to repeat; the two base passes differ on 5 tasks, so the next step measures noise and rule-following first
 
 ```bash
 TAG=r2 SUBMISSION=runs/base_lb024 ARMS="<B2 base> <best stack>" nohup bash scripts/eval_dev.sh > runs/eval_dev_r2.log 2>&1 &
