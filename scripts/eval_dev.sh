@@ -81,9 +81,13 @@ curl -s --max-time 2 http://127.0.0.1:8000/v1/models >/dev/null || { echo "no vL
 # the server must serve the alias AND every adapter of the submission, else each task dies in ~2 s with NotFoundError
 # and the run looks like a 0/33 result instead of a failure (seen in W1)
 SUB="$BASE" python3 - <<'PY'
-import json, os, pathlib, sys, urllib.request
+import json, os, pathlib, re, sys, urllib.request
 ids = [m["id"] for m in json.load(urllib.request.urlopen("http://127.0.0.1:8000/v1/models"))["data"]]
-need = ["gemma-4-31b-it-qat-w4a16-ct"] + sorted(p.parent.name for p in pathlib.Path(os.environ["SUB"], "adapters").glob("*/adapter_config.json"))
+# every agent YAML's `model:` (one base model per submission: 31B, or E4B/E2B for the small-model bonus)
+models = sorted({m for p in pathlib.Path(os.environ["SUB"]).rglob("*.y*ml") if "adapters" not in p.parts
+                 for m in re.findall(r"^\s*model:\s*['\"]?([\w.-]+)", p.read_text(), re.M)}) or ["gemma-4-31b-it-qat-w4a16-ct"]
+print("submission models:", ", ".join(models))
+need = models + sorted(p.parent.name for p in pathlib.Path(os.environ["SUB"], "adapters").glob("*/adapter_config.json"))
 missing = [m for m in need if m not in ids]
 print("served:", ", ".join(ids))
 if missing:

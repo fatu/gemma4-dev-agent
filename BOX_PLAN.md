@@ -114,8 +114,9 @@ then log the public score in `RESULTS.md`. Compare with the public top's 0.22–
 ---
 
 ## Not in this plan
-- **Small-model bonus (E4B/E2B):** planned separately. Running it on the box
-  first needs a `SERVED=` override in `serve_vllm.sh`.
+- **Small-model bonus (E4B/E2B):** planned separately. On the box (or a rented
+  32 GB card): `MODEL=google/gemma-4-E4B-it-qat-w4a16-ct TP=1 GPU_UTIL=0.9 bash scripts/serve_vllm.sh` serves it
+  as `gemma-4-e4b-it-qat-w4a16-ct`, and the eval scripts check the alias that the submission's agent.yaml declares.
 - **Budget arms** (`nothink`, output caps, thinking budget): settled by ab1/ab2, so not repeated.
 
 ## Time budget

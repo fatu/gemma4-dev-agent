@@ -50,9 +50,10 @@ Box gotchas:
 
 `swegemma eval` does **not** start an inference server (the `VllmServer` in HARNESS_README is the Kaggle scorer's):
 `serve_vllm.sh` serves the model with the scorer's flags — TP 4, 0.80 utilisation, 32K, `gemma4` tool-call/reasoning
-parsers, thinking on, LoRA enabled — under the alias `gemma-4-31b-it-qat-w4a16-ct`, with every `adapters/<name>/` of the
-submission (`SUBMISSION=…`, default the sample) registered as LoRA module `<name>`. `eval_sample.sh` waits for :8000 and
-checks that list before running. One card for dev: `TP=1 GPU_UTIL=0.5 CUDA_VISIBLE_DEVICES=0 bash scripts/serve_vllm.sh`.
+parsers, thinking on, LoRA enabled — under the alias the agent.yaml declares (`MODEL`'s name in lower case, default
+`gemma-4-31b-it-qat-w4a16-ct`; `SERVED=` overrides), prints those settings at the top of its log, and registers every
+`adapters/<name>/` of the submission (`SUBMISSION=…`, default the sample) as LoRA module `<name>`. `eval_sample.sh`
+waits for :8000 and checks that list before running. One card for dev: `TP=1 GPU_UTIL=0.5 CUDA_VISIBLE_DEVICES=0 bash scripts/serve_vllm.sh`.
 
 Facts from HARNESS_README.md that shape everything later: the Kaggle runtime is 4× L4 (24 GB each), vLLM TP 4 at
 0.80 utilisation, **32,768-token context**, thinking enabled, `gemma4` tool-call/reasoning parsers; the agent gets 9

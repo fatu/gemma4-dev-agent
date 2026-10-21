@@ -19,10 +19,14 @@ if ! up; then
   up || { echo "no server after 30 min — see runs/vllm.log"; exit 1; }
 fi
 SUB="$SUB" python3 - <<'EOF'
-import json, os, pathlib, sys, urllib.request
+import json, os, pathlib, re, sys, urllib.request
 ids = [m["id"] for m in json.load(urllib.request.urlopen("http://127.0.0.1:8000/v1/models"))["data"]]
 print("served:", ", ".join(ids))
-need = ["gemma-4-31b-it-qat-w4a16-ct"] + sorted(p.parent.name for p in pathlib.Path(os.environ["SUB"], "adapters").glob("*/adapter_config.json"))
+# every agent YAML's `model:` (one base model per submission: 31B, or E4B/E2B for the small-model bonus)
+models = sorted({m for p in pathlib.Path(os.environ["SUB"]).rglob("*.y*ml") if "adapters" not in p.parts
+                 for m in re.findall(r"^\s*model:\s*['\"]?([\w.-]+)", p.read_text(), re.M)}) or ["gemma-4-31b-it-qat-w4a16-ct"]
+print("submission models:", ", ".join(models))
+need = models + sorted(p.parent.name for p in pathlib.Path(os.environ["SUB"], "adapters").glob("*/adapter_config.json"))
 missing = [m for m in need if m not in ids]
 if missing:
     sys.exit(f"the server lacks {missing} — restart it with scripts/serve_vllm.sh (serves the alias + the submission's adapters)")
