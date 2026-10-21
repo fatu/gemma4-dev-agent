@@ -64,8 +64,15 @@ Each arm = the LB-0.24 base + one prompt line (`scripts/arms/<arm>.md`, applied 
 TAG=w5 SUBMISSION=runs/base_lb024 ARMS="base editrecover issuefirst tmpfix+test1" \
   nohup bash scripts/eval_dev.sh > runs/eval_dev_w5.log 2>&1 &
 ```
-📷 the `== arm: … prompt N chars` lines (each arm's rule must say "inserted"/"replaced", not "appended") and the compare table
-(it also shows B-2's `dev33_base` as a reference). **Decide:** stack every arm that passes the rule into one config.
+**After the run (📷 both):**
+```bash
+# 1. each rule must say "inserted …" or "replaced the anchor", never "appended (anchor not found)"
+grep -E "^(editrecover|issuefirst|tmpfix|test1):|^== " runs/eval_dev_w5.log
+# 2. the compare table (B-2's dev33_base is shown as a reference) + context growth per arm
+tail -60 runs/eval_dev_w5.log
+```
+If a rule says "appended", the base prompt differs from the LB-0.24 one: photo `head -40 runs/subs/base/prompts/system.md`.
+**Decide:** stack every arm that passes the rule into one config.
 
 ## B-4 · Repeat the best 2 configs (~2–3 h)
 
