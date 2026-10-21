@@ -45,7 +45,7 @@ Budget = scorer: 28 calls · 8 min · 240 s cmd · 300 s verify. 4×L4 burns ~2 
 | date | where | commit | arms | result (resolved / 33) | notes |
 |---|---|---|---|---|---|
 | 2026-10-21 | box | `8c8fe22` | base (public "Baseline \| LB 0.24" notebook) · tools6 · tools6+submit (BOX_PLAN.md B-2) | **base 11 · tools6 10 · tools6+submit 11** | 🧪✓ first clean baseline · 28 calls · TIME_MIN=4. Pairs vs base: tools6 +2/−3, tools6+submit +2/−2 → neither passes the decision rule, so B-3 builds on `base`. Overflow lines in the vLLM log 41 → 12 / 12, errors 12 → 10 / 8: dropping the 3 graph schemas removes most overflows but, as with ab2's output caps, those runs don't become wins. requests 1/4 in every arm. Prompt growth: tool output ~49% · generated tokens (thinking kept) ~45% |
-| ⏳ next | box | — | base · base+editrecover · base+issuefirst · base+tmpfix+test1 (BOX_PLAN.md B-3) | — | arms not written yet |
+| ⏳ next | box | — | base · base+editrecover · base+issuefirst · base+tmpfix+test1 (BOX_PLAN.md B-3) | — | arms written (scripts/arms/), waiting for the box run |
 | 2026-10-16 | Colab | `eb705a1` | nothink (stopped at 13/33) | 2/13 | 6/13 ContextWindowExceeded; median 424 s/task |
 | 2026-10-14 | box | `ec41085` | out8k · nothink · think1k | out8k 8 · **nothink 12** · think1k 9 | Finding #5 (uncapped: does not hold on L4, see ab1) |
 | 2026-10-12 | box | `7c7f580` | sample (out 16,384) · out8k | sample 5 · out8k 8 | Finding #1: 16K output reservation → 400s |

@@ -51,6 +51,8 @@ table (`tail -60 runs/eval_dev_w4.log`).
 
 Each comes from a measured failure in the Kaggle traces:
 
+Each arm = the LB-0.24 base + one prompt line (`scripts/arms/<arm>.md`, applied by `scripts/arms/apply.py`); `base` runs again in the same pass.
+
 | arm | change | evidence |
 |---|---|---|
 | `editrecover` | prompt rule: if `edit_file` reports a missing parameter, switch at once to `run_command` with a quoted-heredoc Python replace (assert the old text occurs once) | 377/377 failed edits lacked `old_string`. One overflow run retried 7× and died |
@@ -59,10 +61,11 @@ Each comes from a measured failure in the Kaggle traces:
 | `test1` | one targeted pytest before `submit_patch` becomes required (a failing run → fix once) | only 6/33 runs ran any test |
 
 ```bash
-SUBMISSION=runs/base_lb024 ARMS="<B2 base> <B2 base>+editrecover <B2 base>+issuefirst <B2 base>+tmpfix+test1" \
+TAG=w5 SUBMISSION=runs/base_lb024 ARMS="base editrecover issuefirst tmpfix+test1" \
   nohup bash scripts/eval_dev.sh > runs/eval_dev_w5.log 2>&1 &
 ```
-📷 the compare table. **Decide:** stack every arm that passes the rule into one config.
+📷 the `== arm: … prompt N chars` lines (each arm's rule must say "inserted"/"replaced", not "appended") and the compare table
+(it also shows B-2's `dev33_base` as a reference). **Decide:** stack every arm that passes the rule into one config.
 
 ## B-4 · Repeat the best 2 configs (~2–3 h)
 

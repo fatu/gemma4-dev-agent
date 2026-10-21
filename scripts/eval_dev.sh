@@ -50,6 +50,18 @@
 #            already forbids them; their schemas are sent on every call)
 #   submit — prompt rule from scripts/arms/submit.md: submit as soon as the fix is checked (ab1: 8/24 failed runs had
 #            edits but a 0-byte patch). It replaces the base's "edits count without submit_patch" line if present.
+# Rule arms (B-3, BOX_PLAN.md): each inserts or replaces one line of prompts/system.md via scripts/arms/apply.py
+# (scripts/arms/<arm>.md names the anchor line; prints "appended (anchor not found)" on a different base prompt).
+# Evidence from the ab1/ab2 traces on 4×L4 (aggregates in RESULTS.md):
+#   editrecover — a malformed edit_file call (missing old_string: 377 of 377 failed edits) → switch to a heredoc
+#            Python replace at once instead of retrying (one run retried 7x and overflowed)
+#   issuefirst — the issue names the place or shows the fix → open it and edit first (wins: first edit at call 6
+#            after 2 reads; losses: call 15 after 6)
+#   tmpfix — the base's "scratch files go in /tmp" contradicts write_file, which rejects /tmp paths
+#   test1  — one targeted test before submit_patch is required (only 6 of 33 runs ran a test)
+# B-3 re-runs base in the same pass (runs/dev33_base exists, so TAG keeps the dirs apart):
+#   TAG=w5 SUBMISSION=runs/base_lb024 ARMS="base editrecover issuefirst tmpfix+test1" \
+#     nohup bash scripts/eval_dev.sh > runs/eval_dev_w5.log 2>&1 &
 set -euo pipefail
 cd "$(dirname "$0")/.."
 export OPENAI_API_KEY="${OPENAI_API_KEY:-EMPTY}"
@@ -79,7 +91,7 @@ mapfile -t IDS < splits/dev33.txt
 echo "dev split: ${#IDS[@]} tasks · arms: $ARMS · budget: ${BUDGET_FLAGS[*]:-none}"
 for arm in $ARMS; do                                  # check every arm up front, not 2 h into the first one
   for part in ${arm//+/ }; do
-    case "$part" in out8k|nothink|think1k|readdisc|noanalyzer|out6k|out4k|tools6|submit) ;;
+    case "$part" in out8k|nothink|think1k|readdisc|noanalyzer|out6k|out4k|tools6|submit|editrecover|issuefirst|tmpfix|test1) ;;
       sample|base) [ "$arm" = "$part" ] || { echo "$part can't stack: $arm"; exit 1; } ;;
       *) echo "unknown arm part $part in $arm"; exit 1 ;; esac
   done
@@ -121,6 +133,9 @@ assert "{" not in rule and "}" not in rule        # ADK templates {name} from se
 print("submit:", "replaced the base's line" if n else "appended")
 PY
   fi
+  for rule in editrecover issuefirst tmpfix test1; do   # one-line prompt rules (scripts/arms/<rule>.md)
+    has "$rule" && python3 scripts/arms/apply.py "$rule" "$SUB/prompts/system.md"
+  done
   echo; echo "== $arm: $(grep -hE 'max_output_tokens|thinking_budget|include_thoughts' "$SUB/configs/sampling.yaml" | tr -s ' \n' ' ')· tools $(grep -c '^  - ' "$SUB/agent.yaml") · prompt $(wc -c < "$SUB/prompts/system.md") chars → $RUN   ($(date +%H:%M))"
   before=$(overflows)
   swegemma eval \
@@ -137,8 +152,8 @@ PY
 done
 
 DIRS=$(for a in $ARMS; do echo "runs/dev33_$a${TAG:+_$TAG}"; done)
-REF=""                                                # W3 arms: show the out8k / first-nothink references too
-for r in out8k nothink; do
+REF=""                                                # earlier runs shown as references: B-2's clean base by default
+for r in ${REFS-base}; do                             # (REFS="out8k nothink" = the W3 references, pre test-deps fix)
   [[ " $ARMS " != *" $r "* || -n "${TAG:-}" ]] && [ -d "runs/dev33_$r" ] && REF="$REF runs/dev33_$r"
 done
 echo; python3 scripts/compare_runs.py $REF $DIRS
