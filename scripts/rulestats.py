@@ -148,7 +148,10 @@ def summarise(run):
         lists["calls_list"].append(f["calls"]); lists["duration"].append(x["duration"])
         key = "res" if x["resolved"] else "fail"
         lists[f"first_edit_{key}"].append(x["first_edit"]); S[f"tested_{key}"] += f["tested"]
-    S = dict(S); S.update(lists)                 # lists must not go through Counter.update
+    for k in ("first_edit_res", "first_edit_fail"):   # present even when no run resolved / failed
+        lists.setdefault(k, [])
+    S = collections.defaultdict(int, S)           # a category an arm never hit reads as 0, not KeyError
+    S.update(lists)                               # (plain update: Counter.update would try to add the lists)
     return S
 
 
