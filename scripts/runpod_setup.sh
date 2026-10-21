@@ -48,16 +48,19 @@ TMP="${TMPDIR:-/tmp}"; tmp_free=$(free_gb "$TMP")
 ok "$TMP: $tmp_free GB free (sandbox temp dirs)"
 
 echo "== 2/7 env + tokens"
-env_src=template
+env_src=shell      # shell = already exported · container = template's env, which SSH sessions don't inherit · default
 for kv in "HF_HOME=$VOL/hf" "UV_CACHE_DIR=$VOL/uv-cache" "UV_PYTHON_INSTALL_DIR=$VOL/uv-python"; do
   k=${kv%%=*}; v=${kv#*=}
   if [ -z "${!k:-}" ]; then
-    env_src=bashrc; export "$k=$v"
+    c=$(tr '\0' '\n' < /proc/1/environ 2>/dev/null | sed -n "s|^$k=||p" | head -1 || true)
+    if [ -n "$c" ]; then v=$c; [ "$env_src" = default ] || env_src=container
+    else env_src=default; fi
+    export "$k=$v"
     grep -qxF "export $k=$v" ~/.bashrc 2>/dev/null || echo "export $k=$v" >> ~/.bashrc
-    warn "$k unset → $v (added to ~/.bashrc for this pod; set it in the template)"
-  else
-    case "${!k}/" in "$VOL"/*) ok "$k=${!k}" ;; *) warn "$k=${!k} is not on $VOL: it is lost with the pod" ;; esac
-  fi
+    if [ -n "$c" ]; then ok "$k=$v from the template (container env; added to ~/.bashrc for SSH shells)"
+    else warn "$k unset → $v (added to ~/.bashrc for this pod; set it in the template)"; fi
+  else ok "$k=${!k}"; fi
+  case "${!k}/" in "$VOL"/*) ;; *) warn "$k=${!k} is not on $VOL: it is lost with the pod" ;; esac
 done
 export UV_LINK_MODE="${UV_LINK_MODE:-copy}"            # the uv cache and the venv may sit on different filesystems
 export UV_PYTHON_PREFERENCE="${UV_PYTHON_PREFERENCE:-only-managed}"   # venv → a uv Python on /vol (has ensurepip, outlives the image)
@@ -127,7 +130,8 @@ rows = [
     ("volume", f"{e['VOL']} · {vol_free:.0f} GB free · repo {pathlib.Path.cwd()}"),
     ("scratch", f"{e['TMP']} · {e['TMP_FREE']} GB free (sandbox temp dirs, container disk)"),
     ("env", f"HF_HOME={os.environ.get('HF_HOME')} · UV_PYTHON_INSTALL_DIR={os.environ.get('UV_PYTHON_INSTALL_DIR')} · "
-            + ("from the template" if e["ENV_SRC"] == "template" else "added to ~/.bashrc: set them in the template")),
+            + {"shell": "from this shell", "container": "from the template (copied to ~/.bashrc for SSH shells)"}
+                .get(e["ENV_SRC"], "defaults added to ~/.bashrc: set them in the template")),
     ("tokens", f"HF_TOKEN {'set' if os.environ.get('HF_TOKEN') else 'unset'} · KAGGLE_API_TOKEN {'set' if os.environ.get('KAGGLE_API_TOKEN') else 'unset'}"),
     ("venv", f"Python {platform.python_version()} · vllm {ver('vllm')} · torch {torch.__version__} (CUDA {torch.version.cuda}) · "
              f"transformers {ver('transformers')} · swegemma {ver('swegemma')} · test deps {testdeps}"),
@@ -144,7 +148,7 @@ cat <<EOF
 
 == next
 EOF
-case "$env_src" in template) ;; *) echo "  source ~/.bashrc                 # HF_HOME etc. for this shell (vLLM reads the weights from there)" ;; esac
+case "$env_src" in shell) ;; *) echo "  source ~/.bashrc                 # HF_HOME etc. for this shell (vLLM reads the weights from there)" ;; esac
 cat <<EOF
   source .venv-eval/bin/activate && mkdir -p runs
   MODEL=$MODEL TP=1 GPU_UTIL=0.9 nohup bash scripts/serve_vllm.sh > runs/vllm.log 2>&1 &
