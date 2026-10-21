@@ -20,7 +20,7 @@ dropped too.
 
 ---
 
-## B-1 · One-time setup (~20 min) ▶ next
+## B-1 · One-time setup (~20 min) ✅ 2026-10-21
 
 ```bash
 cd gemma4-dev-agent && git pull && source .venv-eval/bin/activate
@@ -33,7 +33,7 @@ curl -s http://127.0.0.1:8000/v1/models | head -c 200
 📷 the last 2 lines of `install_testdeps.sh` (`testdeps ok …` and `… recursive-fixture errors: 0`), plus the `curl` output.
 If it breaks: Kaggle unreachable → photo the error (another way to get the prompt). vLLM down → `tail -30 runs/vllm.log`.
 
-## B-2 · Clean baseline + ab3 (~3–4 h)
+## B-2 · Clean baseline + ab3 (~3–4 h) ✅ 2026-10-21: base 11 · tools6 10 · tools6+submit 11 → B-3 base = `base`
 
 ```bash
 SUBMISSION=runs/base_lb024 ARMS="base tools6 tools6+submit" nohup bash scripts/eval_dev.sh > runs/eval_dev_w4.log 2>&1 &
@@ -47,7 +47,7 @@ SUBMISSION=runs/base_lb024 ARMS="base tools6 tools6+submit" nohup bash scripts/e
 table (`tail -60 runs/eval_dev_w4.log`).
 **Decide:** the B-3 base = `tools6` (or `tools6+submit`) if it passes the decision rule, else `base`.
 
-## B-3 · Arms that target new solves (~4–5 h; the laptop writes them first, you say "go")
+## B-3 · Arms that target new solves ▶ next — (~4–5 h; the laptop writes them first, you say "go")
 
 Each comes from a measured failure in the Kaggle traces:
 
