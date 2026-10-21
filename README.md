@@ -34,6 +34,21 @@ python scripts/smoke.py
 One card, so `TP=1`; with 96 GB the 32K context fits even with LoRA enabled. Only `runs/` is on Drive; harness and
 weights are re-downloaded per session. Not a stand-in for the scorer's 4× L4 timing.
 
+## Setup on RunPod (small-model bonus: E4B / E2B on a 32 GB card)
+
+```bash
+# private template: runpod/pytorch (CUDA ≥ 12.8) · container disk 50 GB · network volume at /vol · port 22 · env
+#   HF_HOME=/vol/hf UV_CACHE_DIR=/vol/uv-cache UV_PYTHON_INSTALL_DIR=/vol/uv-python + HF_TOKEN / KAGGLE_API_TOKEN secrets
+cd /vol && git clone https://github.com/fatu/gemma4-dev-agent.git && cd gemma4-dev-agent   # later pods: git pull
+bash scripts/runpod_setup.sh           # 📷 GPU arch vs torch, volume, env, harness, .venv-eval, test deps, weights
+source .venv-eval/bin/activate && mkdir -p runs
+MODEL=google/gemma-4-E4B-it-qat-w4a16-ct TP=1 GPU_UTIL=0.9 nohup bash scripts/serve_vllm.sh > runs/vllm.log 2>&1 &
+head -5 runs/vllm.log && python scripts/smoke.py
+```
+Everything big lives on the network volume, so a new pod only re-runs the setup (~1-2 min) and serves. The volume is
+mounted at `/vol`, not RunPod's default `/workspace`, which the harness rewrites in the agent's commands. Pods can't
+run Docker, so evals use `--sandbox subprocess`.
+
 What `.venv-eval` must have (all in `requirements-eval.txt`; check any time with `bash scripts/env_report.sh`):
 - **pytest + pytest-timeout** — the subprocess sandbox verifies each patch with this venv's python; without them every
   task fails verification (the sample went 0/5 → 4/5 once they were installed).
