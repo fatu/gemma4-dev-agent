@@ -74,7 +74,7 @@ tail -60 runs/eval_dev_w5.log
 If a rule says "appended", the base prompt differs from the LB-0.24 one: photo `head -40 runs/subs/base/prompts/system.md`.
 **Decide:** stack every arm that passes the rule into one config.
 
-## B-3b · Rule stats + noise (~2.5 h) ▶ next
+## B-3b · Rule stats + noise (~2.5 h) ✅ 2026-10-21: base 11 · 12 · 11 · 9; 7 always / 15 ever / 8 flip; rules followed, no effect
 
 Two questions before any new arm: *did the agent follow the B-3 rules* (ignored vs followed-and-useless), and *how
 noisy is one pass* (the two base passes differed on 5 tasks).
@@ -104,7 +104,7 @@ To see these commands on the box: `sed -n '/## B-3b/,/## B-4/p' BOX_PLAN.md`.
 that moved with no score gain is a dead end. With 4 base passes: the per-task flip count sets how many passes an arm
 needs before the decision rule can be applied (if base-vs-base swings 5, one pass per arm decides nothing).
 
-## B-4 · Repeat the best 2 configs (~2–3 h) ⏸ after B-3b
+## B-4 · Repeat the best 2 configs (~2–3 h) ✖ dropped: nothing to repeat. New protocol: an arm = 3 passes pooled vs the 4 base passes
 
 ```bash
 TAG=r2 SUBMISSION=runs/base_lb024 ARMS="<B2 base> <best stack>" nohup bash scripts/eval_dev.sh > runs/eval_dev_r2.log 2>&1 &
