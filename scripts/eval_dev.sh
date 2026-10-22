@@ -82,6 +82,21 @@ if [ "${BUDGET:-scorer}" = none ]; then BUDGET_FLAGS=(); else
   BUDGET_FLAGS=(--max-tool-calls "${MAX_CALLS:-28}" --max-time-minutes "${TIME_MIN:-4}"
                 --timeout-seconds "${CMD_TIMEOUT:-240}" --verification-timeout-seconds "${VERIFY_TIMEOUT:-300}"); fi
 LOG="${VLLM_LOG:-runs/vllm.log}"
+# MODELS_YAML=<file>: no local server. The harness's --models-yaml re-registers the submission's alias with a litellm
+# `path` (e.g. anthropic/claude-opus-5-5) and `api_base`; the key comes from LITELLM_API_KEY (BOX_PLAN.md B-3f/B-3g
+# ceiling runs). Nothing in swegemma caps the context: the 32K limit is the vLLM server's max_model_len, so such a run
+# has the remote model's own window — printed here so the log says what was measured.
+if [ -n "${MODELS_YAML:-}" ]; then
+  [ -f "$MODELS_YAML" ] || { echo "MODELS_YAML=$MODELS_YAML not found"; exit 1; }
+  [ -n "${LITELLM_API_KEY:-}" ] || { echo "MODELS_YAML set but LITELLM_API_KEY is empty"; exit 1; }
+  echo "models: --models-yaml $MODELS_YAML → $(grep -E '^\s*path:' "$MODELS_YAML" | sed 's/.*path: *//' | tr '\n' ' ')(remote; the submission alias is overridden)"
+  echo "context cap: none in the harness (the 32K cap is the vLLM server's) — this run has the remote model's own window · max_output_tokens from the submission"
+  MODEL_FLAGS=(--models-yaml "$MODELS_YAML")
+  mkdir -p runs/ceil/pypath && ln -sf "$PWD/scripts/ceil_sitecustomize.py" runs/ceil/pypath/sitecustomize.py
+  export PYTHONPATH="$PWD/runs/ceil/pypath${PYTHONPATH:+:$PYTHONPATH}" CEIL_CALL_LOG="${CEIL_CALL_LOG:-$PWD/runs/ceil/calls${TAG:+_$TAG}.jsonl}"
+  echo "request adapter: scripts/ceil_sitecustomize.py (extra_body dropped; anthropic thinking $([ "${CEIL_NOTHINK:-0}" = 1 ] && echo off || echo adaptive), temperature left to the provider) · call log $CEIL_CALL_LOG"
+else
+  MODEL_FLAGS=()
 curl -s --max-time 2 http://127.0.0.1:8000/v1/models >/dev/null || { echo "no vLLM on :8000 — start scripts/serve_vllm.sh first"; exit 1; }
 # the server must serve the alias AND every adapter of the submission, else each task dies in ~2 s with NotFoundError
 # and the run looks like a 0/33 result instead of a failure (seen in W1)
@@ -98,11 +113,12 @@ print("served:", ", ".join(ids))
 if missing:
     sys.exit(f"the server lacks {missing} — restart it with SUBMISSION=$BASE scripts/serve_vllm.sh")
 PY
+fi
 python3 -c 'import pytest_httpbin, inline_snapshot' 2>/dev/null || {   # without them requests/fastapi tests can't run
   echo "test deps missing (pytest-httpbin / inline-snapshot): run scripts/install_testdeps.sh first, or set NO_TESTDEPS=1"
   [ -n "${NO_TESTDEPS:-}" ] || exit 1; }
 [ -f "$LOG" ] || echo "warning: no $LOG — ctx_overflow will be '?' (set VLLM_LOG=… to the server's log)"
-mapfile -t IDS < splits/dev33.txt
+IDS=($(cat splits/dev33.txt))                         # no mapfile: macOS bash 3.2
 echo "dev split: ${#IDS[@]} tasks · arms: $ARMS · budget: ${BUDGET_FLAGS[*]:-none} · concurrency ${CONC:-1}"
 for arm in $ARMS; do                                  # check every arm up front, not 2 h into the first one
   for part in ${arm//+/ }; do
@@ -161,7 +177,7 @@ PY
     --sandbox "${SANDBOX:-subprocess}" \
     --task-ids "${IDS[@]}" \
     --concurrency "${CONC:-1}" \
-    --display quiet ${BUDGET_FLAGS[@]+"${BUDGET_FLAGS[@]}"} || echo "swegemma eval exited $? for $arm (summary below may be partial)"
+    --display quiet ${BUDGET_FLAGS[@]+"${BUDGET_FLAGS[@]}"} ${MODEL_FLAGS[@]+"${MODEL_FLAGS[@]}"} || echo "swegemma eval exited $? for $arm (summary below may be partial)"
   after=$(overflows); mkdir -p "$RUN"                   # the eval may die before creating $RUN
   if [ "$before" = "?" ] || [ "$after" = "?" ]; then echo "?"; else echo $(( after - before )); fi > "$RUN/ctx_overflow.txt"
 done

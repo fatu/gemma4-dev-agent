@@ -18,7 +18,8 @@ else [ -x runs/dlvenv/bin/pip ] || "$BASE" -m venv runs/dlvenv; PIP=(runs/dlvenv
 "${PIP[@]}" download -q --dest "$DL" --only-binary=:all: \
   "pytest-httpbin==2.1.0" "httpbin~=0.10.0" inline-snapshot dirty-equals
 PICK=$("$PY" scripts/fill_testdeps.py "$WHEELS" "$DL")
-mapfile -t FILES < <(echo "$PICK" | "$PY" -c 'import json,sys; [print(p) for p in json.load(sys.stdin).values()]')
+FILES=(); while IFS= read -r f; do [ -n "$f" ] && FILES+=("$f"); done \
+  < <(echo "$PICK" | "$PY" -c 'import json,sys; [print(p) for p in json.load(sys.stdin).values()]')   # no mapfile: macOS bash 3.2
 echo "adding ${#FILES[@]}: $(echo "$PICK" | "$PY" -c 'import json,sys; print(" ".join(json.load(sys.stdin)))')"
 if [ ${#FILES[@]} -gt 0 ]; then
   if command -v uv >/dev/null; then uv pip install --python "$PY" --no-deps "${FILES[@]}"

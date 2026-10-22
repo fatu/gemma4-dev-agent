@@ -237,6 +237,30 @@ Rules for the box session:
 - Traces contain task text: they stay on the box; and every task's text goes to the Anthropic API during the run — the
   user has accepted that for a private measurement; nothing of it is published.
 
+**Simpler route, verified on the laptop 2026-10-21 (no proxy):** the harness's `--models-yaml` entries take a litellm
+`path` and `api_base`, and the registry silently overrides the submission's alias, so `scripts/eval_dev.sh` now has a
+`MODELS_YAML` switch: it skips the local-server checks, passes `--models-yaml`, loads `scripts/ceil_sitecustomize.py`
+(drops the Gemma-only `extra_body`, sets Anthropic `thinking: adaptive`, adds prompt-cache markers, logs every call's
+tokens to `runs/ceil/calls_<TAG>.jsonl`) and prints the effective values. The key comes from `LITELLM_API_KEY` (shell
+env only). `runs/ceil/models.yaml` (gitignored) is three lines:
+```yaml
+models:
+  gemma-4-31b-it-qat-w4a16-ct:          # the alias in the submission's agent.yaml
+    path: anthropic/claude-opus-5-5
+    api_base: https://api.anthropic.com
+```
+```bash
+export LITELLM_API_KEY="$ANTHROPIC_API_KEY"     # never echo it, never put it in a file under git
+source .venv-eval/bin/activate
+MODELS_YAML=runs/ceil/models.yaml CONC=1 MAX_CALLS=28 TIME_MIN=8 CMD_TIMEOUT=240 VERIFY_TIMEOUT=300 TAG=ceil ARMS=base \
+  REFS="base_k1 base_k2 base_k3" SUBMISSION=runs/base_lb024 VLLM_LOG=runs/ceil/none.log \
+  nohup bash scripts/eval_dev.sh > runs/eval_dev_ceil.log 2>&1 &
+```
+**Context cap, settled:** swegemma itself enforces no context limit — the 32K cap is the vLLM server's `max_model_len`
+(the ContextWindowExceeded errors come from the server). So a remote-model run has the model's own window; B-3f reads as
+the *calls + time* ceiling with context as a known difference (an approximate 32K guard in the adapter is possible but
+not built). Two probe tasks on the laptop: resolved in 25 s / 4–5 calls each, prompt cache read ≈ 80 % of input.
+
 **Pre-flight (📷 one photo, ~6 lines):**
 ```bash
 git check-ignore -v runs/ceil/proxy.yaml && ! grep -qE "sk-ant|ANTHROPIC_API_KEY=" runs/ceil/proxy.yaml && echo "config ignored, no literal key"
@@ -262,7 +286,7 @@ designing for them. (c) Opus's calls / first-edit / tested rows vs Gemma's tell 
 calls — the shape of a trajectory worth imitating in the prompt. (d) If `ceil` is below the union of base passes,
 the proxy or the prompt mismatch is the problem, not the ceiling; check the error column before reading anything else.
 
-## B-3g · Uncapped ceiling: the same Opus run with the budget lifted — how each task is actually solved (after B-3f, no GPU)
+## B-3g · Uncapped ceiling: the same Opus run with the budget lifted — how each task is actually solved (after B-3f, no GPU) ▶ running on the laptop since 2026-10-21 23:01 (MODELS_YAML route, CONC=3, 80 calls · 30 min · verify 900 s; traces stay local)
 
 B-3f says *who* is reachable under the scorer's budget. This pass says *how much* budget each task really needs and what a
 solution looks like, including for the tasks B-3f still fails. Same proxy, same prompt, same tools; only the caps move:
