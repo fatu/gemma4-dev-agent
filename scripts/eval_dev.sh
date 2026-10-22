@@ -69,6 +69,8 @@
 #            steps, the repro check built in, edit_file with 2-5 whole lines (E4B wave 1: 32 of 70 edits mismatched).
 #   edit1  — on top of lean: old_string = ONE whole line copied from the latest read_file output, new_string = that
 #            line's full replacement (E4B waves 1-3: ~75% of the mismatched old_strings had lines never shown by a read).
+# BUILD_ONLY=1: build runs/subs/<arm>[_TAG] for each arm and stop (no server, no test deps, no eval) — the source dir
+# for scripts/make_submission.py, so the submission is built by the same code as the measured arm (works on macOS too).
 # MODEL_ALIAS=gemma-4-e4b-it-qat-w4a16-ct: every agent YAML of each arm copy gets this `model:` (small-model bonus on
 # the same files; the server must serve the alias: MODEL=google/gemma-4-E4B-it-qat-w4a16-ct scripts/serve_vllm.sh).
 #   MODEL_ALIAS=gemma-4-e4b-it-qat-w4a16-ct TIME_MIN=8 SUBMISSION=runs/base_lb024 ARMS=base TAG=e4b bash scripts/eval_dev.sh
@@ -87,6 +89,7 @@
 # scripts/lane.sh — it calls this script with CONC=1 inside a network namespace (BOX_PLAN.md B-3d).
 set -euo pipefail
 cd "$(dirname "$0")/.."
+if sed --version >/dev/null 2>&1; then sedi() { sed -i "$@"; }; else sedi() { sed -i '' "$@"; }; fi   # GNU (pod, box) · BSD (macOS)
 export OPENAI_API_KEY="${OPENAI_API_KEY:-EMPTY}"
 BASE="${SUBMISSION:-harness/sample_submission}"
 ARMS="${ARMS:-sample out8k}"
@@ -107,6 +110,8 @@ if [ -n "${MODELS_YAML:-}" ]; then
   mkdir -p runs/ceil/pypath && ln -sf "$PWD/scripts/ceil_sitecustomize.py" runs/ceil/pypath/sitecustomize.py
   export PYTHONPATH="$PWD/runs/ceil/pypath${PYTHONPATH:+:$PYTHONPATH}" CEIL_CALL_LOG="${CEIL_CALL_LOG:-$PWD/runs/ceil/calls${TAG:+_$TAG}.jsonl}"
   echo "request adapter: scripts/ceil_sitecustomize.py (extra_body dropped; anthropic thinking $([ "${CEIL_NOTHINK:-0}" = 1 ] && echo off || echo adaptive), temperature left to the provider) · call log $CEIL_CALL_LOG"
+elif [ "${BUILD_ONLY:-0}" = 1 ]; then
+  MODEL_FLAGS=(); echo "BUILD_ONLY=1: arm dirs only (runs/subs/<arm>${TAG:+_$TAG}) — no server check, no eval"
 else
   MODEL_FLAGS=()
 curl -s --max-time 2 http://127.0.0.1:8000/v1/models >/dev/null || { echo "no vLLM on :8000 — start scripts/serve_vllm.sh first"; exit 1; }
@@ -130,7 +135,7 @@ if missing:
     sys.exit(f"the server lacks {missing} — restart it with SUBMISSION=$BASE scripts/serve_vllm.sh")
 PY
 fi
-python3 -c 'import pytest_httpbin, inline_snapshot' 2>/dev/null || {   # without them requests/fastapi tests can't run
+[ "${BUILD_ONLY:-0}" = 1 ] || python3 -c 'import pytest_httpbin, inline_snapshot' 2>/dev/null || {   # without them requests/fastapi tests can't run
   echo "test deps missing (pytest-httpbin / inline-snapshot): run scripts/install_testdeps.sh first, or set NO_TESTDEPS=1"
   [ -n "${NO_TESTDEPS:-}" ] || exit 1; }
 [ -f "$LOG" ] || echo "warning: no $LOG — ctx_overflow will be '?' (set VLLM_LOG=… to the server's log)"
@@ -143,7 +148,7 @@ for arm in $ARMS; do                                  # check every arm up front
       *) echo "unknown arm part $part in $arm"; exit 1 ;; esac
   done
   RUN="runs/dev33_$arm${TAG:+_$TAG}"
-  [ -e "$RUN" ] && { echo "$RUN exists (task_results.jsonl is append-only) — repeat with TAG=r2"; exit 1; }
+  [ "${BUILD_ONLY:-0}" != 1 ] && [ -e "$RUN" ] && { echo "$RUN exists (task_results.jsonl is append-only) — repeat with TAG=r2"; exit 1; }
 done
 
 overflows() { [ -f "$LOG" ] || { echo "?"; return; }; n=$(grep -c "maximum context length" "$LOG") || true; echo "${n:-0}"; }
@@ -154,25 +159,27 @@ for arm in $ARMS; do
   SUB="runs/subs/$arm${TAG:+_$TAG}"; RUN="runs/dev33_$arm${TAG:+_$TAG}"   # per TAG: parallel lanes must not share it
   rm -rf "$SUB"; mkdir -p runs/subs; cp -r "$BASE" "$SUB"
   Y="$SUB/configs/sampling.yaml"
-  [ "$arm" != sample ] && [ "$arm" != base ] && sed -i 's/^max_output_tokens: .*/max_output_tokens: 8192/' "$Y"   # W3+ arms build on out8k
-  has out6k && sed -i 's/^max_output_tokens: .*/max_output_tokens: 6144/' "$Y"
-  if has out4k; then sed -i 's/^max_output_tokens: .*/max_output_tokens: 4096/' "$Y"
-    sed -i 's/^\( *\)thinking_budget: .*/\1thinking_budget: 2048/' "$Y"; fi
-  has nothink && sed -i 's/^\( *\)include_thoughts: .*/\1include_thoughts: false/' "$Y"
-  has think1k && sed -i 's/^\( *\)thinking_budget: .*/\1thinking_budget: 1024/' "$Y"
-  if has t10; then sed -i 's/^temperature: .*/temperature: 1.0/' "$Y"
-    if grep -q '^top_k:' "$Y"; then sed -i 's/^top_k: .*/top_k: 64/' "$Y"; else sed -i '/^top_p:/a top_k: 64' "$Y"; fi; fi
+  [ "$arm" != sample ] && [ "$arm" != base ] && sedi 's/^max_output_tokens: .*/max_output_tokens: 8192/' "$Y"   # W3+ arms build on out8k
+  has out6k && sedi 's/^max_output_tokens: .*/max_output_tokens: 6144/' "$Y"
+  if has out4k; then sedi 's/^max_output_tokens: .*/max_output_tokens: 4096/' "$Y"
+    sedi 's/^\( *\)thinking_budget: .*/\1thinking_budget: 2048/' "$Y"; fi
+  has nothink && sedi 's/^\( *\)include_thoughts: .*/\1include_thoughts: false/' "$Y"
+  has think1k && sedi 's/^\( *\)thinking_budget: .*/\1thinking_budget: 1024/' "$Y"
+  if has t10; then sedi 's/^temperature: .*/temperature: 1.0/' "$Y"
+    if grep -q '^top_k:' "$Y"; then sedi 's/^top_k: .*/top_k: 64/' "$Y"; else sedi '/^top_p:/a\
+top_k: 64' "$Y"; fi; fi
   if [ -n "${MODEL_ALIAS:-}" ]; then           # every agent YAML (sub-agents too), not adapter configs
-    find "$SUB" -name '*.y*ml' -not -path '*/adapters/*' -exec sed -i -E "s/^( *model: *)['\"]?[A-Za-z0-9_.-]+['\"]?/\1$MODEL_ALIAS/" {} +
+    find "$SUB" -name '*.y*ml' -not -path '*/adapters/*' | while IFS= read -r f; do
+      sedi -E "s/^( *model: *)['\"]?[A-Za-z0-9_.-]+['\"]?/\1$MODEL_ALIAS/" "$f"; done
   fi
   has lean && cp scripts/arms/lean_system.md "$SUB/prompts/system.md"   # first: rule arms then append to it
   has readdisc && cat scripts/arms/readdisc.md >> "$SUB/prompts/system.md"
   if has noanalyzer; then                      # drop the 3-line agent_tool entry (code_analyzer) from the tool list
-    sed -i '/^ *- agent_tool:/,/skip_summarization/d' "$SUB/agent.yaml"
+    sedi '/^ *- agent_tool:/,/skip_summarization/d' "$SUB/agent.yaml"
     grep -q "agent_tool" "$SUB/agent.yaml" && { echo "noanalyzer: agent_tool still in agent.yaml"; exit 1; }
   fi
   if has tools6; then
-    sed -i -E '/^ *- (get_code_neighbors|search_similar_code|get_code_subgraph) *$/d' "$SUB/agent.yaml"
+    sedi -E '/^ *- (get_code_neighbors|search_similar_code|get_code_subgraph) *$/d' "$SUB/agent.yaml"
     grep -qE 'get_code_neighbors|search_similar_code|get_code_subgraph' "$SUB/agent.yaml" && { echo "tools6: graph tool left in agent.yaml"; exit 1; }
   fi
   if has submit; then                          # replace the base's "edits count without submit" sentence, else append
@@ -190,6 +197,7 @@ PY
     has "$rule" && python3 scripts/arms/apply.py "$rule" "$SUB/prompts/system.md"
   done
   echo; echo "== $arm: model $(grep -rhoE '^ *model: *[A-Za-z0-9_.-]+' --include='*.y*ml' --exclude-dir=adapters "$SUB" | sed 's/.*model: *//' | sort -u | tr '\n' ' ')· $(grep -hE '^(temperature|top_p|top_k):|max_output_tokens|thinking_budget|include_thoughts' "$SUB/configs/sampling.yaml" | tr -s ' \n' ' ')· tools $(grep -c '^  - ' "$SUB/agent.yaml") · prompt $(wc -c < "$SUB/prompts/system.md") chars → $RUN   ($(date +%H:%M))"
+  [ "${BUILD_ONLY:-0}" = 1 ] && { echo "   built $SUB (BUILD_ONLY: no eval)"; continue; }
   before=$(overflows)
   swegemma eval \
     --tasks harness/tasks.jsonl \
@@ -204,6 +212,7 @@ PY
   if [ "$before" = "?" ] || [ "$after" = "?" ]; then echo "?"; else echo $(( after - before )); fi > "$RUN/ctx_overflow.txt"
 done
 
+[ "${BUILD_ONLY:-0}" = 1 ] && exit 0
 DIRS=$(for a in $ARMS; do echo "runs/dev33_$a${TAG:+_$TAG}"; done)
 REF=""                                                # earlier runs shown as references: B-2's clean base by default
 for r in ${REFS-base}; do                             # (REFS="out8k nothink" = the W3 references, pre test-deps fix)

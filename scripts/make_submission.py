@@ -3,6 +3,8 @@
 
     .venv-eval/bin/python scripts/make_submission.py runs/subs/nothink              # 📷 the check table
     UPLOAD=1 .venv-eval/bin/python scripts/make_submission.py runs/subs/nothink     # + new version of the private dataset
+    ALIAS=gemma-4-e4b-it-qat-w4a16-ct DATASET=gemma4-submission-e4b UPLOAD=1 … runs/subs/<arm>   # small-model bonus entry
+      (build the arm dir without an eval: BUILD_ONLY=1 MODEL_ALIAS=… ARMS=<arm> TAG=… bash scripts/eval_dev.sh)
 
 Source = the arm dir eval_dev.sh evaluated (runs/subs/<arm>), so what we submit is what we measured. Two edits on top,
 both submission-only (our checklist, course slides 26 + 32):
@@ -35,11 +37,11 @@ import zipfile
 import yaml
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
-ALIAS = "gemma-4-31b-it-qat-w4a16-ct"
+ALIAS = os.environ.get("ALIAS", "gemma-4-31b-it-qat-w4a16-ct")        # check 4; E4B/E2B for the small-model bonus
 TOOLS = {"run_command", "read_file", "edit_file", "write_file", "submit_patch", "get_status",
          "get_code_neighbors", "search_similar_code", "get_code_subgraph"}
 EXTS = {".yaml", ".yml", ".md", ".txt", ".py", ".json", ".safetensors"}
-DATASET = "gemma4-submission"
+DATASET = os.environ.get("DATASET", "gemma4-submission")                 # private dataset the notebook reads
 results = []                                            # (check, ok, detail)
 
 
@@ -172,6 +174,7 @@ def main():
     psha = hashlib.sha256((src / "prompts" / "system.md").read_bytes()).hexdigest()
     git = subprocess.run(["git", "-C", str(ROOT), "log", "--oneline", "-1"], capture_output=True, text=True).stdout.strip()
     card = (f"name {name} · repo {git} · zip sha256 {zsha[:16]} · system.md sha256 {psha[:16]}\n"
+            f"model {ALIAS} · dataset {DATASET}\n"
             f"sampling {json.dumps(s, separators=(',', ':'))}\n"
             f"eval_config {ev} · lora {'kept' if os.environ.get('NOLORA', '1') == '0' else 'removed'}")
     (out / "card.txt").write_text(card + "\n")
