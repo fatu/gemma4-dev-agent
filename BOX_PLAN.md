@@ -167,13 +167,18 @@ something else about the namespace before trusting the lanes:
 
 ```bash
 cd gemma4-dev-agent && git pull
-python3 scripts/taskdiff.py <the requests task that every host pass solved: compare table> runs/dev33_base_r2 runs/dev33_base_k1 runs/dev33_base_k2 runs/dev33_base_k3   # 📷 (~25 lines)
+T=<the requests task every host pass solved, from the compare table>   # private copy of this plan has the id
+python3 scripts/taskdiff.py $T runs/dev33_base_r2 runs/dev33_base_k1 runs/dev33_base_k2 runs/dev33_base_k3   # 📷 (~25 lines)
+grep -ohE "https?://[^/ \"']+" runs/dev33_base_k1/test_outputs/$T.log | sort | uniq -c | sort -rn | head   # 📷 which hosts failed
 ```
-**Read:** the lane passes show `ConnectionError` / `Name or service not known` / `httpbin.org` in the last observations
-or the result's error → network, lanes are Kaggle-faithful, the task is dead for everyone (note it, move on). Anything
-else (sandbox error, missing fixture, 'traversal') → the namespace breaks something, tell the laptop before B-3e's run.
+**Result 2026-10-21 (📷):** r2 ✓ with a 925 B patch and 0 network phrases; k1 ✗ / k2 T / k3 ✗ with near-identical patches
+(536 / 924 / 930 B) and **104 network-failure phrases in each lane's `test_outputs/<task>.log`**, 0 in the trace. So the
+agent's fix was the same and the *verification* died offline: the task's tests need the net, it is unwinnable in any
+offline scorer, and the lanes are the faithful instrument. One line left to read: the host grep above. External hosts
+(httpbin.org, example.com, …) → done, note it. `127.0.0.1` / `localhost` → the namespace broke the local httpbin
+fixture (lo was up, so unexpected) — tell the laptop; it would bias all 4 requests tasks, not just this one.
 
-Then the reference at the right cap, three lanes again (card 3 stays free):
+Then the reference at the right cap, three lanes again (card 3 stays free; can start right after the photo above):
 ```bash
 pkill -f "vllm serve"; sleep 5; nvidia-smi --query-gpu=index,memory.used --format=csv
 for g in 0 1 2; do GPU=$g TAG=k$((g+4)) TIME_MIN=5 REFS="base_k1 base_k2 base_k3" SUBMISSION=runs/base_lb024 ARMS=base \
