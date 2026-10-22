@@ -129,7 +129,8 @@ ROWS = [
     ("overflow · 8-min timeout · 28-call cap", lambda S: f"{S['overflow']} · {S['timeout']} · {S['callcap']}"),
     ("tool calls (p50) · seconds (p50)", lambda S: f"{p50(S['calls_list'])} · {p50(S['duration'])}"),
     ("graph-tool calls", lambda S: f"{S['graph_tools']}"),
-    ("decode tok/s (marginal fit) · s/call overhead", lambda S: (f"{S['tok_s']:.0f} · {S['call_overhead_s']:.1f}" if S['tok_s'] else "–") + f"  (n {S['rate_pts']})"),
+    ("decode tok/s (marginal fit) · s/call overhead", lambda S: f"{S['tok_s']:.0f} · {S['call_overhead_s']:.1f}" if S['tok_s'] else "–"),
+    ("step pairs in that fit", lambda S: f"{S['rate_pts']}"),
     ("resolved runs: first edit (p50) · tested", lambda S: f"{p50(S['first_edit_res'])} · {S['tested_res']}"),
     ("failed runs: first edit (p50) · tested", lambda S: f"{p50(S['first_edit_fail'])} · {S['tested_fail']}"),
 ]

@@ -134,6 +134,9 @@ GPU=0 bash scripts/lane.sh smoke             # 📷 the "--- warm:" line = one c
 ```
 **Set the cap:** `TIME_MIN = 8 × 29 / <warm tok/s>`, rounded **up** to a whole minute (29 = L4's smoke speed, probe v3;
 same instrument). E.g. 58 tok/s → 4; 45 → 5.2 → 6.
+Measured so far by the trace fit (L4 = 34): Oct-12 CONC=1 TP=4 run 28 tok/s, this week's CONC=3 run 46 per stream, so the
+old 62-tok/s assumption (idle smoke) was wrong and TIME_MIN=4 was ~30 % tighter than L4. After the first lane pass, check
+the fit's "decode tok/s" row for the lanes and re-derive: `TIME_MIN = 8 × 34 / <lane fit tok/s>`.
 ```bash
 for g in 0 1 2; do GPU=$g TAG=k$((g+1)) TIME_MIN=<N> REFS="base base_w5 base_r2 base_r3" SUBMISSION=runs/base_lb024 ARMS=base \
   nohup bash scripts/lane.sh run > runs/lane$g.log 2>&1 & done            # ~1.5–2.5 h, all three at once
