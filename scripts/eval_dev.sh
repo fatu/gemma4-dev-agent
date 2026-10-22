@@ -67,6 +67,8 @@
 #            existing tests that don't cover the issue; runs end at ~10 of 28 calls, so the extra checks fit).
 #   lean   — prompts/system.md replaced by scripts/arms/lean_system.md (~2.5K chars vs 7K): the same hard limits, five
 #            steps, the repro check built in, edit_file with 2-5 whole lines (E4B wave 1: 32 of 70 edits mismatched).
+#   edit1  — on top of lean: old_string = ONE whole line copied from the latest read_file output, new_string = that
+#            line's full replacement (E4B waves 1-3: ~75% of the mismatched old_strings had lines never shown by a read).
 # MODEL_ALIAS=gemma-4-e4b-it-qat-w4a16-ct: every agent YAML of each arm copy gets this `model:` (small-model bonus on
 # the same files; the server must serve the alias: MODEL=google/gemma-4-E4B-it-qat-w4a16-ct scripts/serve_vllm.sh).
 #   MODEL_ALIAS=gemma-4-e4b-it-qat-w4a16-ct TIME_MIN=8 SUBMISSION=runs/base_lb024 ARMS=base TAG=e4b bash scripts/eval_dev.sh
@@ -136,7 +138,7 @@ IDS=($(cat splits/dev33.txt))                         # no mapfile: macOS bash 3
 echo "dev split: ${#IDS[@]} tasks · arms: $ARMS · budget: ${BUDGET_FLAGS[*]:-none} · concurrency ${CONC:-1}"
 for arm in $ARMS; do                                  # check every arm up front, not 2 h into the first one
   for part in ${arm//+/ }; do
-    case "$part" in out8k|nothink|think1k|readdisc|noanalyzer|out6k|out4k|tools6|submit|editrecover|issuefirst|tmpfix|test1|t10|repro|lean) ;;
+    case "$part" in out8k|nothink|think1k|readdisc|noanalyzer|out6k|out4k|tools6|submit|editrecover|issuefirst|tmpfix|test1|t10|repro|lean|edit1) ;;
       sample|base) [ "$arm" = "$part" ] || { echo "$part can't stack: $arm"; exit 1; } ;;
       *) echo "unknown arm part $part in $arm"; exit 1 ;; esac
   done
@@ -184,7 +186,7 @@ assert "{" not in rule and "}" not in rule        # ADK templates {name} from se
 print("submit:", "replaced the base's line" if n else "appended")
 PY
   fi
-  for rule in editrecover issuefirst tmpfix test1 repro; do   # one-line prompt rules (scripts/arms/<rule>.md)
+  for rule in editrecover issuefirst tmpfix test1 repro edit1; do   # one-line prompt rules (scripts/arms/<rule>.md)
     has "$rule" && python3 scripts/arms/apply.py "$rule" "$SUB/prompts/system.md"
   done
   echo; echo "== $arm: model $(grep -rhoE '^ *model: *[A-Za-z0-9_.-]+' --include='*.y*ml' --exclude-dir=adapters "$SUB" | sed 's/.*model: *//' | sort -u | tr '\n' ' ')· $(grep -hE '^(temperature|top_p|top_k):|max_output_tokens|thinking_budget|include_thoughts' "$SUB/configs/sampling.yaml" | tr -s ' \n' ' ')· tools $(grep -c '^  - ' "$SUB/agent.yaml") · prompt $(wc -c < "$SUB/prompts/system.md") chars → $RUN   ($(date +%H:%M))"
