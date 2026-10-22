@@ -104,6 +104,20 @@ To see these commands on the box: `sed -n '/## B-3b/,/## B-4/p' BOX_PLAN.md`.
 that moved with no score gain is a dead end. With 4 base passes: the per-task flip count sets how many passes an arm
 needs before the decision rule can be applied (if base-vs-base swings 5, one pass per arm decides nothing).
 
+## B-3c · Why the flip tasks flip (no GPU, ~1 min) ▶ next
+
+The 8 flip tasks are solvable and die of budget. Before touching time or context, see *which* budget and how close
+the winning passes were to it:
+
+```bash
+cd gemma4-dev-agent && git pull
+python3 scripts/flips.py runs/dev33_base runs/dev33_base_w5 runs/dev33_base_r2 runs/dev33_base_r3
+```
+📷 the whole output (≈40 lines: one line per flip task × pass, then the summary). **Read:** losing passes mostly `T`
+with winning passes near 240 s → the box's 4-min cap is the flipper (a time lever, or trust L4 at 8 min); mostly `O`
+with winning peak prompts near the limit → a context lever (bounded reads, smaller output reservation on this base);
+mostly `✗` → the fix itself is unreliable (temperature / sampling), not the budget.
+
 ## B-4 · Repeat the best 2 configs (~2–3 h) ✖ dropped: nothing to repeat. New protocol: an arm = 3 passes pooled vs the 4 base passes
 
 ```bash
