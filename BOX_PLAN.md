@@ -104,7 +104,7 @@ To see these commands on the box: `sed -n '/## B-3b/,/## B-4/p' BOX_PLAN.md`.
 that moved with no score gain is a dead end. With 4 base passes: the per-task flip count sets how many passes an arm
 needs before the decision rule can be applied (if base-vs-base swings 5, one pass per arm decides nothing).
 
-## B-3c · Why the flip tasks flip (no GPU, ~1 min) ▶ next
+## B-3c · Why the flip tasks flip (no GPU, ~1 min) ✅ 2026-10-21: 10 of 17 flip losses are the 4-min cap; wins on the same tasks at 244–246 s → calibrate TIME_MIN first (B-3d, to be written)
 
 The 8 flip tasks are solvable and die of budget. Before touching time or context, see *which* budget and how close
 the winning passes were to it:
