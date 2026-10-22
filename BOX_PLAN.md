@@ -104,7 +104,7 @@ To see these commands on the box: `sed -n '/## B-3b/,/## B-4/p' BOX_PLAN.md`.
 that moved with no score gain is a dead end. With 4 base passes: the per-task flip count sets how many passes an arm
 needs before the decision rule can be applied (if base-vs-base swings 5, one pass per arm decides nothing).
 
-## B-3c · Why the flip tasks flip (no GPU, ~1 min) ✅ 2026-10-21: 10 of 17 flip losses are the 4-min cap; wins on the same tasks at 244–246 s → calibrate TIME_MIN first (B-3d, to be written)
+## B-3c · Why the flip tasks flip (no GPU, ~1 min) ✅ 2026-10-21: 10 of 17 flip losses are the 4-min cap; wins on the same tasks at 244–246 s → calibrate TIME_MIN first (B-3d)
 
 The 8 flip tasks are solvable and die of budget. Before touching time or context, see *which* budget and how close
 the winning passes were to it:
@@ -118,7 +118,7 @@ with winning passes near 240 s → the box's 4-min cap is the flipper (a time le
 with winning peak prompts near the limit → a context lever (bounded reads, smaller output reservation on this base);
 mostly `✗` → the fix itself is unreliable (temperature / sampling), not the budget.
 
-## B-3d · Kaggle-like lanes: 3 cards = 3 independent single-task passes ▶ next
+## B-3d · Kaggle-like lanes: 3 cards = 3 independent single-task passes ✅ 2026-10-21: k1 12 · k2 10 · k3 9 (7 base passes: 11 12 11 9 12 10 9); each lane 51 tok/s, 0.1 s/call; timeouts 6 → 3–5 but overflows 5 → 6–8 at the still-uncalibrated TIME_MIN=4; requests 1/4 → 0/4 in every lane (offline?) → B-3e
 
 The scorer runs one task at a time against one server (our L4 lab did too; 58 × 8 min fits the 12 h notebook cap only
 sequentially). B-3b/B-3c shared one server between 3 tasks (CONC=3), each stream slowed, and the 4-min cap killed
@@ -150,6 +150,43 @@ python3 scripts/rulestats.py runs/dev33_base_r2 runs/dev33_base_k1 runs/dev33_ba
 **Read:** k1–k3 timeouts should fall to L4's 1–2 per pass (r2 had 6). k1–k3 are the reference every later arm is measured
 against (an arm = the same 3 lanes, pooled: 99 pairs vs 99). If `check` fails (user namespaces disabled), the fallback
 is patching the harness's api_base: photo `grep -rn "127.0.0.1:8000" .venv-eval/lib/python3*/site-packages/ | head`.
+
+## B-3e · The reference at the calibrated cap, and the offline check ▶ next
+
+What the lanes told us (📷): every lane decodes **51 tok/s** with 0.1 s/call overhead (the shared server gave 46 and
+0.9), so the three cards are independent and the shape is right. But the budget line still read `--max-time-minutes 4`
+(the smoke figure, like every smoke figure, overstated the real rate), so the cap stays ~25 % tighter than L4: 240 s ×
+51 ≈ 12K generated tokens vs L4's 480 s × 34 ≈ 16K. Timeouts fell (6 → 3 · 5 · 3), overflows rose (5 → 7 · 6 · 8): the
+budget deaths just moved from one wall to the other, ~11 per pass either way. **Calibrated cap: `TIME_MIN = 8 × 34 / 51
+= 5.3 → 5`** (300 s × 51 ≈ 15K, 94 % of L4; 6 would be 113 %).
+
+Second thing: **requests went 1/4 → 0/4 in all three lanes** (one task that resolved in every one of the 5 host passes).
+The namespace has no network at all; the scorer's Kaggle kernel is offline too, so if that task's tests need the net
+it is unwinnable on Kaggle as well and the lanes are the *more* faithful setup — but confirm it is the network and not
+something else about the namespace before trusting the lanes:
+
+```bash
+cd gemma4-dev-agent && git pull
+python3 scripts/taskdiff.py <the requests task that every host pass solved: compare table> runs/dev33_base_r2 runs/dev33_base_k1 runs/dev33_base_k2 runs/dev33_base_k3   # 📷 (~25 lines)
+```
+**Read:** the lane passes show `ConnectionError` / `Name or service not known` / `httpbin.org` in the last observations
+or the result's error → network, lanes are Kaggle-faithful, the task is dead for everyone (note it, move on). Anything
+else (sandbox error, missing fixture, 'traversal') → the namespace breaks something, tell the laptop before B-3e's run.
+
+Then the reference at the right cap, three lanes again (card 3 stays free):
+```bash
+pkill -f "vllm serve"; sleep 5; nvidia-smi --query-gpu=index,memory.used --format=csv
+for g in 0 1 2; do GPU=$g TAG=k$((g+4)) TIME_MIN=5 REFS="base_k1 base_k2 base_k3" SUBMISSION=runs/base_lb024 ARMS=base \
+  nohup bash scripts/lane.sh run > runs/lane$g.log 2>&1 & done            # ~2–3 h (longer cap)
+```
+**After the run (📷):**
+```bash
+grep -h "concurrency\|vLLM up" runs/lane[012].log                                      # must say --max-time-minutes 5
+python3 scripts/compare_runs.py runs/dev33_base_k1 runs/dev33_base_k2 runs/dev33_base_k3 runs/dev33_base_k4 runs/dev33_base_k5 runs/dev33_base_k6
+python3 scripts/rulestats.py runs/dev33_base_k1 runs/dev33_base_k4 runs/dev33_base_k5 runs/dev33_base_k6 | grep -E "^ |resolved$|^resolved|timeout|decode tok/s|seconds"
+```
+**Read:** timeouts should be L4's 1–2 per pass, overflows ~9–11 (L4 pub had 11). k4–k6 are the reference every later
+arm is measured against: an arm = the same 3 lanes at TIME_MIN=5, pooled, 99 pairs vs 99 (McNemar).
 
 ## B-4 · Repeat the best 2 configs (~2–3 h) ✖ dropped: nothing to repeat. New protocol: an arm = 3 passes pooled vs the 4 base passes
 

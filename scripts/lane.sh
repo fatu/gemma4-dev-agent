@@ -8,6 +8,7 @@
 #   bash scripts/lane.sh check                       # once: can this box make namespaces? (unshare, lo, GPU, port)
 #   GPU=0 bash scripts/lane.sh smoke                 # decode speed of ONE card at TP=1 (scripts/smoke.py, warm tok/s)
 #   GPU=0 TAG=k1 TIME_MIN=5 bash scripts/lane.sh run # one pass of ARMS (default base) in a lane; eval_dev.sh flags pass through
+#   TIME_MIN = 8 × 34 / <lane decode tok/s from rulestats.py>; measured 2026-10-21: 51 tok/s per lane → 5 (B-3d/B-3e)
 #   for g in 0 1 2; do GPU=$g TAG=k$((g+1)) TIME_MIN=5 nohup bash scripts/lane.sh run > runs/lane$g.log 2>&1 & done
 #
 # Inside the namespace there is no network at all, so the model must already be in the HF cache (it is after any
@@ -31,7 +32,7 @@ if [ "$MODE" = check ]; then
 fi
 
 [ "$MODE" = smoke ] || [ "$MODE" = run ] || { echo "usage: lane.sh check|smoke|run"; exit 1; }
-[ "$MODE" = run ] && [ -z "${TIME_MIN:-}" ] && { echo "set TIME_MIN explicitly (8 × 29 / <lane smoke tok/s>, rounded up)"; exit 1; }
+[ "$MODE" = run ] && [ -z "${TIME_MIN:-}" ] && { echo "set TIME_MIN explicitly (8 × 34 / <lane fit tok/s>; 5 at the measured 51 tok/s per lane — smoke figures overstate)"; exit 1; }
 # whole lane body runs inside one namespace; env (GPU, TAG, TIME_MIN, ARMS, SUBMISSION, …) is inherited
 exec unshare -rn bash -c '
   set -euo pipefail
@@ -48,7 +49,7 @@ exec unshare -rn bash -c '
   done
   echo "lane gpu '"$GPU"': vLLM up after ~$((i*5)) s ($(date +%H:%M))"
   if [ "'"$MODE"'" = smoke ]; then
-    python3 scripts/smoke.py | grep -E "^--- "      # 📷 the warm line: TIME_MIN = 8 × 29 / <warm tok/s>, rounded up
+    python3 scripts/smoke.py | grep -E "^--- "      # 📷 the warm line (sanity only; set TIME_MIN from the trace fit, see header)
   else
     CONC=1 bash scripts/eval_dev.sh                 # TAG, TIME_MIN, ARMS, SUBMISSION, REFS come from the environment
   fi'

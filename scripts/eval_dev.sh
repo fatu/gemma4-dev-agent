@@ -32,7 +32,8 @@
 #   MAX_CALLS=28 TIME_MIN=4 CMD_TIMEOUT=240 VERIFY_TIMEOUT=300  (the best public eval_config + README's fixed 300 s)
 #   BUDGET=none reproduces the W2/W3 runs (no cap). Those results (Finding #5 included) were unbudgeted: on Kaggle's
 #   4×L4 at the scorer budget, nothink scored 4/33 vs 8/33 for the LB-0.24 config (it ran out of the 8 minutes).
-#   TIME_MIN defaults to 4, not the scorer's 8: this box decodes ~62 tok/s vs ~29 on 4×L4, so 8 min here buys ~2x
+#   TIME_MIN defaults to 4, not the scorer's 8. Measured by the trace fit (rulestats.py): one lane TP=1 = 51 tok/s, a shared
+#   TP=4 server at CONC=3 = 46 per stream, L4 = 34; the 62 figure was an idle smoke. 8 × 34 / 51 → TIME_MIN=5 for lanes.
 #   the steps; 8 x 29/62 ≈ 3.7, rounded up to 4 because the CLI flag's type is unchecked (a bit looser for
 #   generation). Unvalidated: test runs and tool calls take the same wall time on both machines but are squeezed
 #   into half the minutes here, so it is not an exact L4 match. TIME_MIN=8 = the literal scorer number (e.g. on Kaggle
