@@ -46,7 +46,10 @@ def main():
         for i in flips:
             print(f"  {i:16} " + " ".join(f"{mark(t, i):>3}" for _, t, _ in data.values()))
         always = [i for i in ids if all(t.get(i, {}).get("resolved") for _, t, _ in data.values())]
-        print(f"resolved in every run: {len(always)}")
+        never = [i for i in ids if not any(t.get(i, {}).get("resolved") for _, t, _ in data.values())]
+        print(f"resolved in every run: {len(always)}: {' '.join(always)}")      # ids so a ceiling run can be split against them
+        print(f"resolved in no run:    {len(never)}: {' '.join(never)}")
+        print(f"resolved in ≥1 run:    {len(ids) - len(never)}")
 
 
 if __name__ == "__main__":
