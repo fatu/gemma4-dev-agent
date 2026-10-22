@@ -61,6 +61,7 @@ Budget = scorer: 28 calls · 8 min · 240 s cmd · 300 s verify. 4×L4 burns ~2 
 
 | date | GPU | commit | what | result | notes |
 |---|---|---|---|---|---|
+| 2026-10-22 | 1× RTX PRO 4500 Blackwell 32 GB | `36a587d` | **E4B wave 1** on the LB-0.24 files (model alias switched to E4B): base ×2 + `t10` (temperature 1.0, top_k 64), dev33, scorer budget 28 calls · 8 min; 3 evals in parallel at concurrency 1 on one server | ⏳ | setup 555 s with the Python 3.13 venv on the container disk (import torch 1.75 s) · vLLM start 527 s · KV 154,496 tokens · the pod has internet, the scorer doesn't: network-dependent tests can pass here only |
 | 2026-10-21 | 1× RTX PRO 4500 Blackwell 32 GB | `e532cb2` | `runpod_setup.sh` (Py 3.12) + small-model smoke: `serve_vllm.sh` (TP 1, util 0.9, no LoRA) → `smoke.py` + one tool-calling request, E4B then E2B | ✅ **both serve** · E4B warm **152 tok/s**, E2B **254 tok/s** · tool calls parsed, thought block split | setup 30 min · server start 13 / 9 min, mostly Python imports from the network volume (import torch 23.8 s vs 1.6 s on local disk) · E4B 9.8 GiB weights, KV 188,720 tokens (28.8× at 32K) · E2B 7.3 GiB, KV 692,912 tokens (91.3×) |
 
 ## Quota (Kaggle GPU, weekly 30 h, refresh Sat 00:00 UTC)
