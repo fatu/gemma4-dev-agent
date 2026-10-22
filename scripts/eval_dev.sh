@@ -60,6 +60,11 @@
 #            after 2 reads; losses: call 15 after 6)
 #   tmpfix — the base's "scratch files go in /tmp" contradicts write_file, which rejects /tmp paths
 #   test1  — one targeted test before submit_patch is required (only 6 of 33 runs ran a test)
+#   t10    — temperature 1.0 + top_k 64 (Gemma's recommended sampling; forum try-list #1: 0.2 → 1.0 raised two
+#            independent runs, #747696 / #746250). ADK passes top_k through LiteLLM (google/adk/models/lite_llm.py).
+# MODEL_ALIAS=gemma-4-e4b-it-qat-w4a16-ct: every agent YAML of each arm copy gets this `model:` (small-model bonus on
+# the same files; the server must serve the alias: MODEL=google/gemma-4-E4B-it-qat-w4a16-ct scripts/serve_vllm.sh).
+#   MODEL_ALIAS=gemma-4-e4b-it-qat-w4a16-ct TIME_MIN=8 SUBMISSION=runs/base_lb024 ARMS=base TAG=e4b bash scripts/eval_dev.sh
 # B-3 re-runs base in the same pass (runs/dev33_base exists, so TAG keeps the dirs apart):
 #   TAG=w5 SUBMISSION=runs/base_lb024 ARMS="base editrecover issuefirst tmpfix+test1" \
 #     nohup bash scripts/eval_dev.sh > runs/eval_dev_w5.log 2>&1 &
@@ -106,7 +111,11 @@ ids = [m["id"] for m in json.load(urllib.request.urlopen("http://127.0.0.1:8000/
 # every agent YAML's `model:` (one base model per submission: 31B, or E4B/E2B for the small-model bonus)
 models = sorted({m for p in pathlib.Path(os.environ["SUB"]).rglob("*.y*ml") if "adapters" not in p.parts
                  for m in re.findall(r"^\s*model:\s*['\"]?([\w.-]+)", p.read_text(), re.M)}) or ["gemma-4-31b-it-qat-w4a16-ct"]
-print("submission models:", ", ".join(models))
+if os.environ.get("MODEL_ALIAS"):
+    print(f"submission models: {', '.join(models)} → MODEL_ALIAS {os.environ['MODEL_ALIAS']} in every arm copy")
+    models = [os.environ["MODEL_ALIAS"]]
+else:
+    print("submission models:", ", ".join(models))
 need = models + sorted(p.parent.name for p in pathlib.Path(os.environ["SUB"], "adapters").glob("*/adapter_config.json"))
 missing = [m for m in need if m not in ids]
 print("served:", ", ".join(ids))
@@ -122,7 +131,7 @@ IDS=($(cat splits/dev33.txt))                         # no mapfile: macOS bash 3
 echo "dev split: ${#IDS[@]} tasks · arms: $ARMS · budget: ${BUDGET_FLAGS[*]:-none} · concurrency ${CONC:-1}"
 for arm in $ARMS; do                                  # check every arm up front, not 2 h into the first one
   for part in ${arm//+/ }; do
-    case "$part" in out8k|nothink|think1k|readdisc|noanalyzer|out6k|out4k|tools6|submit|editrecover|issuefirst|tmpfix|test1) ;;
+    case "$part" in out8k|nothink|think1k|readdisc|noanalyzer|out6k|out4k|tools6|submit|editrecover|issuefirst|tmpfix|test1|t10) ;;
       sample|base) [ "$arm" = "$part" ] || { echo "$part can't stack: $arm"; exit 1; } ;;
       *) echo "unknown arm part $part in $arm"; exit 1 ;; esac
   done
@@ -144,6 +153,11 @@ for arm in $ARMS; do
     sed -i 's/^\( *\)thinking_budget: .*/\1thinking_budget: 2048/' "$Y"; fi
   has nothink && sed -i 's/^\( *\)include_thoughts: .*/\1include_thoughts: false/' "$Y"
   has think1k && sed -i 's/^\( *\)thinking_budget: .*/\1thinking_budget: 1024/' "$Y"
+  if has t10; then sed -i 's/^temperature: .*/temperature: 1.0/' "$Y"
+    if grep -q '^top_k:' "$Y"; then sed -i 's/^top_k: .*/top_k: 64/' "$Y"; else sed -i '/^top_p:/a top_k: 64' "$Y"; fi; fi
+  if [ -n "${MODEL_ALIAS:-}" ]; then           # every agent YAML (sub-agents too), not adapter configs
+    find "$SUB" -name '*.y*ml' -not -path '*/adapters/*' -exec sed -i -E "s/^( *model: *)['\"]?[A-Za-z0-9_.-]+['\"]?/\1$MODEL_ALIAS/" {} +
+  fi
   has readdisc && cat scripts/arms/readdisc.md >> "$SUB/prompts/system.md"
   if has noanalyzer; then                      # drop the 3-line agent_tool entry (code_analyzer) from the tool list
     sed -i '/^ *- agent_tool:/,/skip_summarization/d' "$SUB/agent.yaml"
@@ -167,7 +181,7 @@ PY
   for rule in editrecover issuefirst tmpfix test1; do   # one-line prompt rules (scripts/arms/<rule>.md)
     has "$rule" && python3 scripts/arms/apply.py "$rule" "$SUB/prompts/system.md"
   done
-  echo; echo "== $arm: $(grep -hE 'max_output_tokens|thinking_budget|include_thoughts' "$SUB/configs/sampling.yaml" | tr -s ' \n' ' ')· tools $(grep -c '^  - ' "$SUB/agent.yaml") · prompt $(wc -c < "$SUB/prompts/system.md") chars → $RUN   ($(date +%H:%M))"
+  echo; echo "== $arm: model $(grep -rhoE '^ *model: *[A-Za-z0-9_.-]+' --include='*.y*ml' --exclude-dir=adapters "$SUB" | sed 's/.*model: *//' | sort -u | tr '\n' ' ')· $(grep -hE '^(temperature|top_p|top_k):|max_output_tokens|thinking_budget|include_thoughts' "$SUB/configs/sampling.yaml" | tr -s ' \n' ' ')· tools $(grep -c '^  - ' "$SUB/agent.yaml") · prompt $(wc -c < "$SUB/prompts/system.md") chars → $RUN   ($(date +%H:%M))"
   before=$(overflows)
   swegemma eval \
     --tasks harness/tasks.jsonl \

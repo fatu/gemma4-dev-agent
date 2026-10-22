@@ -3,15 +3,19 @@
 # Template (RunPod → Templates → New, private): image runpod/pytorch with CUDA ≥ 12.8 (Blackwell cards) · container
 # disk 50 GB (the sandbox's per-task temp dirs live in /tmp) · network volume mounted at /vol, not the default
 # /workspace (the harness rewrites "/workspace" in the agent's commands) · port 22 · environment variables:
-#   HF_HOME=/vol/hf  UV_CACHE_DIR=/vol/uv-cache  UV_PYTHON_INSTALL_DIR=/vol/uv-python
+#   HF_HOME=/vol/hf  UV_CACHE_DIR=/vol/uv-cache  VLLM_CACHE_ROOT=/vol/vllm-cache
 #   HF_TOKEN={{ RUNPOD_SECRET_hf_token }}  KAGGLE_API_TOKEN={{ RUNPOD_SECRET_kaggle_api_token }}   (RunPod → Secrets)
 # Then in the pod's terminal:
 #   cd /vol && git clone https://github.com/fatu/gemma4-dev-agent.git && cd gemma4-dev-agent   # later pods: git pull
 #   bash scripts/runpod_setup.sh                    # 📷 the summary · first pod ~20-30 min, later pods ~1-2 min
 #   MODEL=google/gemma-4-31B-it-qat-w4a16-ct bash scripts/runpod_setup.sh   # another base model's weights
-# On /vol (kept when the pod is stopped or terminated): this repo, harness/ (~22 GB), .venv-eval and the uv Python it
-# links to, the HF weights cache, runs/. On the container disk (gone with the pod, so re-run this on every new pod):
-# uv, the kaggle CLI, and the env lines this script adds to ~/.bashrc when the template doesn't set them.
+# On /vol (kept when the pod is stopped or terminated): this repo, harness/ (~22 GB), the HF weights cache, the uv
+# cache, vLLM's compile cache, runs/. On the container disk (gone with the pod, so re-run this on every new pod):
+# .venv-eval (a link from the repo to $LOCAL/venv-eval, rebuilt from the uv cache) and the uv Python it uses, uv, the
+# kaggle CLI, and the env lines this script adds to ~/.bashrc. Why the venv is local: /vol is a network filesystem,
+# and Python imports from it were 15-30x slower (bare python 411 ms vs 13 ms, import torch 23.8 s vs 1.6 s, 2026-10-21);
+# that slowed the server start (13 min) and every sandbox command and verification inside the time budget.
+# Python 3.13 (PYTHON=…): the scorer's sandbox is python:3.13-slim, and its ssl defaults differ from 3.12's.
 # Pods are containers: no Docker inside, so runs use --sandbox subprocess (scripts/build_sandbox_image.sh is box-only).
 # Tokens: HF_TOKEN (Gemma licence accepted on huggingface.co); KAGGLE_API_TOKEN only while harness/ is incomplete.
 # Every step is skipped when done; the summary prints what the pod ended up with (GPU arch vs torch, versions, paths).
@@ -20,6 +24,8 @@ cd "$(dirname "$0")/.."
 T0=$(date +%s)
 VOL="${VOL:-/vol}"
 MODEL="${MODEL:-google/gemma-4-E4B-it-qat-w4a16-ct}"   # RunPod = small-model bonus on 32 GB cards; 31B: MODEL=…
+LOCAL="${LOCAL:-/root}"                                # container disk: .venv-eval + its uv Python
+export PYTHON="${PYTHON:-3.13}"                        # setup_eval_env.sh builds .venv-eval with it
 ok() { echo "  ✓ $*"; }
 warn() { echo "  ! $*"; }
 bad() { echo "  ✗ $*"; exit 1; }
@@ -46,10 +52,13 @@ ok "$avail GB free for the repo"
 TMP="${TMPDIR:-/tmp}"; tmp_free=$(free_gb "$TMP")
 [ "$tmp_free" -ge 15 ] || warn "only $tmp_free GB free in $TMP: the sandbox's per-task temp dirs need room (container disk 50 GB)"
 ok "$TMP: $tmp_free GB free (sandbox temp dirs)"
+local_free=$(free_gb "$LOCAL")
+[ "$local_free" -ge 25 ] || warn "only $local_free GB free in $LOCAL: .venv-eval needs ~20 GB there"
+ok "$LOCAL: $local_free GB free (.venv-eval, container disk)"
 
 echo "== 2/7 env + tokens"
 env_src=shell      # shell = already exported · container = template's env, which SSH sessions don't inherit · default
-for kv in "HF_HOME=$VOL/hf" "UV_CACHE_DIR=$VOL/uv-cache" "UV_PYTHON_INSTALL_DIR=$VOL/uv-python"; do
+for kv in "HF_HOME=$VOL/hf" "UV_CACHE_DIR=$VOL/uv-cache" "VLLM_CACHE_ROOT=$VOL/vllm-cache"; do
   k=${kv%%=*}; v=${kv#*=}
   if [ -z "${!k:-}" ]; then
     c=$(tr '\0' '\n' < /proc/1/environ 2>/dev/null | sed -n "s|^$k=||p" | head -1 || true)
@@ -62,8 +71,11 @@ for kv in "HF_HOME=$VOL/hf" "UV_CACHE_DIR=$VOL/uv-cache" "UV_PYTHON_INSTALL_DIR=
   else ok "$k=${!k}"; fi
   case "${!k}/" in "$VOL"/*) ;; *) warn "$k=${!k} is not on $VOL: it is lost with the pod" ;; esac
 done
-export UV_LINK_MODE="${UV_LINK_MODE:-copy}"            # the uv cache and the venv may sit on different filesystems
-export UV_PYTHON_PREFERENCE="${UV_PYTHON_PREFERENCE:-only-managed}"   # venv → a uv Python on /vol (has ensurepip, outlives the image)
+export UV_PYTHON_INSTALL_DIR="$LOCAL/uv-python"        # the venv's Python + stdlib: local, whatever the template says
+sed -i '/^export UV_PYTHON_INSTALL_DIR=/d' ~/.bashrc 2>/dev/null || true; echo "export UV_PYTHON_INSTALL_DIR=$UV_PYTHON_INSTALL_DIR" >> ~/.bashrc
+ok "UV_PYTHON_INSTALL_DIR=$UV_PYTHON_INSTALL_DIR (container disk; overrides the template's $(tr '\0' '\n' < /proc/1/environ 2>/dev/null | sed -n 's|^UV_PYTHON_INSTALL_DIR=||p' | head -1 || true))"
+export UV_LINK_MODE="${UV_LINK_MODE:-copy}"            # the uv cache (/vol) and the venv (container disk) are different filesystems
+export UV_PYTHON_PREFERENCE="${UV_PYTHON_PREFERENCE:-only-managed}"   # venv → a uv Python (has ensurepip, unlike some images')
 if [ -n "${HF_TOKEN:-}" ]; then ok "HF_TOKEN set"; else warn "no HF_TOKEN: the weights download fails if the model is gated for you"; fi
 if have_harness; then ok "harness/ present: no Kaggle token needed"
 elif [ -n "${KAGGLE_API_TOKEN:-}" ] || [ -f ~/.kaggle/kaggle.json ]; then ok "Kaggle token set"
@@ -78,7 +90,17 @@ echo "== 4/7 harness (competition data + wheelhouse)"
 if have_harness; then ok "harness/: $(wc -l < harness/tasks.jsonl | tr -d " ") tasks · $(ls harness/snapshots | wc -l | tr -d " ") snapshots"
 else bash scripts/get_harness.sh; fi
 
-echo "== 5/7 .venv-eval"
+echo "== 5/7 .venv-eval (Python $PYTHON, $LOCAL/venv-eval, linked from the repo)"
+VENV_DIR="$LOCAL/venv-eval"
+if [ -d .venv-eval ] && [ ! -L .venv-eval ]; then     # pods before 2026-10-22 built it on the volume
+  warn "removing the old .venv-eval on $VOL (Python $(.venv-eval/bin/python -c 'import platform; print(platform.python_version())' 2>/dev/null || echo ?))"
+  rm -rf .venv-eval
+fi
+vv=$("$VENV_DIR/bin/python" -c 'import sys; print("%d.%d" % sys.version_info[:2])' 2>/dev/null || true)
+[ -z "$vv" ] || [ "$vv" = "$PYTHON" ] || { warn "$VENV_DIR has Python $vv ≠ $PYTHON: rebuilding"; rm -rf "$VENV_DIR"; }
+[ -x "$VENV_DIR/bin/python" ] || uv venv -q --python "$PYTHON" "$VENV_DIR"
+ln -sfn "$VENV_DIR" .venv-eval
+ok ".venv-eval → $(readlink .venv-eval)"
 bash scripts/setup_eval_env.sh
 # the subprocess sandbox builds a venv per task with this Python; without ensurepip every task fails (Colab 2026-10-16)
 pyv=$(.venv-eval/bin/python -c 'import sys; print("%d.%d" % sys.version_info[:2])')
@@ -129,11 +151,12 @@ rows = [
     ("gpu", f"{e['NGPU']} × {e['GPU']} · driver CUDA {e['DRV_CUDA']} · {gpu_arch}"),
     ("volume", f"{e['VOL']} · {vol_free:.0f} GB free · repo {pathlib.Path.cwd()}"),
     ("scratch", f"{e['TMP']} · {e['TMP_FREE']} GB free (sandbox temp dirs, container disk)"),
-    ("env", f"HF_HOME={os.environ.get('HF_HOME')} · UV_PYTHON_INSTALL_DIR={os.environ.get('UV_PYTHON_INSTALL_DIR')} · "
+    ("env", f"HF_HOME={os.environ.get('HF_HOME')} · VLLM_CACHE_ROOT={os.environ.get('VLLM_CACHE_ROOT')} · "
+            f"UV_PYTHON_INSTALL_DIR={os.environ.get('UV_PYTHON_INSTALL_DIR')} · "
             + {"shell": "from this shell", "container": "from the template (copied to ~/.bashrc for SSH shells)"}
                 .get(e["ENV_SRC"], "defaults added to ~/.bashrc: set them in the template")),
     ("tokens", f"HF_TOKEN {'set' if os.environ.get('HF_TOKEN') else 'unset'} · KAGGLE_API_TOKEN {'set' if os.environ.get('KAGGLE_API_TOKEN') else 'unset'}"),
-    ("venv", f"Python {platform.python_version()} · vllm {ver('vllm')} · torch {torch.__version__} (CUDA {torch.version.cuda}) · "
+    ("venv", f"{os.path.realpath('.venv-eval')} · Python {platform.python_version()} · vllm {ver('vllm')} · torch {torch.__version__} (CUDA {torch.version.cuda}) · "
              f"transformers {ver('transformers')} · swegemma {ver('swegemma')} · test deps {testdeps}"),
     ("harness", f"{sum(1 for _ in open(h / 'tasks.jsonl'))} tasks · {len(list((h / 'snapshots').iterdir()))} snapshots · "
                 f"{len(list((h / 'wheels').iterdir()))} wheels"),
