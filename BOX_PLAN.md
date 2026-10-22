@@ -118,6 +118,28 @@ with winning passes near 240 s → the box's 4-min cap is the flipper (a time le
 with winning peak prompts near the limit → a context lever (bounded reads, smaller output reservation on this base);
 mostly `✗` → the fix itself is unreliable (temperature / sampling), not the budget.
 
+## B-3d · Kaggle-like box config: CONC=1 + calibrated time cap ▶ next
+
+The scorer runs one task at a time (our L4 lab did too; 58 tasks × 8 min fits the 12 h notebook cap only sequentially).
+B-3b/B-3c ran with CONC=3, where each stream decodes slower, so the 4-min cap killed solvable runs.
+
+```bash
+cd gemma4-dev-agent && git pull
+# 1. decode speed per stream, from existing traces (no GPU, ~1 min): a CONC=1 run from Oct 12-14 vs a CONC=3 run 📷
+python3 scripts/rulestats.py runs/dev33_out8k runs/dev33_nothink runs/dev33_base_r2 | grep -E "^ |decode tok/s"
+```
+**Set the cap:** `TIME_MIN = 8 × 33 / <CONC=1 tok/s>` (L4's marginal rate was 33 tok/s), rounded up to a whole minute
+(the CLI flag is an int). If the CONC=1 rate is ~62, that is 4.3 → **4**, and B-2/B-3 stand only if they ran at CONC=1
+(unknown: the budget line did not print it then; it does now).
+```bash
+# 2. base ×3 at the Kaggle-like config, one task at a time (~1.5–2 h each) 📷 tail -45 of the log
+nohup bash -c 'for t in k1 k2 k3; do TAG=$t CONC=1 TIME_MIN=<N> REFS="base base_w5 base_r2 base_r3" \
+  SUBMISSION=runs/base_lb024 ARMS=base bash scripts/eval_dev.sh; done' > runs/eval_dev_k.log 2>&1 &
+```
+📷 the first line of the log (`… · concurrency 1`) and the last compare table (all 7 base runs) + rulestats rows
+"overflow · 8-min timeout" and "decode tok/s". **Read:** timeouts should drop to L4's 1–2 per pass; the 3 new passes
+are the reference every later arm is measured against (arm = 3 passes, pooled).
+
 ## B-4 · Repeat the best 2 configs (~2–3 h) ✖ dropped: nothing to repeat. New protocol: an arm = 3 passes pooled vs the 4 base passes
 
 ```bash

@@ -68,6 +68,10 @@
 #   nohup bash -c 'TAG=r2 SUBMISSION=runs/base_lb024 ARMS=base bash scripts/eval_dev.sh;
 #     TAG=r3 REFS="base base_w5 base_r2" SUBMISSION=runs/base_lb024 ARMS=base bash scripts/eval_dev.sh' \
 #     > runs/eval_dev_rep.log 2>&1 &
+# B-3c showed 10 of the 17 flip losses were the 4-min cap under CONC=3 (per-stream decode is slower when 3 tasks
+# share the server). The scorer runs one task at a time, so the Kaggle-like box config is CONC=1 with TIME_MIN scaled
+# by the box's *measured* single-stream rate: TIME_MIN = 8 × 33 / <box tok/s> (both from rulestats.py's
+# "decode tok/s" row; L4 = 33). Set it explicitly, e.g. TIME_MIN=4 CONC=1 ... (BOX_PLAN.md B-3d).
 set -euo pipefail
 cd "$(dirname "$0")/.."
 export OPENAI_API_KEY="${OPENAI_API_KEY:-EMPTY}"
@@ -98,7 +102,7 @@ python3 -c 'import pytest_httpbin, inline_snapshot' 2>/dev/null || {   # without
   [ -n "${NO_TESTDEPS:-}" ] || exit 1; }
 [ -f "$LOG" ] || echo "warning: no $LOG — ctx_overflow will be '?' (set VLLM_LOG=… to the server's log)"
 mapfile -t IDS < splits/dev33.txt
-echo "dev split: ${#IDS[@]} tasks · arms: $ARMS · budget: ${BUDGET_FLAGS[*]:-none}"
+echo "dev split: ${#IDS[@]} tasks · arms: $ARMS · budget: ${BUDGET_FLAGS[*]:-none} · concurrency ${CONC:-1}"
 for arm in $ARMS; do                                  # check every arm up front, not 2 h into the first one
   for part in ${arm//+/ }; do
     case "$part" in out8k|nothink|think1k|readdisc|noanalyzer|out6k|out4k|tools6|submit|editrecover|issuefirst|tmpfix|test1) ;;

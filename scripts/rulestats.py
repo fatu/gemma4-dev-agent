@@ -129,14 +129,32 @@ ROWS = [
     ("overflow · 8-min timeout · 28-call cap", lambda S: f"{S['overflow']} · {S['timeout']} · {S['callcap']}"),
     ("tool calls (p50) · seconds (p50)", lambda S: f"{p50(S['calls_list'])} · {p50(S['duration'])}"),
     ("graph-tool calls", lambda S: f"{S['graph_tools']}"),
+    ("decode tok/s (marginal fit) · s/call overhead", lambda S: (f"{S['tok_s']:.0f} · {S['call_overhead_s']:.1f}" if S['tok_s'] else "–") + f"  (n {S['rate_pts']})"),
     ("resolved runs: first edit (p50) · tested", lambda S: f"{p50(S['first_edit_res'])} · {S['tested_res']}"),
     ("failed runs: first edit (p50) · tested", lambda S: f"{p50(S['first_edit_fail'])} · {S['tested_fail']}"),
 ]
 
 
+def tok_rate(traces):
+    """marginal decode speed: wall(step i → i+1) ≈ a + b · completion_tokens(i+1), tok/s = 1/b (L4 EDA: 33 tok/s)"""
+    pts = []
+    for steps in traces.values():
+        ag = [((s.get("extra") or {}).get("elapsed_s"), (s.get("metrics") or {}).get("completion_tokens"))
+              for s in steps if s.get("source") == "agent"]
+        for (t0, _), (t1, c1) in zip(ag, ag[1:]):
+            if t0 is not None and t1 is not None and c1 and 0 < t1 - t0 < 300:
+                pts.append((c1, t1 - t0))
+    if len(pts) < 30:
+        return None, None, len(pts)
+    mx = sum(c for c, _ in pts) / len(pts); my = sum(w for _, w in pts) / len(pts)
+    b = sum((c - mx) * (w - my) for c, w in pts) / sum((c - mx) ** 2 for c, _ in pts)
+    return (1 / b if b > 0 else None), my - b * mx, len(pts)
+
+
 def summarise(run):
     results, traces = load(run)
     S = collections.Counter(n=len(traces))
+    S["tok_s"], S["call_overhead_s"], S["rate_pts"] = tok_rate(traces)
     lists = collections.defaultdict(list)
     for tid, steps in traces.items():
         f, x = analyse(steps, results.get(tid))
