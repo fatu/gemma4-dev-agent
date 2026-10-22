@@ -205,6 +205,63 @@ python3 scripts/rulestats.py runs/dev33_base_k1 runs/dev33_base_k4 runs/dev33_ba
 **Read:** timeouts should be L4's 1–2 per pass, overflows ~9–11 (L4 pub had 11). k4–k6 are the reference every later
 arm is measured against: an arm = the same 3 lanes at TIME_MIN=5, pooled, 99 pairs vs 99 (McNemar).
 
+## B-3f · Ceiling run: Claude Opus 5.5 through the same harness, same budget, dev33 ▶ next (parallel to B-3e's k4–k6; no GPU)
+
+**Question:** which dev33 tasks can *any* agent solve under the scorer's budget (28 calls · 8 min · 240 s per command ·
+300 s verify · the 6 tools · 32K context) and the LB-0.24 prompt? Seven base passes solve 15 distinct tasks (6 in every
+pass). A strong model under the identical harness splits the other 18 into *reachable* (Gemma's prompt/tool arms should
+aim there) and *harness-bound* (budget, tools or the task itself — stop tuning for them). diag4 already settled the
+test side (31/33 valid; one requests task needs the net, one rich task's verify exceeds 300 s). This is a measurement,
+one pass, not an arm. Forum thread 747168 claims the ceiling is the harness; this checks it on our split.
+
+**Setup — built by the Claude Code session on the box, not by the laptop:** the harness hardcodes `api_base
+http://127.0.0.1:8000/v1`; the three lanes own that address only inside their namespaces, so the host's port 8000 is
+free while k4–k6 run. Put an OpenAI-compatible proxy there (litellm proxy is the obvious choice) that maps the model name
+the harness sends to `anthropic/claude-opus-5-5`, answers `/v1/models`, passes tool calls both ways, and drops the
+Gemma-only request fields (thinking / `chat_template_kwargs`, `drop_params`). Then the normal eval on the host:
+```bash
+CONC=1 MAX_CALLS=28 TIME_MIN=8 CMD_TIMEOUT=240 VERIFY_TIMEOUT=300 TAG=ceil ARMS=base \
+  REFS="base_k1 base_k2 base_k3" SUBMISSION=runs/base_lb024 VLLM_LOG=runs/ceil/proxy.log \
+  nohup bash scripts/eval_dev.sh > runs/eval_dev_ceil.log 2>&1 &          # ~2–3.5 h; verify is CPU, it coexists with the lanes
+```
+Rules for the box session:
+- The key stays in the shell environment of the proxy process (`os.environ/ANTHROPIC_API_KEY` in the config). Never in
+  the config file literally, never in `runs/*.log`, never in anything under git. Config and proxy log live in `runs/ceil/`.
+- Spend guard on the proxy (`max_budget` ≈ 80 USD) and per-request logging, so the total is readable afterwards.
+- Decide and **print one line** into `runs/eval_dev_ceil.log` before the first task: where the 32K context cap is
+  enforced. If the harness enforces it (its own config / compaction threshold), the ceiling run has Gemma's context
+  budget — the comparison we want. If only the vLLM server enforced it (`max_model_len`), the proxy run is effectively
+  uncapped at 32K: still useful, but then the line must say so and the read below changes (a task Opus solves with a
+  60K prompt is not "reachable" for Gemma). Same for `max_output_tokens`.
+- TIME_MIN=8 literally (API speed is not the box's decode speed; a generous cap is right for a ceiling).
+- Traces contain task text: they stay on the box; and every task's text goes to the Anthropic API during the run — the
+  user has accepted that for a private measurement; nothing of it is published.
+
+**Pre-flight (📷 one photo, ~6 lines):**
+```bash
+git check-ignore -v runs/ceil/proxy.yaml && ! grep -qE "sk-ant|ANTHROPIC_API_KEY=" runs/ceil/proxy.yaml && echo "config ignored, no literal key"
+curl -s 127.0.0.1:8000/v1/models | head -c 200; echo                       # the model name the harness will send
+python3 scripts/smoke.py | grep -E "^--- "                                 # tool-call request parsed through the proxy
+grep -m1 -i "context cap" runs/eval_dev_ceil.log                           # the enforcement line, once the eval has started
+sleep 600; wc -l runs/dev33_base_ceil/task_results.jsonl; tail -c 300 runs/dev33_base_ceil/task_results.jsonl   # first task ended, no parameter error
+```
+If the first task's `error` mentions an unsupported parameter, a 4xx from the proxy, or tool calls arriving as plain
+text, stop the eval, fix the proxy, delete `runs/dev33_base_ceil`, restart.
+
+**After the run (📷):**
+```bash
+grep -h "concurrency\|context cap" runs/eval_dev_ceil.log                                        # 1. budget line says 8 min, CONC 1
+python3 scripts/compare_runs.py runs/dev33_base_k1 runs/dev33_base_k2 runs/dev33_base_k3 runs/dev33_base_k4 runs/dev33_base_k5 runs/dev33_base_k6 runs/dev33_base_ceil   # 2. the differ list
+python3 scripts/rulestats.py runs/dev33_base_k1 runs/dev33_base_ceil | grep -E "^ |resolved$|^resolved|timeout|tool calls|first edit|ran a test|decode"   # 3.
+<total spend from the proxy: litellm /global/spend or a sum over its log>                            # 4. one number, USD
+```
+**Read:** (a) `ceil` resolved vs the 6-pass union: tasks Opus solves that no base pass ever did = the *reachable* set →
+the next arms are judged on those tasks specifically (do they move?). (b) Tasks Opus also fails: which wall (overflow /
+time / wrong patch / no patch, from the differ marks and rulestats) → harness-bound; name them in the run log and stop
+designing for them. (c) Opus's calls / first-edit / tested rows vs Gemma's tell how a stronger agent spends the same 28
+calls — the shape of a trajectory worth imitating in the prompt. (d) If `ceil` is below the union of base passes,
+the proxy or the prompt mismatch is the problem, not the ceiling; check the error column before reading anything else.
+
 ## B-4 · Repeat the best 2 configs (~2–3 h) ✖ dropped: nothing to repeat. New protocol: an arm = 3 passes pooled vs the 4 base passes
 
 ```bash
