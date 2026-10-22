@@ -204,8 +204,9 @@ python3 scripts/rulestats.py runs/dev33_base_k1 runs/dev33_base_k4 runs/dev33_ba
 ```
 **Read:** timeouts should be L4's 1–2 per pass, overflows ~9–11 (L4 pub had 11). k4–k6 are the reference every later
 arm is measured against: an arm = the same 3 lanes at TIME_MIN=5, pooled, 99 pairs vs 99 (McNemar).
+**Also photo (new lines at the end of compare_runs.py after `git pull`):** `resolved in every run: 6: <ids>` and `resolved in no run: … <ids>`. The laptop's ceiling run (B-3g) needs those ids to confirm its inferred split (Opus solved exactly the 6 tasks every Gemma pass solved, and none of the 6 no-pass ever did).
 
-## B-3f · Ceiling run: Claude Opus 5.5 through the same harness, same budget, dev33 ▶ next (parallel to B-3e's k4–k6; no GPU)
+## B-3f · Ceiling run: Claude Opus 5.5 through the same harness, same budget, dev33 ✖ not needed (2026-10-21): B-3g's uncapped pass never touched the Kaggle budget (max 21 calls · 250 s · 24.8K prompt), so its 20/33 is also the capped answer. Nothing to run here
 
 **Question:** which dev33 tasks can *any* agent solve under the scorer's budget (28 calls · 8 min · 240 s per command ·
 300 s verify · the 6 tools · 32K context) and the LB-0.24 prompt? Seven base passes solve 15 distinct tasks (6 in every
@@ -286,7 +287,7 @@ designing for them. (c) Opus's calls / first-edit / tested rows vs Gemma's tell 
 calls — the shape of a trajectory worth imitating in the prompt. (d) If `ceil` is below the union of base passes,
 the proxy or the prompt mismatch is the problem, not the ceiling; check the error column before reading anything else.
 
-## B-3g · Uncapped ceiling: the same Opus run with the budget lifted — how each task is actually solved (after B-3f, no GPU) ▶ running on the laptop since 2026-10-21 23:01 (MODELS_YAML route, CONC=3, 80 calls · 30 min · verify 900 s; traces stay local)
+## B-3g · Uncapped ceiling: Opus 5.5, budget lifted ✅ 2026-10-21 (laptop, 11 min, $6–19): **20/33 = 20 of the 24 tasks whose gold patch passes here** · 4 genuine wrong patches · 0 budget deaths (max 21 calls · 250 s · 24.8K prompt) · calls p50 6 · first edit at call 3 · 30 s/task p50. Gemma's 7 passes: 16 distinct, all inside Opus's 20; 4 reachable tasks (2 fastapi · 2 rich; ids in the private log). Per-task table: `python3 scripts/tasktable.py runs/dev33_base_ceilx`. Gold check → B-3h
 
 B-3f says *who* is reachable under the scorer's budget. This pass says *how much* budget each task really needs and what a
 solution looks like, including for the tasks B-3f still fails. Same proxy, same prompt, same tools; only the caps move:
@@ -316,6 +317,25 @@ the wall and no prompt arm will reach them on Gemma; if they end just past 28 ca
 per-task table script (`tasktable.py`, laptop writes it after "go"); until then `flips.py` on `k1 ceil ceilx` gives the
 per-pass line for every task that differs. The ceilx traces are also the only teacher trajectories we own, should SFT
 ever come back on the table (forum: no gain at the top; not planned).
+
+## B-3h · Validity audit: does the gold patch pass on the box? (no GPU, ~5 min) ▶ next — before any further reference run
+
+On the laptop the dataset's own patch fails verification for **9 of 33** dev tasks under the subprocess sandbox
+(`scripts/goldcheck.py`): one needs `orjson` (in no wheel set), two new fastapi tasks need starlette 1.x while google-adk
+caps the harness venv at <1 (the sandbox venv inherits it), three requests tasks and three rich tasks fail the same single
+test with and without any patch (dependency/Python-version behaviour; pinning urllib3 to the scorer's 2.7.0 did not fix
+the requests ones). Gemma solved none of those nine in seven box passes, so the box is probably the same: dev33 has been
+dev24. Every rate so far should be read over 24, and 9 of the "never" tasks are not agent failures.
+```bash
+cd gemma4-dev-agent && git pull
+.venv-eval/bin/python scripts/goldcheck.py $(cat splits/dev33.txt)       # 📷 the 33 result lines (CONC=3 default)
+```
+**Read:** `NOT resolved` = invalid on the box. If the set matches the laptop's nine (3 fastapi · 3 requests · 3 rich), the
+fix is the scorer's own sandbox: `bash scripts/build_sandbox_image.sh` (x86_64 wheels match the box; needs docker without
+sudo), then `SANDBOX=docker OUT=runs/goldcheck_docker .venv-eval/bin/python scripts/goldcheck.py $(cat splits/dev33.txt)` 📷.
+31–33 resolved there → all later runs use `SANDBOX=docker` (lane.sh passes env through) and k4–k6 are re-run under it as
+the reference; the subprocess numbers stay as history. If docker is not available on the box, say so: the laptop can
+build the image under emulation and we decide then.
 
 ## B-4 · Repeat the best 2 configs (~2–3 h) ✖ dropped: nothing to repeat. New protocol: an arm = 3 passes pooled vs the 4 base passes
 
