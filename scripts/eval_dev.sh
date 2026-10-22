@@ -65,6 +65,8 @@
 #   repro  — "## 4. Verify" becomes: first a `python -c` run of the issue's own example, compared with what the issue
 #            asks for; then one test file (E4B wave 1: failed runs said "the tests passed, so the fix is verified" after
 #            existing tests that don't cover the issue; runs end at ~10 of 28 calls, so the extra checks fit).
+#   lean   — prompts/system.md replaced by scripts/arms/lean_system.md (~2.5K chars vs 7K): the same hard limits, five
+#            steps, the repro check built in, edit_file with 2-5 whole lines (E4B wave 1: 32 of 70 edits mismatched).
 # MODEL_ALIAS=gemma-4-e4b-it-qat-w4a16-ct: every agent YAML of each arm copy gets this `model:` (small-model bonus on
 # the same files; the server must serve the alias: MODEL=google/gemma-4-E4B-it-qat-w4a16-ct scripts/serve_vllm.sh).
 #   MODEL_ALIAS=gemma-4-e4b-it-qat-w4a16-ct TIME_MIN=8 SUBMISSION=runs/base_lb024 ARMS=base TAG=e4b bash scripts/eval_dev.sh
@@ -134,7 +136,7 @@ IDS=($(cat splits/dev33.txt))                         # no mapfile: macOS bash 3
 echo "dev split: ${#IDS[@]} tasks · arms: $ARMS · budget: ${BUDGET_FLAGS[*]:-none} · concurrency ${CONC:-1}"
 for arm in $ARMS; do                                  # check every arm up front, not 2 h into the first one
   for part in ${arm//+/ }; do
-    case "$part" in out8k|nothink|think1k|readdisc|noanalyzer|out6k|out4k|tools6|submit|editrecover|issuefirst|tmpfix|test1|t10|repro) ;;
+    case "$part" in out8k|nothink|think1k|readdisc|noanalyzer|out6k|out4k|tools6|submit|editrecover|issuefirst|tmpfix|test1|t10|repro|lean) ;;
       sample|base) [ "$arm" = "$part" ] || { echo "$part can't stack: $arm"; exit 1; } ;;
       *) echo "unknown arm part $part in $arm"; exit 1 ;; esac
   done
@@ -161,6 +163,7 @@ for arm in $ARMS; do
   if [ -n "${MODEL_ALIAS:-}" ]; then           # every agent YAML (sub-agents too), not adapter configs
     find "$SUB" -name '*.y*ml' -not -path '*/adapters/*' -exec sed -i -E "s/^( *model: *)['\"]?[A-Za-z0-9_.-]+['\"]?/\1$MODEL_ALIAS/" {} +
   fi
+  has lean && cp scripts/arms/lean_system.md "$SUB/prompts/system.md"   # first: rule arms then append to it
   has readdisc && cat scripts/arms/readdisc.md >> "$SUB/prompts/system.md"
   if has noanalyzer; then                      # drop the 3-line agent_tool entry (code_analyzer) from the tool list
     sed -i '/^ *- agent_tool:/,/skip_summarization/d' "$SUB/agent.yaml"
