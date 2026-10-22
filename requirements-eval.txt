@@ -10,6 +10,9 @@ swegemma==0.2.11
 adk-submission==0.2.13
 adk-eval-core==0.1.0
 google-adk==1.36.1
+# the Kaggle image's litellm: 1.106 imports mcp.types.CacheableResult, which mcp 1.30 lacks → every model call fails
+# with APIConnectionError after 5 retries (Kaggle lab probe v3, RunPod 2026-10-22: 0 LLM calls per task)
+litellm==1.85.7
 # vLLM 0.19's API server 500s on every request with 7.1.0 ('_IncludedRouter' object has no attribute 'path'); 8.1.0 is in the wheelhouse
 prometheus-fastapi-instrumentator==8.1.0
 prometheus_client==0.26.0
