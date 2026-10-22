@@ -118,27 +118,35 @@ with winning passes near 240 s → the box's 4-min cap is the flipper (a time le
 with winning peak prompts near the limit → a context lever (bounded reads, smaller output reservation on this base);
 mostly `✗` → the fix itself is unreliable (temperature / sampling), not the budget.
 
-## B-3d · Kaggle-like box config: CONC=1 + calibrated time cap ▶ next
+## B-3d · Kaggle-like lanes: 3 cards = 3 independent single-task passes ▶ next
 
-The scorer runs one task at a time (our L4 lab did too; 58 tasks × 8 min fits the 12 h notebook cap only sequentially).
-B-3b/B-3c ran with CONC=3, where each stream decodes slower, so the 4-min cap killed solvable runs.
+The scorer runs one task at a time against one server (our L4 lab did too; 58 × 8 min fits the 12 h notebook cap only
+sequentially). B-3b/B-3c shared one server between 3 tasks (CONC=3), each stream slowed, and the 4-min cap killed
+solvable runs. CONC=1 on one server would be faithful but 3 passes take ~5–6 h. **`scripts/lane.sh`** runs a lane =
+private network namespace (its own `127.0.0.1:8000`, which the harness hardcodes) + one vLLM on one card (TP=1) + one
+`eval_dev.sh` at CONC=1. Three lanes on cards 0–2 = three passes in the wall time of one; card 3 stays free.
 
 ```bash
 cd gemma4-dev-agent && git pull
-# 1. decode speed per stream, from existing traces (no GPU, ~1 min): a CONC=1 run from Oct 12-14 vs a CONC=3 run 📷
-python3 scripts/rulestats.py runs/dev33_out8k runs/dev33_nothink runs/dev33_base_r2 | grep -E "^ |decode tok/s"
+pkill -f "vllm serve"; sleep 5; nvidia-smi --query-gpu=index,memory.used --format=csv   # the host server holds all 4 cards
+bash scripts/lane.sh check                   # 📷 must end with "namespace check passed"
+GPU=0 bash scripts/lane.sh smoke             # 📷 the "--- warm:" line = one card's decode speed (~5 min incl. model load)
 ```
-**Set the cap:** `TIME_MIN = 8 × 33 / <CONC=1 tok/s>` (L4's marginal rate was 33 tok/s), rounded up to a whole minute
-(the CLI flag is an int). If the CONC=1 rate is ~62, that is 4.3 → **4**, and B-2/B-3 stand only if they ran at CONC=1
-(unknown: the budget line did not print it then; it does now).
+**Set the cap:** `TIME_MIN = 8 × 29 / <warm tok/s>`, rounded **up** to a whole minute (29 = L4's smoke speed, probe v3;
+same instrument). E.g. 58 tok/s → 4; 45 → 5.2 → 6.
 ```bash
-# 2. base ×3 at the Kaggle-like config, one task at a time (~1.5–2 h each) 📷 tail -45 of the log
-nohup bash -c 'for t in k1 k2 k3; do TAG=$t CONC=1 TIME_MIN=<N> REFS="base base_w5 base_r2 base_r3" \
-  SUBMISSION=runs/base_lb024 ARMS=base bash scripts/eval_dev.sh; done' > runs/eval_dev_k.log 2>&1 &
+for g in 0 1 2; do GPU=$g TAG=k$((g+1)) TIME_MIN=<N> REFS="base base_w5 base_r2 base_r3" SUBMISSION=runs/base_lb024 ARMS=base \
+  nohup bash scripts/lane.sh run > runs/lane$g.log 2>&1 & done            # ~1.5–2.5 h, all three at once
 ```
-📷 the first line of the log (`… · concurrency 1`) and the last compare table (all 7 base runs) + rulestats rows
-"overflow · 8-min timeout" and "decode tok/s". **Read:** timeouts should drop to L4's 1–2 per pass; the 3 new passes
-are the reference every later arm is measured against (arm = 3 passes, pooled).
+**After the run (📷):**
+```bash
+grep -h "concurrency\|vLLM up" runs/lane[012].log                 # 1. each lane: "concurrency 1" + its server came up
+python3 scripts/compare_runs.py runs/dev33_base runs/dev33_base_w5 runs/dev33_base_r2 runs/dev33_base_r3 runs/dev33_base_k1 runs/dev33_base_k2 runs/dev33_base_k3
+python3 scripts/rulestats.py runs/dev33_base_r2 runs/dev33_base_k1 runs/dev33_base_k2 runs/dev33_base_k3 | grep -E "^ |resolved$|^resolved|timeout|decode tok/s"
+```
+**Read:** k1–k3 timeouts should fall to L4's 1–2 per pass (r2 had 6). k1–k3 are the reference every later arm is measured
+against (an arm = the same 3 lanes, pooled: 99 pairs vs 99). If `check` fails (user namespaces disabled), the fallback
+is patching the harness's api_base: photo `grep -rn "127.0.0.1:8000" .venv-eval/lib/python3*/site-packages/ | head`.
 
 ## B-4 · Repeat the best 2 configs (~2–3 h) ✖ dropped: nothing to repeat. New protocol: an arm = 3 passes pooled vs the 4 base passes
 

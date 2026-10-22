@@ -70,8 +70,8 @@
 #     > runs/eval_dev_rep.log 2>&1 &
 # B-3c showed 10 of the 17 flip losses were the 4-min cap under CONC=3 (per-stream decode is slower when 3 tasks
 # share the server). The scorer runs one task at a time, so the Kaggle-like box config is CONC=1 with TIME_MIN scaled
-# by the box's *measured* single-stream rate: TIME_MIN = 8 × 33 / <box tok/s> (both from rulestats.py's
-# "decode tok/s" row; L4 = 33). Set it explicitly, e.g. TIME_MIN=4 CONC=1 ... (BOX_PLAN.md B-3d).
+# by the box's *measured* single-stream rate. Three such lanes at once (one card + one private 127.0.0.1:8000 each):
+# scripts/lane.sh — it calls this script with CONC=1 inside a network namespace (BOX_PLAN.md B-3d).
 set -euo pipefail
 cd "$(dirname "$0")/.."
 export OPENAI_API_KEY="${OPENAI_API_KEY:-EMPTY}"
@@ -118,7 +118,7 @@ overflows() { [ -f "$LOG" ] || { echo "?"; return; }; n=$(grep -c "maximum conte
 has() { [[ "+$arm+" == *"+$1+"* ]]; }                # arm "nothink+readdisc" has nothink and readdisc
 
 for arm in $ARMS; do
-  SUB="runs/subs/$arm"; RUN="runs/dev33_$arm${TAG:+_$TAG}"
+  SUB="runs/subs/$arm${TAG:+_$TAG}"; RUN="runs/dev33_$arm${TAG:+_$TAG}"   # per TAG: parallel lanes must not share it
   rm -rf "$SUB"; mkdir -p runs/subs; cp -r "$BASE" "$SUB"
   Y="$SUB/configs/sampling.yaml"
   [ "$arm" != sample ] && [ "$arm" != base ] && sed -i 's/^max_output_tokens: .*/max_output_tokens: 8192/' "$Y"   # W3+ arms build on out8k
