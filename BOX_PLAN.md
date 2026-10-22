@@ -262,6 +262,37 @@ designing for them. (c) Opus's calls / first-edit / tested rows vs Gemma's tell 
 calls — the shape of a trajectory worth imitating in the prompt. (d) If `ceil` is below the union of base passes,
 the proxy or the prompt mismatch is the problem, not the ceiling; check the error column before reading anything else.
 
+## B-3g · Uncapped ceiling: the same Opus run with the budget lifted — how each task is actually solved (after B-3f, no GPU)
+
+B-3f says *who* is reachable under the scorer's budget. This pass says *how much* budget each task really needs and what a
+solution looks like, including for the tasks B-3f still fails. Same proxy, same prompt, same tools; only the caps move:
+```bash
+CONC=3 MAX_CALLS=80 TIME_MIN=30 CMD_TIMEOUT=240 VERIFY_TIMEOUT=900 TAG=ceilx ARMS=base \
+  REFS="base_k1 base_ceil" SUBMISSION=runs/base_lb024 VLLM_LOG=runs/ceil/proxy.log \
+  nohup bash scripts/eval_dev.sh > runs/eval_dev_ceilx.log 2>&1 &         # CONC=3 is fine here: no GPU, the API scales
+```
+Box session: if the 32K context cap / compaction threshold / max output are harness-side (the B-3f line), lift them
+to the model's real window (≥ 128K, output 16K) for this pass and print the effective values the same way; if they
+were server-side only, nothing to lift and the line says so. Keep CMD_TIMEOUT at 240 s (a single command is a task-level
+fact, not an agent budget); VERIFY_TIMEOUT 900 tells whether the rich task that fails verification at 300 s is solvable
+at all. Spend: longer trajectories, expect 1.5–2× B-3f; raise the proxy budget accordingly before starting. ~1.5–2 h wall.
+
+**After the run (📷):**
+```bash
+grep -h "concurrency\|context cap" runs/eval_dev_ceilx.log
+python3 scripts/compare_runs.py runs/dev33_base_k1 runs/dev33_base_ceil runs/dev33_base_ceilx          # capped vs uncapped Opus, Gemma for scale
+python3 scripts/rulestats.py runs/dev33_base_k1 runs/dev33_base_ceil runs/dev33_base_ceilx | grep -E "^ |resolved$|^resolved|timeout|tool calls|first edit|ran a test|never edited"
+<total spend>
+```
+**Read:** three bands. (1) Solved in B-3f already: the Kaggle budget suffices; Gemma's loss on them is the agent. (2) Solved
+only uncapped: read their calls / seconds / peak prompt in ceilx — if they end at 30–40 calls or 40K prompt the budget is
+the wall and no prompt arm will reach them on Gemma; if they end just past 28 calls or 8 min, a tighter prompt might.
+(3) Unsolved even uncapped: the task or the tool set, not the budget — list them as dead for this competition. Per-task
+"how was it solved" (files read, file edited, tests run, call of the first edit, Opus vs Gemma side by side) needs a
+per-task table script (`tasktable.py`, laptop writes it after "go"); until then `flips.py` on `k1 ceil ceilx` gives the
+per-pass line for every task that differs. The ceilx traces are also the only teacher trajectories we own, should SFT
+ever come back on the table (forum: no gain at the top; not planned).
+
 ## B-4 · Repeat the best 2 configs (~2–3 h) ✖ dropped: nothing to repeat. New protocol: an arm = 3 passes pooled vs the 4 base passes
 
 ```bash
