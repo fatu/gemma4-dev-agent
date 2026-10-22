@@ -177,6 +177,18 @@ agent's fix was the same and the *verification* died offline: the task's tests n
 offline scorer, and the lanes are the faithful instrument. One line left to read: the host grep above. External hosts
 (httpbin.org, example.com, …) → done, note it. `127.0.0.1` / `localhost` → the namespace broke the local httpbin
 fixture (lo was up, so unexpected) — tell the laptop; it would bias all 4 requests tasks, not just this one.
+**Host grep result (📷):** only documentation links (github.com ×4, urllib3.readthedocs.io, docs.pytest.org) — the failing
+tests name no host, so the 104 phrases are tracebacks without a URL. One more line, no GPU, run it *while k4–k6 run*:
+```bash
+L=runs/dev33_base_k1/test_outputs/$T.log
+grep -oE "Name or service not known|Temporary failure in name resolution|NewConnectionError|Max retries exceeded|Network is unreachable|ConnectionError|ConnectTimeout" $L | sort | uniq -c
+grep -E "^(FAILED|ERROR) " $L | cut -c1-110 | head -12; grep -cE "^(FAILED|ERROR) " $L runs/dev33_base_r2/test_outputs/$T.log
+grep -m2 -B3 "Name or service not known\|NewConnectionError" $L | cut -c1-160                                   # 📷 all of it
+```
+**Read:** `Name or service not known` / `Temporary failure in name resolution` with a hostname in the -B3 lines → DNS, an
+external host, lanes are right. Failing tests from `test_lowlevel.py` or the `httpbin` fixture, or `127.0.0.1` in the
+-B3 lines → the namespace broke local servers; the fix goes into lane.sh (likely `/etc/hosts` for the box hostname) and
+only the requests tasks of k4–k6 need a re-read, not the whole pass.
 
 Then the reference at the right cap, three lanes again (card 3 stays free; can start right after the photo above):
 ```bash
