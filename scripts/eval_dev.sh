@@ -156,7 +156,7 @@ echo "tasks: ${#IDS[@]} from $SPLIT"
 echo "dev split: ${#IDS[@]} tasks · arms: $ARMS · budget: ${BUDGET_FLAGS[*]:-none} · concurrency ${CONC:-1}"
 for arm in $ARMS; do                                  # check every arm up front, not 2 h into the first one
   for part in ${arm//+/ }; do
-    case "$part" in out8k|nothink|think1k|readdisc|noanalyzer|out6k|out4k|tools6|submit|editrecover|issuefirst|tmpfix|test1|t10|repro|lean|edit1) ;;
+    case "$part" in out8k|nothink|think1k|readdisc|noanalyzer|out6k|out4k|tools6|submit|editrecover|issuefirst|tmpfix|test1|t10|repro|lean|edit1|r1|r2|r3|v4) ;;
       sample|base) [ "$arm" = "$part" ] || { echo "$part can't stack: $arm"; exit 1; } ;;
       *) echo "unknown arm part $part in $arm"; exit 1 ;; esac
   done
@@ -206,7 +206,7 @@ assert "{" not in rule and "}" not in rule        # ADK templates {name} from se
 print("submit:", "replaced the base's line" if n else "appended")
 PY
   fi
-  for rule in editrecover issuefirst tmpfix test1 repro edit1; do   # one-line prompt rules (scripts/arms/<rule>.md)
+  for rule in editrecover issuefirst tmpfix test1 repro edit1 r1 r2 r3 v4; do   # one-line prompt rules (scripts/arms/<rule>.md)
     has "$rule" && python3 scripts/arms/apply.py "$rule" "$SUB/prompts/system.md"
   done
   echo; echo "== $arm: model $(grep -rhoE '^ *model: *[A-Za-z0-9_.-]+' --include='*.y*ml' --exclude-dir=adapters "$SUB" | sed 's/.*model: *//' | sort -u | tr '\n' ' ')· $(grep -hE '^(temperature|top_p|top_k):|max_output_tokens|thinking_budget|include_thoughts' "$SUB/configs/sampling.yaml" | tr -s ' \n' ' ')· tools $(grep -c '^  - ' "$SUB/agent.yaml") · prompt $(wc -c < "$SUB/prompts/system.md") chars → $RUN   ($(date +%H:%M))"
