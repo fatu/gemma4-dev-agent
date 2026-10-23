@@ -419,7 +419,7 @@ enumerate edge inputs (empty / trailing / single element) before choosing a hypo
 
 `course` = every executable item from the course slides (lecture 3), one arm part; it grows as more slides arrive and
 the run uses whatever `git pull` brings. Now: `t00+out6k+time7+tail40+outline+win100+grepbatch+twins5+callchain+
-dryhelper+noregress+ask3+editctx+editguard`:
+dryhelper+noregress+ask3+editctx+editguard+tmprepro`:
 - config: `t00` temperature 0.0 · `out6k` max_output_tokens 6144 · `time7` eval_config 8 → 7 min, run flag TIME_MIN ×
   7/8 (5 → 4.375, printed as a `time7:` line);
 - prompt: `grepbatch` (3-call locate SOP: batched `git grep -n -E 'A|B|C' -- '*.py' | head -40` + find tests → def/class
@@ -428,7 +428,8 @@ dryhelper+noregress+ask3+editctx+editguard`:
   registration tables), `dryhelper` (one shared helper for all twin entry points), `noregress` (unmentioned inputs keep
   behaviour, `__all__` complete), `ask3` (3 caller/callee questions before editing: who calls me, what do I call,
   did unmentioned inputs change), `editctx` (old_string with 2–3 lines of context, right after reading it),
-  `editguard` (fallback script: assert count == 1, `compile()` before writing, then `git diff`), `tail40` (pytest `| tail -40` with `set -o pipefail;` so the exit code stays pytest's).
+  `editguard` (fallback script: assert count == 1, `compile()` before writing, then `git diff`),
+  `tmprepro` (repro scripts in /tmp/repro.py via a run_command heredoc; write_file rejects /tmp), `tail40` (pytest `| tail -40` with `set -o pipefail;` so the exit code stays pytest's).
 Thinking 4096, include_thoughts, 28 calls, 240 s, graph-tool ban, edit recovery, /tmp and `git status && git diff` are
 base's already. Prior evidence for the config half predicts no gain (6144 alone tied/lost; temperature 0.0 was the forum
 sweep's lowest row; the notebook author's v5 with 7 min + 6144 + tail -40 scored 0.13); the prompt half is mostly new,
@@ -443,9 +444,9 @@ pkill -f "vllm serve"; sleep 5
 for g in 0 1 2; do GPU=$g TAG=l$((g+1)) TIME_MIN=5 REFS="base_k4 base_k5 base_k6" SUBMISSION=runs/base_lb024 \
   ARMS=course nohup bash scripts/lane.sh run > runs/lane$g.log 2>&1 & done                              # ~2–3 h
 ```
-**Check before reading results (📷):** `course = …` lists the 14 parts; the `==` line shows `temperature: 0.0 …
-max_output_tokens: 6144 thinking_budget: 4096 include_thoughts: true` and `prompt ~11280 chars`; `time7:` shows
-`max_time_minutes 7 · run flag --max-time-minutes 4.375`; 11 rule lines say `replaced` / `inserted`. Any "appended
+**Check before reading results (📷):** `course = …` lists the 15 parts; the `==` line shows `temperature: 0.0 …
+max_output_tokens: 6144 thinking_budget: 4096 include_thoughts: true` and `prompt ~11470 chars`; `time7:` shows
+`max_time_minutes 7 · run flag --max-time-minutes 4.375`; 12 rule lines say `replaced` / `inserted`. Any "appended
 (anchor not found)" → stop and photo.
 **After (📷):**
 ```bash
