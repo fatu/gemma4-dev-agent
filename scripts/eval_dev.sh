@@ -91,8 +91,12 @@
 #   ask3   — the course's 3 caller/callee questions before editing: who calls me (git grep 'f('; defaults, compatible
 #            signature), what do I call (helpers, dict key format), did unmentioned inputs change (python -c before/after
 #            for None, '', int, unknown key) + 'Keep current behaviour for inputs the issue does not mention'
+#   editctx — edit_file old_string with 2-3 real lines of context, only right after reading that range (course 3-step
+#            edit recovery, stage 1)
+#   editguard — the guarded fallback script: assert count == 1, compile(updated, path, 'exec') before writing, then
+#            git diff; never rewrite a whole file or touch pytest.ini/conftest.py (course fallback-weapon slide)
 #   course — every executable item from the course slides the user sends, as one part (= $COURSE below; grows as slides
-#            arrive): t00 out6k time7 tail40 outline win100 grepbatch twins5 callchain dryhelper noregress ask3. Thinking 4096,
+#            arrive): t00 out6k time7 tail40 outline win100 grepbatch twins5 callchain dryhelper noregress ask3 editctx editguard. Thinking 4096,
 #            include_thoughts, 28 calls, 240 s, graph-tool ban, edit recovery, /tmp, git status are base's already.
 #            Printed as "course = …" per arm.
 #   edit1  — on top of lean: old_string = ONE whole line copied from the latest read_file output, new_string = that
@@ -184,7 +188,7 @@ echo "tasks: ${#IDS[@]} from $SPLIT"
 echo "dev split: ${#IDS[@]} tasks · arms: $ARMS · budget: ${BUDGET_FLAGS[*]:-none} · concurrency ${CONC:-1}"
 for arm in $ARMS; do                                  # check every arm up front, not 2 h into the first one
   for part in ${arm//+/ }; do
-    case "$part" in out8k|nothink|think1k|readdisc|noanalyzer|out6k|out4k|tools6|submit|editrecover|issuefirst|tmpfix|test1|t10|repro|lean|edit1|r1|r2|r3|v4|t00|time7|tail40|outline|win100|course|callchain|grepbatch|twins5|dryhelper|noregress|ask3) ;;
+    case "$part" in out8k|nothink|think1k|readdisc|noanalyzer|out6k|out4k|tools6|submit|editrecover|issuefirst|tmpfix|test1|t10|repro|lean|edit1|r1|r2|r3|v4|t00|time7|tail40|outline|win100|course|callchain|grepbatch|twins5|dryhelper|noregress|ask3|editctx|editguard) ;;
       sample|base) [ "$arm" = "$part" ] || { echo "$part can't stack: $arm"; exit 1; } ;;
       *) echo "unknown arm part $part in $arm"; exit 1 ;; esac
   done
@@ -194,7 +198,7 @@ done
 
 overflows() { [ -f "$LOG" ] || { echo "?"; return; }; n=$(grep -c "maximum context length" "$LOG") || true; echo "${n:-0}"; }
 
-COURSE="t00 out6k time7 tail40 outline win100 grepbatch twins5 callchain dryhelper noregress ask3"   # the course slides' test case (part "course")
+COURSE="t00 out6k time7 tail40 outline win100 grepbatch twins5 callchain dryhelper noregress ask3 editctx editguard"   # the course slides' test case (part "course")
 has() { [[ "+$arm+" == *"+$1+"* ]] || { [[ "+$arm+" == *"+course+"* ]] && [[ " $COURSE " == *" $1 "* ]]; }; }   # "nothink+readdisc" has both
 
 for arm in $ARMS; do
@@ -247,7 +251,7 @@ assert "{" not in rule and "}" not in rule        # ADK templates {name} from se
 print("submit:", "replaced the base's line" if n else "appended")
 PY
   fi
-  for rule in editrecover issuefirst tmpfix test1 repro edit1 r1 r2 r3 v4 tail40 outline win100 grepbatch twins5 callchain dryhelper noregress ask3; do   # one-line prompt rules (scripts/arms/<rule>.md)
+  for rule in editrecover issuefirst tmpfix test1 repro edit1 r1 r2 r3 v4 tail40 outline win100 grepbatch twins5 callchain dryhelper noregress ask3 editctx editguard; do   # one-line prompt rules (scripts/arms/<rule>.md)
     has "$rule" && python3 scripts/arms/apply.py "$rule" "$SUB/prompts/system.md"
   done
   echo; echo "== $arm: model $(grep -rhoE '^ *model: *[A-Za-z0-9_.-]+' --include='*.y*ml' --exclude-dir=adapters "$SUB" | sed 's/.*model: *//' | sort -u | tr '\n' ' ')· $(grep -hE '^(temperature|top_p|top_k):|max_output_tokens|thinking_budget|include_thoughts' "$SUB/configs/sampling.yaml" | tr -s ' \n' ' ')· tools $(grep -c '^  - ' "$SUB/agent.yaml") · prompt $(wc -c < "$SUB/prompts/system.md") chars → $RUN   ($(date +%H:%M))"
