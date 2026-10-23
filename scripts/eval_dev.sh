@@ -67,6 +67,13 @@
 #            existing tests that don't cover the issue; runs end at ~10 of 28 calls, so the extra checks fit).
 #   lean   — prompts/system.md replaced by scripts/arms/lean_system.md (~2.5K chars vs 7K): the same hard limits, five
 #            steps, the repro check built in, edit_file with 2-5 whole lines (E4B wave 1: 32 of 70 edits mismatched).
+#   t00    — temperature 0.0 (course lecture 3's "LB 0.24 v5 safe" sampling.yaml; forum #746250 had 0.0: 47 vs 0.2-1.0: 48-51)
+#   time7  — eval_config max_time_minutes 8 → 7 in the submission, and the run's --max-time-minutes scaled the same way:
+#            TIME_MIN × 7/8 (the box's TIME_MIN is already the L4-equivalent of 8, see Budgets above). Printed per arm.
+#   tail40 — the base prompt's targeted pytest command piped through `2>&1 | tail -40` (scripts/arms/tail40.md)
+#   Course lecture 3 config = t00+out6k+time7 (thinking 4096 / include_thoughts true / 28 calls / 240 s are base's);
+#   the whole lecture-3 roadmap = t00+out6k+time7+tail40. (honghanhhh's v5 shipped 7 min + 6144 + tail -40 at temp 0.2
+#   and scored 0.13 by its author's note; v6 reverted it — notes Insight 31.)
 #   edit1  — on top of lean: old_string = ONE whole line copied from the latest read_file output, new_string = that
 #            line's full replacement (E4B waves 1-3: ~75% of the mismatched old_strings had lines never shown by a read).
 # BUILD_ONLY=1: build runs/subs/<arm>[_TAG] for each arm and stop (no server, no test deps, no eval) — the source dir
@@ -156,7 +163,7 @@ echo "tasks: ${#IDS[@]} from $SPLIT"
 echo "dev split: ${#IDS[@]} tasks · arms: $ARMS · budget: ${BUDGET_FLAGS[*]:-none} · concurrency ${CONC:-1}"
 for arm in $ARMS; do                                  # check every arm up front, not 2 h into the first one
   for part in ${arm//+/ }; do
-    case "$part" in out8k|nothink|think1k|readdisc|noanalyzer|out6k|out4k|tools6|submit|editrecover|issuefirst|tmpfix|test1|t10|repro|lean|edit1|r1|r2|r3|v4) ;;
+    case "$part" in out8k|nothink|think1k|readdisc|noanalyzer|out6k|out4k|tools6|submit|editrecover|issuefirst|tmpfix|test1|t10|repro|lean|edit1|r1|r2|r3|v4|t00|time7|tail40) ;;
       sample|base) [ "$arm" = "$part" ] || { echo "$part can't stack: $arm"; exit 1; } ;;
       *) echo "unknown arm part $part in $arm"; exit 1 ;; esac
   done
@@ -181,6 +188,17 @@ for arm in $ARMS; do
   if has t10; then sedi 's/^temperature: .*/temperature: 1.0/' "$Y"
     if grep -q '^top_k:' "$Y"; then sedi 's/^top_k: .*/top_k: 64/' "$Y"; else sedi '/^top_p:/a\
 top_k: 64' "$Y"; fi; fi
+  has t00 && sedi 's/^temperature: .*/temperature: 0.0/' "$Y"
+  T7=""; ARM_BUDGET=(${BUDGET_FLAGS[@]+"${BUDGET_FLAGS[@]}"})
+  if has time7; then
+    E="$SUB/eval_config.yaml"; [ -f "$E" ] && sedi 's/^\( *\)max_time_minutes: .*/\1max_time_minutes: 7/' "$E"
+    if [ ${#ARM_BUDGET[@]} -gt 0 ]; then
+      T7=$(python3 -c "print(round(${TIME_MIN:-4} * 7 / 8, 3))")
+      ARM_BUDGET=(--max-tool-calls "${MAX_CALLS:-28}" --max-time-minutes "$T7"
+                  --timeout-seconds "${CMD_TIMEOUT:-240}" --verification-timeout-seconds "${VERIFY_TIMEOUT:-300}")
+    fi
+    echo "time7: submission eval_config max_time_minutes $(grep -hoE 'max_time_minutes: *[0-9.]+' "$E" 2>/dev/null | sed 's/.*: *//') · run flag --max-time-minutes ${T7:-none (BUDGET=none)} (= TIME_MIN ${TIME_MIN:-4} × 7/8)"
+  fi
   if [ -n "${MODEL_ALIAS:-}" ]; then           # every agent YAML (sub-agents too), not adapter configs
     find "$SUB" -name '*.y*ml' -not -path '*/adapters/*' | while IFS= read -r f; do
       sedi -E "s/^( *model: *)['\"]?[A-Za-z0-9_.-]+['\"]?/\1$MODEL_ALIAS/" "$f"; done
@@ -206,7 +224,7 @@ assert "{" not in rule and "}" not in rule        # ADK templates {name} from se
 print("submit:", "replaced the base's line" if n else "appended")
 PY
   fi
-  for rule in editrecover issuefirst tmpfix test1 repro edit1 r1 r2 r3 v4; do   # one-line prompt rules (scripts/arms/<rule>.md)
+  for rule in editrecover issuefirst tmpfix test1 repro edit1 r1 r2 r3 v4 tail40; do   # one-line prompt rules (scripts/arms/<rule>.md)
     has "$rule" && python3 scripts/arms/apply.py "$rule" "$SUB/prompts/system.md"
   done
   echo; echo "== $arm: model $(grep -rhoE '^ *model: *[A-Za-z0-9_.-]+' --include='*.y*ml' --exclude-dir=adapters "$SUB" | sed 's/.*model: *//' | sort -u | tr '\n' ' ')· $(grep -hE '^(temperature|top_p|top_k):|max_output_tokens|thinking_budget|include_thoughts' "$SUB/configs/sampling.yaml" | tr -s ' \n' ' ')· tools $(grep -c '^  - ' "$SUB/agent.yaml") · prompt $(wc -c < "$SUB/prompts/system.md") chars → $RUN   ($(date +%H:%M))"
@@ -220,7 +238,7 @@ PY
     --sandbox "${SANDBOX:-subprocess}" \
     --task-ids "${IDS[@]}" \
     --concurrency "${CONC:-1}" \
-    --display quiet ${BUDGET_FLAGS[@]+"${BUDGET_FLAGS[@]}"} ${MODEL_FLAGS[@]+"${MODEL_FLAGS[@]}"} || echo "swegemma eval exited $? for $arm (summary below may be partial)"
+    --display quiet ${ARM_BUDGET[@]+"${ARM_BUDGET[@]}"} ${MODEL_FLAGS[@]+"${MODEL_FLAGS[@]}"} || echo "swegemma eval exited $? for $arm (summary below may be partial)"
   after=$(overflows); mkdir -p "$RUN"                   # the eval may die before creating $RUN
   if [ "$before" = "?" ] || [ "$after" = "?" ]; then echo "?"; else echo $(( after - before )); fi > "$RUN/ctx_overflow.txt"
   [ "${LENIENT:-0}" = 1 ] && printf 'LENIENT=1 — analysis only, not the reference\npins: scripts/sandbox_shim.py PINS%s\n' "${LENIENT_PINS:+ + LENIENT_PINS=$LENIENT_PINS}" > "$RUN/lenient.txt"

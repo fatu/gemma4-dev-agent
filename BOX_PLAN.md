@@ -415,6 +415,37 @@ pin-valid dev tasks are reachable; Opus has 28. Candidate prompt rules → arms:
 test fails; **R2** fix at the layer where the data is lost and run every existing test of that layer; **R3** bare-title issue →
 enumerate edge inputs (empty / trailing / single element) before choosing a hypothesis. Private detail: notes/08.
 
+## B-3l · The course's "LB 0.24 v5 safe" config as an arm (~2–3 h per round, 3 lanes) ▶ when the box is free
+
+The course (lecture 3) teaches `temperature 0.0 · max_output_tokens 6144 · thinking 4096 · include_thoughts true ·
+max_time_minutes 7 · 28 calls · 240 s`, plus `pytest … | tail -40` in the prompt. Three new arm parts in `eval_dev.sh`:
+`t00` (temperature 0.0), `time7` (eval_config 8 → 7, and the run flag scaled by 7/8 of TIME_MIN: 5 → 4.375, printed as a
+`time7:` line), `tail40` (the base prompt's targeted pytest command gets `2>&1 | tail -40`). The course config is
+`t00+out6k+time7`; thinking, include_thoughts, calls and the 240 s timeout are already base's.
+Prior evidence says no gain (6144 alone tied/lost in ab2; temperature 0.0 was the lowest row in the forum's sampling
+sweep; the notebook author's own v5 with 7 min + 6144 + tail -40 scored 0.13 and was reverted), so this is a check of
+the course's claim, not a candidate submission. Same protocol as every arm since B-3e: 3 lanes at TIME_MIN=5, pooled,
+99 pairs vs the k4–k6 reference.
+
+```bash
+cd gemma4-dev-agent && git pull
+BUILD_ONLY=1 SUBMISSION=runs/base_lb024 ARMS="t00+out6k+time7" TAG=chk bash scripts/eval_dev.sh | grep -E "time7:|^=="   # 📷 2 lines
+pkill -f "vllm serve"; sleep 5
+for g in 0 1 2; do GPU=$g TAG=l$((g+1)) TIME_MIN=5 REFS="base_k4 base_k5 base_k6" SUBMISSION=runs/base_lb024 \
+  ARMS="t00+out6k+time7" nohup bash scripts/lane.sh run > runs/lane$g.log 2>&1 & done                 # round 1, ~2–3 h
+```
+**Check before reading results (📷):** the `==` line must show `temperature: 0.0 … max_output_tokens: 6144 thinking_budget:
+4096 include_thoughts: true`, and `time7:` must show `max_time_minutes 7 · run flag --max-time-minutes 4.375`.
+**After (📷):**
+```bash
+A="t00+out6k+time7"
+python3 scripts/compare_runs.py runs/dev33_base_k4 runs/dev33_base_k5 runs/dev33_base_k6 runs/dev33_${A}_l1 runs/dev33_${A}_l2 runs/dev33_${A}_l3
+python3 scripts/rulestats.py runs/dev33_base_k4 runs/dev33_${A}_l1 runs/dev33_${A}_l2 runs/dev33_${A}_l3 | grep -E "^ |resolved|timeout|seconds"
+```
+**Read:** pooled resolved over 3 passes vs k4–k6's; overflows should fall (6144), timeouts may rise (7/8 of the minutes).
+Adopt only if the pooled difference is ≥ +3 tasks with more winning than losing pairs; otherwise it confirms the reverted v5.
+Round 2 (optional, same commands with `ARMS="tail40"`): the one untested item alone on base.
+
 ## B-4 · Repeat the best 2 configs (~2–3 h) ✖ dropped: nothing to repeat. New protocol: an arm = 3 passes pooled vs the 4 base passes
 
 ```bash
