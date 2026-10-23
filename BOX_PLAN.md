@@ -465,6 +465,11 @@ X
 longer prompt); locstats' "first edit" call should move earlier if the SOP helps (base: call 14). Adopt only if the pooled
 difference is ≥ +3 tasks with more winning than losing pairs. Round 2 (next free 3 lanes, `ARMS=callchain`): the one
 rule aimed at the multi-file gap, alone on base, to see whether it carries any course effect.
+**Round 2 first if time allows only one more: `ARMS=coursefull`** (dirs `runs/dev33_coursefull_l1..3`) — the course's
+own "final deliverable": prompts/system.md replaced by its ~20-line prompt verbatim (1,037 chars,
+`scripts/arms/course_system.md`) + `t00+out6k+time7`. Build check: `coursefull = scripts/arms/course_system.md … +
+t00+out6k+time7`, `==` line `prompt 1037 chars`, temperature 0.0, 6144, `time7:` 4.375. `course` (base + every slide
+rule) vs `coursefull` (the course's prompt) decides which one the submission notebook carries.
 
 ## B-4 · Repeat the best 2 configs (~2–3 h) ✖ dropped: nothing to repeat. New protocol: an arm = 3 passes pooled vs the 4 base passes
 

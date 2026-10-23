@@ -97,6 +97,9 @@
 #            git diff; never rewrite a whole file or touch pytest.ini/conftest.py (course fallback-weapon slide)
 #   tmprepro — repro scripts always in /tmp/repro.py, written via run_command heredoc (write_file rejects /tmp; notes
 #            Insight 13) — course upgrade-4 slide
+#   coursefull — the course's "final deliverable" slide: prompts/system.md replaced by its ~20-line "LB 0.24 v5 Safe" prompt
+#            verbatim (scripts/arms/course_system.md) + t00+out6k+time7. `course` = base prompt + every slide rule;
+#            `coursefull` = the course's own prompt. Both measured; the notebook uses the better one.
 #   course — every executable item from the course slides the user sends, as one part (= $COURSE below; grows as slides
 #            arrive): t00 out6k time7 tail40 outline win100 grepbatch twins5 callchain dryhelper noregress ask3 editctx editguard tmprepro. Thinking 4096,
 #            include_thoughts, 28 calls, 240 s, graph-tool ban, edit recovery, /tmp, git status are base's already.
@@ -190,7 +193,7 @@ echo "tasks: ${#IDS[@]} from $SPLIT"
 echo "dev split: ${#IDS[@]} tasks · arms: $ARMS · budget: ${BUDGET_FLAGS[*]:-none} · concurrency ${CONC:-1}"
 for arm in $ARMS; do                                  # check every arm up front, not 2 h into the first one
   for part in ${arm//+/ }; do
-    case "$part" in out8k|nothink|think1k|readdisc|noanalyzer|out6k|out4k|tools6|submit|editrecover|issuefirst|tmpfix|test1|t10|repro|lean|edit1|r1|r2|r3|v4|t00|time7|tail40|outline|win100|course|callchain|grepbatch|twins5|dryhelper|noregress|ask3|editctx|editguard|tmprepro) ;;
+    case "$part" in out8k|nothink|think1k|readdisc|noanalyzer|out6k|out4k|tools6|submit|editrecover|issuefirst|tmpfix|test1|t10|repro|lean|edit1|r1|r2|r3|v4|t00|time7|tail40|outline|win100|course|callchain|grepbatch|twins5|dryhelper|noregress|ask3|editctx|editguard|tmprepro|coursefull) ;;
       sample|base) [ "$arm" = "$part" ] || { echo "$part can't stack: $arm"; exit 1; } ;;
       *) echo "unknown arm part $part in $arm"; exit 1 ;; esac
   done
@@ -201,13 +204,16 @@ done
 overflows() { [ -f "$LOG" ] || { echo "?"; return; }; n=$(grep -c "maximum context length" "$LOG") || true; echo "${n:-0}"; }
 
 COURSE="t00 out6k time7 tail40 outline win100 grepbatch twins5 callchain dryhelper noregress ask3 editctx editguard tmprepro"   # the course slides' test case (part "course")
-has() { [[ "+$arm+" == *"+$1+"* ]] || { [[ "+$arm+" == *"+course+"* ]] && [[ " $COURSE " == *" $1 "* ]]; }; }   # "nothink+readdisc" has both
+COURSEFULL="t00 out6k time7"                          # part "coursefull": the slides' final prompt + the slides' config
+has() { [[ "+$arm+" == *"+$1+"* ]] || { [[ "+$arm+" == *"+course+"* ]] && [[ " $COURSE " == *" $1 "* ]]; } \
+        || { [[ "+$arm+" == *"+coursefull+"* ]] && [[ " $COURSEFULL " == *" $1 "* ]]; }; }   # "nothink+readdisc" has both
 
 for arm in $ARMS; do
   SUB="runs/subs/$arm${TAG:+_$TAG}"; RUN="runs/dev33_$arm${TAG:+_$TAG}"   # per TAG: parallel lanes must not share it
   rm -rf "$SUB"; mkdir -p runs/subs; cp -r "$BASE" "$SUB"
   Y="$SUB/configs/sampling.yaml"
   has course && echo "course = ${COURSE// /+} (course slides test case)"
+  has coursefull && echo "coursefull = scripts/arms/course_system.md (the slides' final ~20-line prompt, verbatim) + ${COURSEFULL// /+}"
   [ "$arm" != sample ] && [ "$arm" != base ] && sedi 's/^max_output_tokens: .*/max_output_tokens: 8192/' "$Y"   # W3+ arms build on out8k
   has out6k && sedi 's/^max_output_tokens: .*/max_output_tokens: 6144/' "$Y"
   if has out4k; then sedi 's/^max_output_tokens: .*/max_output_tokens: 4096/' "$Y"
@@ -232,6 +238,7 @@ top_k: 64' "$Y"; fi; fi
     find "$SUB" -name '*.y*ml' -not -path '*/adapters/*' | while IFS= read -r f; do
       sedi -E "s/^( *model: *)['\"]?[A-Za-z0-9_.-]+['\"]?/\1$MODEL_ALIAS/" "$f"; done
   fi
+  has coursefull && cp scripts/arms/course_system.md "$SUB/prompts/system.md"   # replaces the whole prompt
   has lean && cp scripts/arms/lean_system.md "$SUB/prompts/system.md"   # first: rule arms then append to it
   has readdisc && cat scripts/arms/readdisc.md >> "$SUB/prompts/system.md"
   if has noanalyzer; then                      # drop the 3-line agent_tool entry (code_analyzer) from the tool list
