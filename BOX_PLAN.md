@@ -391,6 +391,20 @@ LENIENT=1 .venv-eval/bin/python scripts/reverify.py runs/dev33_base_ceilx       
 5. Pygments / the two async tasks: no local fix. The box's Docker goldcheck (B-3h) says what the scorer does; the
    accounting denominator becomes 31 or 28 accordingly, and `tasktable.py`'s band split excludes the invalid set.
 
+## B-3j · Opus pass@3 on the genuine misses, passing-trajectory index ✅ 2026-10-22 (laptop, LENIENT, ~9 min, ≈$3–10)
+
+`SPLIT=<file>` (new in eval_dev.sh, prints `tasks: N from <file>`) runs a subset; three passes with TAG lenp1–3 at the B-3g
+budget. Per pass **1 · 2 · 3 / 6**: the requests task 3/3 (the ceiling run's miss was one bad sample), one rich task 2/3,
+one 1/3, one fastapi + two rich tasks 0/3 — all finished in 40–220 s, no budget deaths, so these three are not budget-bound
+either; they are the hard core (k=4 and still nothing). With the ceiling run, **28 of 33 tasks have a verified-passing
+Opus trajectory** (= 28 of the 31 pin-valid tasks). `scripts/passing_traces.py <run>…` indexes them: `runs/passing/<task>/
+<run>.json` symlinks + `runs/passing_traces.json`, re-verified dirs (`_rv`, `_rvl`) resolve back to the original traces,
+lenient verdicts marked `L`. Local only (task text inside). Pass@k is cheap (≈$1–3 a pass on 6 tasks); the next lever for
+the 3 hard tasks is a different sampling (Fable 5.1, or a prompt variant), not more of the same.
+```bash
+python3 scripts/passing_traces.py runs/dev33_base_ceilx_rvl runs/dev33_base_lenp1 runs/dev33_base_lenp2 runs/dev33_base_lenp3
+```
+
 ## B-4 · Repeat the best 2 configs (~2–3 h) ✖ dropped: nothing to repeat. New protocol: an arm = 3 passes pooled vs the 4 base passes
 
 ```bash

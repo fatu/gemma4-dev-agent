@@ -150,7 +150,9 @@ fi
   echo "test deps missing (pytest-httpbin / inline-snapshot): run scripts/install_testdeps.sh first, or set NO_TESTDEPS=1"
   [ -n "${NO_TESTDEPS:-}" ] || exit 1; }
 [ -f "$LOG" ] || echo "warning: no $LOG — ctx_overflow will be '?' (set VLLM_LOG=… to the server's log)"
-IDS=($(cat splits/dev33.txt))                         # no mapfile: macOS bash 3.2
+SPLIT="${SPLIT:-splits/dev33.txt}"                    # SPLIT=<file>: a task subset (one id per line), e.g. pass@k on the misses
+IDS=($(cat "$SPLIT"))                                 # no mapfile: macOS bash 3.2
+echo "tasks: ${#IDS[@]} from $SPLIT"
 echo "dev split: ${#IDS[@]} tasks · arms: $ARMS · budget: ${BUDGET_FLAGS[*]:-none} · concurrency ${CONC:-1}"
 for arm in $ARMS; do                                  # check every arm up front, not 2 h into the first one
   for part in ${arm//+/ }; do
