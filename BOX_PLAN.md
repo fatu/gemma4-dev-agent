@@ -405,6 +405,16 @@ the 3 hard tasks is a different sampling (Fable 5.1, or a prompt variant), not m
 python3 scripts/passing_traces.py runs/dev33_base_ceilx_rvl runs/dev33_base_lenp1 runs/dev33_base_lenp2 runs/dev33_base_lenp3
 ```
 
+**The 3 hard-core tasks dissected (2026-10-22, gold vs the 4 Opus attempts):** all three issues are a bare title + an offline
+link. One is unreachable by anyone: the gold adds a new 200-line script whose exported names and subcommands exist only in the
+hidden test (every attempt dies at import). The other two are strategy misses, not missing information: on one, Opus wrote the
+exact gold line once, saw no change in a probe that did not exercise the edge case (empty cells), reverted it, and later
+submitted with 4 previously-passing tests red; on the other it fixed the caller instead of the layer that drops the data,
+although it had already found the test calling that layer. Attempts took 40 s–3.5 min, far under budget. So 30 of the 31
+pin-valid dev tasks are reachable; Opus has 28. Candidate prompt rules → arms: **R1** never submit while a previously-passing
+test fails; **R2** fix at the layer where the data is lost and run every existing test of that layer; **R3** bare-title issue →
+enumerate edge inputs (empty / trailing / single element) before choosing a hypothesis. Private detail: notes/08.
+
 ## B-4 · Repeat the best 2 configs (~2–3 h) ✖ dropped: nothing to repeat. New protocol: an arm = 3 passes pooled vs the 4 base passes
 
 ```bash
