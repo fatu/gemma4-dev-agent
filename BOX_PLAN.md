@@ -318,7 +318,7 @@ per-task table script (`tasktable.py`, laptop writes it after "go"); until then 
 per-pass line for every task that differs. The ceilx traces are also the only teacher trajectories we own, should SFT
 ever come back on the table (forum: no gain at the top; not planned).
 
-## B-3h · Validity audit: does the gold patch pass on the box? (no GPU, ~5 min) ▶ next — before any further reference run
+## B-3h · Validity audit: does the gold patch pass on the box? (no GPU, ~5 min) ▶ still wanted (expect the same nine) — laptop dissection below
 
 On the laptop the dataset's own patch fails verification for **9 of 33** dev tasks under the subprocess sandbox
 (`scripts/goldcheck.py`): one needs `orjson` (in no wheel set), two new fastapi tasks need starlette 1.x while google-adk
@@ -336,6 +336,33 @@ sudo), then `SANDBOX=docker OUT=runs/goldcheck_docker .venv-eval/bin/python scri
 31–33 resolved there → all later runs use `SANDBOX=docker` (lane.sh passes env through) and k4–k6 are re-run under it as
 the reference; the subprocess numbers stay as history. If docker is not available on the box, say so: the laptop can
 build the image under emulation and we decide then.
+
+**Laptop result 2026-10-22 (Insight 29 — the nine dissected by hand, one dependency swapped at a time):** the reference patches
+are correct; the failures are ours or the harness's. (1) 3 requests: the subprocess sandbox skips both the editable install
+and the `workspace_paths.pth` the Docker sandbox writes (workspace + `src/`), and `PYTHONSAFEPATH=1` drops the cwd, so a
+src-layout repo's tests import the harness venv's own requests — **no requests patch, gold or agent, has ever been tested
+under this sandbox, on the laptop or on the box** (flat repos are fine: pytest prepends the root conftest's directory).
+`PYTHONPATH=src` → pass. (2) 3 rich: pygments 2.19.2 passes two, ≤2.18 the third; 2.21.0 (our venv and the highest public
+wheel) fails all three — the public Docker image most likely fails them too; the Docker goldcheck decides. (3) 1 fastapi:
+needs orjson + ujson (then 9/9), in no wheel set. (4) 2 fastapi: the failing tests are `async def` + `@pytest.mark.anyio`
+and the harness runs `-p no:anyio` → "async def functions are not natively supported" in every environment; unwinnable.
+So dev33 ≤ 31 valid anywhere, 28 if the scorer's pygments is 2.21. B-3h's box goldcheck is still wanted (same nine expected).
+
+## B-3i · Make the subprocess sandbox faithful, re-verify saved patches (laptop first, then box; no GPU) — needs "go"
+
+1. `scripts/sandbox_shim.py` (loaded like the ceiling adapter, via the PYTHONPATH `sitecustomize`): after the per-task venv
+   is created, write `_workspace.pth` = workspace + `workspace/src` into its site-packages — what `harness/sandbox/setup.py`'s
+   fast path does in Docker — and print one line `sandbox shim: .pth → <workspace>, <workspace>/src` into the run log;
+   `eval_dev.sh`, `lane.sh`, `goldcheck.py` all load it. Verification-only entry point `scripts/reverify.py <run>`: re-runs
+   `verify_task` on a run's saved `patches/` (no model calls) → `runs/<run>_rv/` with the same result files.
+2. `install_testdeps.sh` adds `orjson ujson` (box has pip access; print their versions).
+3. Laptop: `goldcheck.py` on the nine → expect 3 requests + the orjson task to flip to RESOLVED; 3 rich + 2 async stay
+   NOT (📷 not needed, it's local). Then `reverify.py runs/dev33_base_ceilx` → the Opus ceiling over the 4 requests tasks for
+   real; log both.
+4. Box, after `git pull`: `goldcheck.py` on the nine (📷 9 lines), then `reverify.py` on `runs/dev33_base_k1..k6` (📷 the
+   compare table, k vs k_rv) — the requests column is the only thing that may move; everything else must be identical.
+5. Pygments / the two async tasks: no local fix. The box's Docker goldcheck (B-3h) says what the scorer does; the
+   accounting denominator becomes 31 or 28 accordingly, and `tasktable.py`'s band split excludes the invalid set.
 
 ## B-4 · Repeat the best 2 configs (~2–3 h) ✖ dropped: nothing to repeat. New protocol: an arm = 3 passes pooled vs the 4 base passes
 
