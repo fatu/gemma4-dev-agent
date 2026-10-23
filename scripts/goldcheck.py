@@ -6,11 +6,15 @@
 A task whose gold patch does not resolve here is unwinnable on this machine (environment), not a model failure
 (diag4 did this on a Kaggle Linux CPU kernel: 31/33 valid). Implementation: `swegemma eval --skip-agent-patch` with
 `verify_task` wrapped so the empty agent patch becomes the task's `patch` field. Same sandbox, same timeouts.
+Imports scripts/sandbox_shim.py first (B-3i): under the subprocess sandbox a src-layout repo is otherwise never imported.
 """
 import functools
 import os
 import pathlib
 import sys
+
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+import sandbox_shim   # noqa: E402,F401
 
 sys.argv[0] = "swegemma"
 ids = [a for a in sys.argv[1:] if not a.startswith("-")]

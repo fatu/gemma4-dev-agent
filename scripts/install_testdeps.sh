@@ -3,7 +3,8 @@
 #   bash scripts/install_testdeps.sh          # once, after setup_eval_env.sh (needs PyPI for the 4 extra packages)
 #   CHECK=requests_6592 bash scripts/install_testdeps.sh   # + a no-agent verification: expect 0 "recursive dependency"
 # See scripts/fill_testdeps.py for why. Extra packages = what the competition wheels/ lacks but the tests import:
-# pytest-httpbin 2.1.0 + httpbin 0.10 (requests' requirements-dev pins) and inline-snapshot + dirty-equals (fastapi).
+# pytest-httpbin 2.1.0 + httpbin 0.10 (requests' requirements-dev pins), inline-snapshot + dirty-equals (fastapi), and
+# orjson + ujson (a fastapi task's tests assert both are installed; Insight 29 — in no wheel set, binary wheels from PyPI).
 set -euo pipefail
 cd "$(dirname "$0")/.."
 VENV="${VENV:-.venv-eval}"; PY="$VENV/bin/python"
@@ -16,7 +17,7 @@ if "$PY" -m pip --version >/dev/null 2>&1; then PIP=("$PY" -m pip)
 elif "$BASE" -m pip --version >/dev/null 2>&1; then PIP=("$BASE" -m pip)
 else [ -x runs/dlvenv/bin/pip ] || "$BASE" -m venv runs/dlvenv; PIP=(runs/dlvenv/bin/pip); fi
 "${PIP[@]}" download -q --dest "$DL" --only-binary=:all: \
-  "pytest-httpbin==2.1.0" "httpbin~=0.10.0" inline-snapshot dirty-equals
+  "pytest-httpbin==2.1.0" "httpbin~=0.10.0" inline-snapshot dirty-equals orjson ujson
 PICK=$("$PY" scripts/fill_testdeps.py "$WHEELS" "$DL")
 FILES=(); while IFS= read -r f; do [ -n "$f" ] && FILES+=("$f"); done \
   < <(echo "$PICK" | "$PY" -c 'import json,sys; [print(p) for p in json.load(sys.stdin).values()]')   # no mapfile: macOS bash 3.2
@@ -25,7 +26,7 @@ if [ ${#FILES[@]} -gt 0 ]; then
   if command -v uv >/dev/null; then uv pip install --python "$PY" --no-deps "${FILES[@]}"
   else "${PIP[@]}" install --python "$PY" --no-deps "${FILES[@]}" 2>/dev/null || "$PY" -m pip install --no-deps "${FILES[@]}"; fi
 fi
-"$PY" -c 'import pytest_httpbin, httpbin, inline_snapshot, dirty_equals, swegemma, google.adk; print("testdeps ok · harness imports ok")'
+"$PY" -c 'import pytest_httpbin, httpbin, inline_snapshot, dirty_equals, orjson, ujson, swegemma, google.adk; print(f"testdeps ok (orjson {orjson.__version__} · ujson {ujson.__version__}) · harness imports ok")'
 if [ -n "${CHECK:-}" ]; then                          # no model needed: verifies the unpatched base commit
   SUB="${SUBMISSION:-harness/sample_submission}"; RUN="runs/testdeps_check_$CHECK"; rm -rf "$RUN"
   "$VENV/bin/swegemma" eval --tasks harness/tasks.jsonl --snapshots-dir harness/snapshots --submission-dir "$SUB" \

@@ -348,7 +348,20 @@ needs orjson + ujson (then 9/9), in no wheel set. (4) 2 fastapi: the failing tes
 and the harness runs `-p no:anyio` → "async def functions are not natively supported" in every environment; unwinnable.
 So dev33 ≤ 31 valid anywhere, 28 if the scorer's pygments is 2.21. B-3h's box goldcheck is still wanted (same nine expected).
 
-## B-3i · Make the subprocess sandbox faithful, re-verify saved patches (laptop first, then box; no GPU) — needs "go"
+## B-3i · Make the subprocess sandbox faithful, re-verify saved patches — laptop ✅ 2026-10-22 · box ▶ next (no GPU, ~10 min)
+
+**Laptop result:** shim + orjson/ujson in; goldcheck on the nine → 2 flip to RESOLVED (the orjson task, the src-layout requests task); 2 requests tasks need werkzeug 2.3.8 (the older public wheel; 3.1.x raises on port −1 inside the test server — drift, like pygments), 3 rich + 2 async fastapi unchanged. `reverify.py` on the Opus ceiling run: **20 → 21/33** — 2 gains, and **1 loss: the one requests task every Gemma run has ever "solved" was the harness venv's own newer requests passing the hidden tests; Opus's patch is wrong there** (off-by-one), so expect the box's requests column to drop to 0/4 on re-verification. Real Opus ceiling: 21 of the 26 tasks valid here; 5 genuine misses.
+```bash
+cd gemma4-dev-agent && git pull && bash scripts/install_testdeps.sh                       # prints orjson/ujson versions
+.venv-eval/bin/python scripts/goldcheck.py $(cat splits/dev33.txt)                          # 📷 33 lines + the "sandbox shim:" line; expect 26 RESOLVED
+for k in 1 2 3 4 5 6; do .venv-eval/bin/python scripts/reverify.py runs/dev33_base_k$k; done  # 📷 the "== … changed" blocks
+python3 scripts/compare_runs.py runs/dev33_base_k1 runs/dev33_base_k1_rv runs/dev33_base_k2 runs/dev33_base_k2_rv runs/dev33_base_k3 runs/dev33_base_k3_rv   # 📷
+```
+**Read:** only requests rows may change (expect the lone requests win to disappear; everything else identical). From here every run
+has the shim (eval_dev.sh prints `sandbox shim: … on`), so new runs need no re-verification. B-3h (Docker goldcheck) still decides
+pygments/werkzeug: the denominator is 26 here, 31 at best in Docker, 24–26 if the public image shares the drift.
+
+*Original step list:*
 
 1. `scripts/sandbox_shim.py` (loaded like the ceiling adapter, via the PYTHONPATH `sitecustomize`): after the per-task venv
    is created, write `_workspace.pth` = workspace + `workspace/src` into its site-packages — what `harness/sandbox/setup.py`'s

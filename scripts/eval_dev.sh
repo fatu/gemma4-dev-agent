@@ -101,14 +101,19 @@ LOG="${VLLM_LOG:-runs/vllm.log}"
 # `path` (e.g. anthropic/claude-opus-5-5) and `api_base`; the key comes from LITELLM_API_KEY (BOX_PLAN.md B-3f/B-3g
 # ceiling runs). Nothing in swegemma caps the context: the 32K limit is the vLLM server's max_model_len, so such a run
 # has the remote model's own window — printed here so the log says what was measured.
+# Every eval loads scripts/eval_sitecustomize.py (PYTHONPATH sitecustomize): the sandbox shim (B-3i — the subprocess sandbox
+# otherwise never imports a src-layout repo such as requests, so its patches were never tested) and, with MODELS_YAML, the
+# remote-model request adapter. Both print their effective settings into this log.
+mkdir -p runs/pypath && ln -sf "$PWD/scripts/eval_sitecustomize.py" runs/pypath/sitecustomize.py
+export PYTHONPATH="$PWD/runs/pypath${PYTHONPATH:+:$PYTHONPATH}"
+echo "sandbox shim: scripts/sandbox_shim.py $([ "${SANDBOX_SHIM:-1}" = 0 ] && echo OFF || echo "on — per-task venv gets 00_workspace.pth → workspace + workspace/src first on sys.path (subprocess sandbox only)")"
 if [ -n "${MODELS_YAML:-}" ]; then
   [ -f "$MODELS_YAML" ] || { echo "MODELS_YAML=$MODELS_YAML not found"; exit 1; }
   [ -n "${LITELLM_API_KEY:-}" ] || { echo "MODELS_YAML set but LITELLM_API_KEY is empty"; exit 1; }
   echo "models: --models-yaml $MODELS_YAML → $(grep -E '^\s*path:' "$MODELS_YAML" | sed 's/.*path: *//' | tr '\n' ' ')(remote; the submission alias is overridden)"
   echo "context cap: none in the harness (the 32K cap is the vLLM server's) — this run has the remote model's own window · max_output_tokens from the submission"
   MODEL_FLAGS=(--models-yaml "$MODELS_YAML")
-  mkdir -p runs/ceil/pypath && ln -sf "$PWD/scripts/ceil_sitecustomize.py" runs/ceil/pypath/sitecustomize.py
-  export PYTHONPATH="$PWD/runs/ceil/pypath${PYTHONPATH:+:$PYTHONPATH}" CEIL_CALL_LOG="${CEIL_CALL_LOG:-$PWD/runs/ceil/calls${TAG:+_$TAG}.jsonl}"
+  export CEIL_CALL_LOG="${CEIL_CALL_LOG:-$PWD/runs/ceil/calls${TAG:+_$TAG}.jsonl}"; mkdir -p runs/ceil
   echo "request adapter: scripts/ceil_sitecustomize.py (extra_body dropped; anthropic thinking $([ "${CEIL_NOTHINK:-0}" = 1 ] && echo off || echo adaptive), temperature left to the provider) · call log $CEIL_CALL_LOG"
 elif [ "${BUILD_ONLY:-0}" = 1 ]; then
   MODEL_FLAGS=(); echo "BUILD_ONLY=1: arm dirs only (runs/subs/<arm>${TAG:+_$TAG}) — no server check, no eval"

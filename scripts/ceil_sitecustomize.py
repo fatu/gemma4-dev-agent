@@ -1,7 +1,7 @@
 """Ceiling runs (BOX_PLAN.md B-3f/B-3g): adapt the harness's vLLM-shaped requests to a remote Anthropic model.
 
-Loaded as `sitecustomize` through PYTHONPATH (eval_dev.sh does this when MODELS_YAML is set), so it runs before the
-harness imports litellm. The harness's generation resolver (adk_submission) puts Gemma/vLLM-only fields into
+Imported by scripts/eval_sitecustomize.py (the PYTHONPATH `sitecustomize` eval_dev.sh installs) when MODELS_YAML is set,
+so it runs before the harness imports litellm. The harness's generation resolver (adk_submission) puts Gemma/vLLM-only fields into
 `extra_body` (chat_template_kwargs.enable_thinking, thinking_token_budget); the Anthropic API rejects unknown fields,
 and Claude Opus 5.5 takes `thinking: {type: adaptive}` instead of a token budget (temperature must then be 1; litellm
 drops it). So for anthropic/* models this wrapper:
