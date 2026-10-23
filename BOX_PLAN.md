@@ -421,7 +421,7 @@ Everything the course (lecture 3) adds on top of the public bundle, in one arm p
 `t00+out6k+time7+tail40+outline+win100`:
 - `t00` temperature 0.0 · `out6k` max_output_tokens 6144 · `time7` eval_config 8 → 7 min, run flag TIME_MIN × 7/8
   (5 → 4.375, printed as a `time7:` line);
-- prompt: `tail40` (targeted pytest piped through `2>&1 | tail -40`), `outline` (for a > ~300-line target file, one
+- prompt: `tail40` (targeted pytest piped through `2>&1 | tail -40` with `set -o pipefail;` so the exit code stays pytest's), `outline` (for a > ~300-line target file, one
   `python3 -c` ast skeleton of classes/functions incl. async with line ranges, before ranged reads; brace-free because
   ADK templates `{name}`), `win100` (read windows ~40 → 60–100 lines).
 The rest of the course's list (thinking 4096, include_thoughts, 28 calls, 240 s, graph-tool ban, batched git grep, twins,

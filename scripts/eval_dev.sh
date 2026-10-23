@@ -70,7 +70,8 @@
 #   t00    — temperature 0.0 (course lecture 3's "LB 0.24 v5 safe" sampling.yaml; forum #746250 had 0.0: 47 vs 0.2-1.0: 48-51)
 #   time7  — eval_config max_time_minutes 8 → 7 in the submission, and the run's --max-time-minutes scaled the same way:
 #            TIME_MIN × 7/8 (the box's TIME_MIN is already the L4-equivalent of 8, see Budgets above). Printed per arm.
-#   tail40 — the base prompt's targeted pytest command piped through `2>&1 | tail -40` (scripts/arms/tail40.md)
+#   tail40 — the base prompt's targeted pytest command piped through `2>&1 | tail -40`, with `set -o pipefail;` so the
+#            exit code stays pytest's (run_command is bash -c; the harness keeps the FIRST 5000 chars of stdout)
 #   Course lecture 3 config = t00+out6k+time7 (thinking 4096 / include_thoughts true / 28 calls / 240 s are base's);
 #   the whole lecture-3 roadmap = t00+out6k+time7+tail40. (honghanhhh's v5 shipped 7 min + 6144 + tail -40 at temp 0.2
 #   and scored 0.13 by its author's note; v6 reverted it — notes Insight 31.)
