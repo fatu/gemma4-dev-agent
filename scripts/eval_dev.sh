@@ -78,6 +78,10 @@
 #   outline — after locating a large file (> ~300 lines): one `python3 -c` ast skeleton (classes, functions incl. async, line
 #            ranges; brace-free so ADK doesn't template it) before ranged reads (course: funnel L2 / AST slide; base never does it)
 #   win100 — read windows "about 40 lines" → "60-100 lines (never more than 120)" (course reading-discipline slide)
+#   callchain — after the twins rule: follow a new/changed parameter, option, attribute or return value up to its callers
+#            and down to every callee/table that must accept or list it (notes Insight 36: Gemma 0/9 on multi-file gold
+#            patches, 8 edited only the first layer; the misses are call-chain plumbing + registration, the course's
+#            "vertical caller/callee check" stage). Not part of `course`.
 #   course — the course's whole lecture-3 test case in one part: t00+out6k+time7+tail40+outline+win100 (thinking 4096,
 #            include_thoughts, 28 calls, 240 s, graph-tool ban, batched git grep, twins, edit recovery, /tmp and
 #            git status are base's already). Printed as "course = …" per arm.
@@ -170,7 +174,7 @@ echo "tasks: ${#IDS[@]} from $SPLIT"
 echo "dev split: ${#IDS[@]} tasks · arms: $ARMS · budget: ${BUDGET_FLAGS[*]:-none} · concurrency ${CONC:-1}"
 for arm in $ARMS; do                                  # check every arm up front, not 2 h into the first one
   for part in ${arm//+/ }; do
-    case "$part" in out8k|nothink|think1k|readdisc|noanalyzer|out6k|out4k|tools6|submit|editrecover|issuefirst|tmpfix|test1|t10|repro|lean|edit1|r1|r2|r3|v4|t00|time7|tail40|outline|win100|course) ;;
+    case "$part" in out8k|nothink|think1k|readdisc|noanalyzer|out6k|out4k|tools6|submit|editrecover|issuefirst|tmpfix|test1|t10|repro|lean|edit1|r1|r2|r3|v4|t00|time7|tail40|outline|win100|course|callchain) ;;
       sample|base) [ "$arm" = "$part" ] || { echo "$part can't stack: $arm"; exit 1; } ;;
       *) echo "unknown arm part $part in $arm"; exit 1 ;; esac
   done
@@ -233,7 +237,7 @@ assert "{" not in rule and "}" not in rule        # ADK templates {name} from se
 print("submit:", "replaced the base's line" if n else "appended")
 PY
   fi
-  for rule in editrecover issuefirst tmpfix test1 repro edit1 r1 r2 r3 v4 tail40 outline win100; do   # one-line prompt rules (scripts/arms/<rule>.md)
+  for rule in editrecover issuefirst tmpfix test1 repro edit1 r1 r2 r3 v4 tail40 outline win100 callchain; do   # one-line prompt rules (scripts/arms/<rule>.md)
     has "$rule" && python3 scripts/arms/apply.py "$rule" "$SUB/prompts/system.md"
   done
   echo; echo "== $arm: model $(grep -rhoE '^ *model: *[A-Za-z0-9_.-]+' --include='*.y*ml' --exclude-dir=adapters "$SUB" | sed 's/.*model: *//' | sort -u | tr '\n' ' ')· $(grep -hE '^(temperature|top_p|top_k):|max_output_tokens|thinking_budget|include_thoughts' "$SUB/configs/sampling.yaml" | tr -s ' \n' ' ')· tools $(grep -c '^  - ' "$SUB/agent.yaml") · prompt $(wc -c < "$SUB/prompts/system.md") chars → $RUN   ($(date +%H:%M))"

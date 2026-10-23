@@ -457,8 +457,10 @@ X
 ```
 **Read:** pooled resolved over 3 passes vs k4–k6. Overflows should fall (6144), timeouts may rise (7/8 of the minutes);
 locstats' "first edit" call should move earlier if outline helps (base: call 14). Adopt only if the pooled difference is
-≥ +3 tasks with more winning than losing pairs; otherwise it confirms the reverted v5. Optional round 2: `ARMS=outline`
-alone on base (the one genuinely new piece), same commands.
+≥ +3 tasks with more winning than losing pairs; otherwise it confirms the reverted v5. Round 2 (next free 3 lanes, same commands with `ARMS=callchain`, dirs `runs/dev33_callchain_l1..3`): base + one rule
+that follows a new/changed parameter or option through its callers, callees and registration tables — aimed at the
+largest measured gap (Gemma solves none of the dev tasks whose gold patch spans several files; most misses stop at the
+first layer). Not part of `course`. Optional round 3: `ARMS=outline` alone on base.
 
 ## B-4 · Repeat the best 2 configs (~2–3 h) ✖ dropped: nothing to repeat. New protocol: an arm = 3 passes pooled vs the 4 base passes
 
