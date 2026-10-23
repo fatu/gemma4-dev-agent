@@ -13,7 +13,7 @@ run stand, absolute rates are biased low. Rows after the fix are marked 🧪✓.
 
 | date | what | public | notes |
 |---|---|---|---|
-| 2026-10-22 | **E4B small-model entry**: the LB-0.24 files on `gemma-4-e4b-it-qat-w4a16-ct` + temperature 1.0 / top_k 64 + output cap 4096 (thinking 2048) + the 2.3K-char short prompt; 240 s / 28 calls / 8 min / 80 turns; no LoRA | ⏳ | dev33 mean 5.6/33 over 5 runs on one RTX PRO 4500 (waves 3–4 below); the submission dir is rebuilt with `BUILD_ONLY=1 scripts/eval_dev.sh` and checked by `make_submission.py` (ALIAS = E4B) |
+| 2026-10-22 | **E4B small-model entry**: the LB-0.24 files on `gemma-4-e4b-it-qat-w4a16-ct` + temperature 1.0 / top_k 64 + output cap 4096 (thinking 2048) + the 2.3K-char short prompt; 240 s / 28 calls / 8 min / 80 turns; no LoRA | **0.03** | ≈ 2/58 against dev33's 5.6/33 (0.17) over 5 runs on one RTX PRO 4500 (waves 3–4 below): LB/dev ≈ 0.18 for E4B vs ≈ 0.7 for the 31B files, so dev33 over-predicts the small model; the scorer has no per-task log, so why is still open; the submission dir is rebuilt with `BUILD_ONLY=1 scripts/eval_dev.sh` and checked by `make_submission.py` (ALIAS = E4B) |
 | 2026-10-19 | a copy of the public "Budget-Aware Coding Agent v2" notebook (budget-aware, public 0.22) | **0.15** | 9/58 vs v2's ~13/58: 4 tasks below the public copy, more than the ±2 noise. Diff vs v2 not yet checked |
 | 2026-10-16 | `sub_001_nothink_nolora` (sample agent, nothink, no LoRA, 240/28/8/80) | — | ❌ Notebook Timeout (12 h). CLI shows COMPLETE with an empty score |
 
