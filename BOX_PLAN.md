@@ -415,36 +415,50 @@ pin-valid dev tasks are reachable; Opus has 28. Candidate prompt rules → arms:
 test fails; **R2** fix at the layer where the data is lost and run every existing test of that layer; **R3** bare-title issue →
 enumerate edge inputs (empty / trailing / single element) before choosing a hypothesis. Private detail: notes/08.
 
-## B-3l · The course's "LB 0.24 v5 safe" config as an arm (~2–3 h per round, 3 lanes) ▶ when the box is free
+## B-3l · The course's lecture-3 test case as one arm, `course` ▶ today (~2–3 h, 3 lanes)
 
-The course (lecture 3) teaches `temperature 0.0 · max_output_tokens 6144 · thinking 4096 · include_thoughts true ·
-max_time_minutes 7 · 28 calls · 240 s`, plus `pytest … | tail -40` in the prompt. Three new arm parts in `eval_dev.sh`:
-`t00` (temperature 0.0), `time7` (eval_config 8 → 7, and the run flag scaled by 7/8 of TIME_MIN: 5 → 4.375, printed as a
-`time7:` line), `tail40` (the base prompt's targeted pytest command gets `2>&1 | tail -40`). The course config is
-`t00+out6k+time7`; thinking, include_thoughts, calls and the 240 s timeout are already base's.
-Prior evidence says no gain (6144 alone tied/lost in ab2; temperature 0.0 was the lowest row in the forum's sampling
-sweep; the notebook author's own v5 with 7 min + 6144 + tail -40 scored 0.13 and was reverted), so this is a check of
-the course's claim, not a candidate submission. Same protocol as every arm since B-3e: 3 lanes at TIME_MIN=5, pooled,
-99 pairs vs the k4–k6 reference.
+Everything the course (lecture 3) adds on top of the public bundle, in one arm part `course` =
+`t00+out6k+time7+tail40+outline+win100`:
+- `t00` temperature 0.0 · `out6k` max_output_tokens 6144 · `time7` eval_config 8 → 7 min, run flag TIME_MIN × 7/8
+  (5 → 4.375, printed as a `time7:` line);
+- prompt: `tail40` (targeted pytest piped through `2>&1 | tail -40`), `outline` (for a > ~300-line target file, one
+  `python3 -c` ast skeleton of classes/functions incl. async with line ranges, before ranged reads; brace-free because
+  ADK templates `{name}`), `win100` (read windows ~40 → 60–100 lines).
+The rest of the course's list (thinking 4096, include_thoughts, 28 calls, 240 s, graph-tool ban, batched git grep, twins,
+`__all__`, edit recovery, /tmp, `git status && git diff`) is already base's. Prior evidence predicts no gain (6144 alone
+tied/lost; temperature 0.0 was the forum sweep's lowest row; the notebook author's own v5 with 7 min + 6144 + tail -40
+scored 0.13), but outline is new; this run checks the course's claim. Same protocol as every arm since B-3e: 3 lanes at
+TIME_MIN=5, pooled, 99 pairs vs the k4–k6 base reference.
 
 ```bash
 cd gemma4-dev-agent && git pull
-BUILD_ONLY=1 SUBMISSION=runs/base_lb024 ARMS="t00+out6k+time7" TAG=chk bash scripts/eval_dev.sh | grep -E "time7:|^=="   # 📷 2 lines
+ls -d runs/dev33_base_k4 runs/dev33_base_k5 runs/dev33_base_k6      # 📷 — all three must exist (B-3e); if not, run B-3e first
+BUILD_ONLY=1 SUBMISSION=runs/base_lb024 ARMS=course TAG=chk bash scripts/eval_dev.sh | grep -E "^course|time7:|tail40:|outline:|win100:|^=="   # 📷 6 lines
 pkill -f "vllm serve"; sleep 5
 for g in 0 1 2; do GPU=$g TAG=l$((g+1)) TIME_MIN=5 REFS="base_k4 base_k5 base_k6" SUBMISSION=runs/base_lb024 \
-  ARMS="t00+out6k+time7" nohup bash scripts/lane.sh run > runs/lane$g.log 2>&1 & done                 # round 1, ~2–3 h
+  ARMS=course nohup bash scripts/lane.sh run > runs/lane$g.log 2>&1 & done                              # ~2–3 h
 ```
-**Check before reading results (📷):** the `==` line must show `temperature: 0.0 … max_output_tokens: 6144 thinking_budget:
-4096 include_thoughts: true`, and `time7:` must show `max_time_minutes 7 · run flag --max-time-minutes 4.375`.
+**Check before reading results (📷):** `course = t00+out6k+time7+tail40+outline+win100`; the `==` line shows `temperature:
+0.0 … max_output_tokens: 6144 thinking_budget: 4096 include_thoughts: true`; `time7:` shows `max_time_minutes 7 · run flag
+--max-time-minutes 4.375`; `tail40: replaced`, `outline: inserted after line 25`, `win100: replaced`. Any "appended
+(anchor not found)" → stop and photo.
 **After (📷):**
 ```bash
-A="t00+out6k+time7"
-python3 scripts/compare_runs.py runs/dev33_base_k4 runs/dev33_base_k5 runs/dev33_base_k6 runs/dev33_${A}_l1 runs/dev33_${A}_l2 runs/dev33_${A}_l3
-python3 scripts/rulestats.py runs/dev33_base_k4 runs/dev33_${A}_l1 runs/dev33_${A}_l2 runs/dev33_${A}_l3 | grep -E "^ |resolved|timeout|seconds"
+python3 scripts/compare_runs.py runs/dev33_base_k4 runs/dev33_base_k5 runs/dev33_base_k6 runs/dev33_course_l1 runs/dev33_course_l2 runs/dev33_course_l3
+python3 scripts/rulestats.py runs/dev33_base_k4 runs/dev33_course_l1 runs/dev33_course_l2 runs/dev33_course_l3 | grep -E "^ |resolved|timeout|seconds"
+python3 scripts/locstats.py runs/dev33_base_k4 runs/dev33_course_l1 runs/dev33_course_l2 runs/dev33_course_l3 | grep -E "^==|read|edited|unresolved that"
+python3 - <<'X'                                     # runs whose tool calls used the outline (the prompt text itself is not counted)
+import glob, json
+for d in ["runs/dev33_course_l1", "runs/dev33_course_l2", "runs/dev33_course_l3"]:
+    fs = glob.glob(d + "/traces/*.json")
+    n = sum(any("import ast" in str(s.get("tool_calls", "")) for s in json.load(open(f))["steps"]) for f in fs)
+    print(d, "outline used in", n, "of", len(fs), "runs")
+X
 ```
-**Read:** pooled resolved over 3 passes vs k4–k6's; overflows should fall (6144), timeouts may rise (7/8 of the minutes).
-Adopt only if the pooled difference is ≥ +3 tasks with more winning than losing pairs; otherwise it confirms the reverted v5.
-Round 2 (optional, same commands with `ARMS="tail40"`): the one untested item alone on base.
+**Read:** pooled resolved over 3 passes vs k4–k6. Overflows should fall (6144), timeouts may rise (7/8 of the minutes);
+locstats' "first edit" call should move earlier if outline helps (base: call 14). Adopt only if the pooled difference is
+≥ +3 tasks with more winning than losing pairs; otherwise it confirms the reverted v5. Optional round 2: `ARMS=outline`
+alone on base (the one genuinely new piece), same commands.
 
 ## B-4 · Repeat the best 2 configs (~2–3 h) ✖ dropped: nothing to repeat. New protocol: an arm = 3 passes pooled vs the 4 base passes
 

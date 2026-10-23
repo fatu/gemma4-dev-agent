@@ -74,6 +74,12 @@
 #   Course lecture 3 config = t00+out6k+time7 (thinking 4096 / include_thoughts true / 28 calls / 240 s are base's);
 #   the whole lecture-3 roadmap = t00+out6k+time7+tail40. (honghanhhh's v5 shipped 7 min + 6144 + tail -40 at temp 0.2
 #   and scored 0.13 by its author's note; v6 reverted it — notes Insight 31.)
+#   outline — after locating a large file (> ~300 lines): one `python3 -c` ast skeleton (classes, functions incl. async, line
+#            ranges; brace-free so ADK doesn't template it) before ranged reads (course: funnel L2 / AST slide; base never does it)
+#   win100 — read windows "about 40 lines" → "60-100 lines (never more than 120)" (course reading-discipline slide)
+#   course — the course's whole lecture-3 test case in one part: t00+out6k+time7+tail40+outline+win100 (thinking 4096,
+#            include_thoughts, 28 calls, 240 s, graph-tool ban, batched git grep, twins, edit recovery, /tmp and
+#            git status are base's already). Printed as "course = …" per arm.
 #   edit1  — on top of lean: old_string = ONE whole line copied from the latest read_file output, new_string = that
 #            line's full replacement (E4B waves 1-3: ~75% of the mismatched old_strings had lines never shown by a read).
 # BUILD_ONLY=1: build runs/subs/<arm>[_TAG] for each arm and stop (no server, no test deps, no eval) — the source dir
@@ -163,7 +169,7 @@ echo "tasks: ${#IDS[@]} from $SPLIT"
 echo "dev split: ${#IDS[@]} tasks · arms: $ARMS · budget: ${BUDGET_FLAGS[*]:-none} · concurrency ${CONC:-1}"
 for arm in $ARMS; do                                  # check every arm up front, not 2 h into the first one
   for part in ${arm//+/ }; do
-    case "$part" in out8k|nothink|think1k|readdisc|noanalyzer|out6k|out4k|tools6|submit|editrecover|issuefirst|tmpfix|test1|t10|repro|lean|edit1|r1|r2|r3|v4|t00|time7|tail40) ;;
+    case "$part" in out8k|nothink|think1k|readdisc|noanalyzer|out6k|out4k|tools6|submit|editrecover|issuefirst|tmpfix|test1|t10|repro|lean|edit1|r1|r2|r3|v4|t00|time7|tail40|outline|win100|course) ;;
       sample|base) [ "$arm" = "$part" ] || { echo "$part can't stack: $arm"; exit 1; } ;;
       *) echo "unknown arm part $part in $arm"; exit 1 ;; esac
   done
@@ -173,12 +179,14 @@ done
 
 overflows() { [ -f "$LOG" ] || { echo "?"; return; }; n=$(grep -c "maximum context length" "$LOG") || true; echo "${n:-0}"; }
 
-has() { [[ "+$arm+" == *"+$1+"* ]]; }                # arm "nothink+readdisc" has nothink and readdisc
+COURSE="t00 out6k time7 tail40 outline win100"         # the course's lecture-3 test case (part "course")
+has() { [[ "+$arm+" == *"+$1+"* ]] || { [[ "+$arm+" == *"+course+"* ]] && [[ " $COURSE " == *" $1 "* ]]; }; }   # "nothink+readdisc" has both
 
 for arm in $ARMS; do
   SUB="runs/subs/$arm${TAG:+_$TAG}"; RUN="runs/dev33_$arm${TAG:+_$TAG}"   # per TAG: parallel lanes must not share it
   rm -rf "$SUB"; mkdir -p runs/subs; cp -r "$BASE" "$SUB"
   Y="$SUB/configs/sampling.yaml"
+  has course && echo "course = ${COURSE// /+} (lecture-3 test case)"
   [ "$arm" != sample ] && [ "$arm" != base ] && sedi 's/^max_output_tokens: .*/max_output_tokens: 8192/' "$Y"   # W3+ arms build on out8k
   has out6k && sedi 's/^max_output_tokens: .*/max_output_tokens: 6144/' "$Y"
   if has out4k; then sedi 's/^max_output_tokens: .*/max_output_tokens: 4096/' "$Y"
@@ -224,7 +232,7 @@ assert "{" not in rule and "}" not in rule        # ADK templates {name} from se
 print("submit:", "replaced the base's line" if n else "appended")
 PY
   fi
-  for rule in editrecover issuefirst tmpfix test1 repro edit1 r1 r2 r3 v4 tail40; do   # one-line prompt rules (scripts/arms/<rule>.md)
+  for rule in editrecover issuefirst tmpfix test1 repro edit1 r1 r2 r3 v4 tail40 outline win100; do   # one-line prompt rules (scripts/arms/<rule>.md)
     has "$rule" && python3 scripts/arms/apply.py "$rule" "$SUB/prompts/system.md"
   done
   echo; echo "== $arm: model $(grep -rhoE '^ *model: *[A-Za-z0-9_.-]+' --include='*.y*ml' --exclude-dir=adapters "$SUB" | sed 's/.*model: *//' | sort -u | tr '\n' ' ')· $(grep -hE '^(temperature|top_p|top_k):|max_output_tokens|thinking_budget|include_thoughts' "$SUB/configs/sampling.yaml" | tr -s ' \n' ' ')· tools $(grep -c '^  - ' "$SUB/agent.yaml") · prompt $(wc -c < "$SUB/prompts/system.md") chars → $RUN   ($(date +%H:%M))"
