@@ -442,7 +442,7 @@ for g in 0 1 2; do GPU=$g TAG=l$((g+1)) TIME_MIN=5 REFS="base_k4 base_k5 base_k6
   ARMS=course nohup bash scripts/lane.sh run > runs/lane$g.log 2>&1 & done                              # ~2–3 h
 ```
 **Check before reading results (📷):** `course = …` lists the 11 parts; the `==` line shows `temperature: 0.0 …
-max_output_tokens: 6144 thinking_budget: 4096 include_thoughts: true` and `prompt ~9730 chars`; `time7:` shows
+max_output_tokens: 6144 thinking_budget: 4096 include_thoughts: true` and `prompt ~9990 chars`; `time7:` shows
 `max_time_minutes 7 · run flag --max-time-minutes 4.375`; 8 rule lines say `replaced` / `inserted`. Any "appended
 (anchor not found)" → stop and photo.
 **After (📷):**
