@@ -7,6 +7,8 @@ A task whose gold patch does not resolve here is unwinnable on this machine (env
 (diag4 did this on a Kaggle Linux CPU kernel: 31/33 valid). Implementation: `swegemma eval --skip-agent-patch` with
 `verify_task` wrapped so the empty agent patch becomes the task's `patch` field. Same sandbox, same timeouts.
 Imports scripts/sandbox_shim.py first (B-3i): under the subprocess sandbox a src-layout repo is otherwise never imported.
+LENIENT=1 → the shim's era pins (pygments/werkzeug) per task, OUT defaults to runs/goldcheck_lenient, a lenient.txt marker
+is written; analysis only, never the reference.
 """
 import functools
 import os
@@ -35,8 +37,10 @@ async def verify_gold(docker, config, task, snapshot_path, **kw):
 ev.verify_task = verify_gold
 from swegemma.cli import main   # noqa: E402
 
-out = os.environ.get("OUT", "runs/goldcheck")
+out = os.environ.get("OUT", "runs/goldcheck_lenient" if sandbox_shim.LENIENT else "runs/goldcheck")
 sub = os.environ.get("SUBMISSION", "runs/base_lb024")
+print(f"goldcheck: {len(ids)} tasks → {out} · sandbox mode {'LENIENT (analysis only)' if sandbox_shim.LENIENT else 'strict'}", flush=True)
+sandbox_shim.write_marker(out)
 rc = main(["eval", "--tasks", "harness/tasks.jsonl", "--snapshots-dir", "harness/snapshots", "--submission-dir", sub,
            "--results-dir", out, "--sandbox", os.environ.get("SANDBOX", "subprocess"), "--task-ids", *ids,
            "--concurrency", os.environ.get("CONC", "3"), "--display", "quiet", "--skip-agent-patch",

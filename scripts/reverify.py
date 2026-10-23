@@ -9,6 +9,7 @@ For each run: every task with a non-empty `patches/<id>.patch` goes through the 
 Tasks without a patch are copied over as unresolved (they were unresolved before: nothing to re-verify). Ends with a
 per-task old → new line for every change and the totals. Env: SANDBOX (subprocess), CONC (3), VERIFY_TIMEOUT (900),
 SUBMISSION (runs/base_lb024). Imports scripts/sandbox_shim.py first, so src-layout repos are really tested.
+LENIENT=1 → the shim's era pins per task, output `<run>_rvl` with a lenient.txt marker; analysis only, never the reference.
 """
 import json
 import os
@@ -47,10 +48,12 @@ for run in runs:
         txt = p.read_text()
         if txt.strip():
             PATCHES[p.stem] = txt
-    out = run.parent / (run.name + "_rv")
+    out = run.parent / (run.name + ("_rvl" if sandbox_shim.LENIENT else "_rv"))
     ids = sorted(PATCHES)
     print(f"{run}: {len(old)} tasks, {len(ids)} with a saved patch → {out} (sandbox {os.environ.get('SANDBOX', 'subprocess')}, "
+          f"mode {'LENIENT (analysis only)' if sandbox_shim.LENIENT else 'strict'}, "
           f"CONC {os.environ.get('CONC', '3')}, verify timeout {os.environ.get('VERIFY_TIMEOUT', '900')} s)", flush=True)
+    sandbox_shim.write_marker(out)
     rc = main(["eval", "--tasks", "harness/tasks.jsonl", "--snapshots-dir", "harness/snapshots", "--submission-dir", sub,
                "--results-dir", str(out), "--sandbox", os.environ.get("SANDBOX", "subprocess"), "--task-ids", *ids,
                "--concurrency", os.environ.get("CONC", "3"), "--display", "quiet", "--skip-agent-patch",

@@ -27,6 +27,13 @@ if [ ${#FILES[@]} -gt 0 ]; then
   else "${PIP[@]}" install --python "$PY" --no-deps "${FILES[@]}" 2>/dev/null || "$PY" -m pip install --no-deps "${FILES[@]}"; fi
 fi
 "$PY" -c 'import pytest_httpbin, httpbin, inline_snapshot, dirty_equals, orjson, ujson, swegemma, google.adk; print(f"testdeps ok (orjson {orjson.__version__} · ujson {ujson.__version__}) · harness imports ok")'
+# LENIENT=1 sandbox mode (scripts/sandbox_shim.py PINS): the pygments versions some rich tasks' tests were written against;
+# werkzeug 2.3.8 / flask 2.3.3 for the requests ones are already in harness/wheels/. Fetched once, installed offline per task.
+LW=runs/lenient_wheels; mkdir -p "$LW"
+for spec in "pygments==2.18.0" "pygments==2.19.2"; do        # one call each: pip refuses two versions of one package at once
+  "${PIP[@]}" download -q --dest "$LW" --no-deps --only-binary=:all: "$spec"
+done
+echo "lenient wheels ($LW, for LENIENT=1): $(ls "$LW" | tr '\n' ' ')"
 if [ -n "${CHECK:-}" ]; then                          # no model needed: verifies the unpatched base commit
   SUB="${SUBMISSION:-harness/sample_submission}"; RUN="runs/testdeps_check_$CHECK"; rm -rf "$RUN"
   "$VENV/bin/swegemma" eval --tasks harness/tasks.jsonl --snapshots-dir harness/snapshots --submission-dir "$SUB" \

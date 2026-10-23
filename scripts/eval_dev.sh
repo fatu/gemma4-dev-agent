@@ -107,6 +107,12 @@ LOG="${VLLM_LOG:-runs/vllm.log}"
 mkdir -p runs/pypath && ln -sf "$PWD/scripts/eval_sitecustomize.py" runs/pypath/sitecustomize.py
 export PYTHONPATH="$PWD/runs/pypath${PYTHONPATH:+:$PYTHONPATH}"
 echo "sandbox shim: scripts/sandbox_shim.py $([ "${SANDBOX_SHIM:-1}" = 0 ] && echo OFF || echo "on — per-task venv gets 00_workspace.pth → workspace + workspace/src first on sys.path (subprocess sandbox only)")"
+if [ "${LENIENT:-0}" = 1 ]; then                      # B-3i-L: era pins for the drift tasks — analysis only, never the reference
+  case "${TAG:-}" in *len*) ;; *) echo "LENIENT=1 needs a TAG containing 'len' (e.g. TAG=lenA) so the run dir says so"; exit 1;; esac
+  echo "sandbox mode: LENIENT — analysis only, not the reference (pins per task from scripts/sandbox_shim.py PINS${LENIENT_PINS:+ + LENIENT_PINS=$LENIENT_PINS}); runs get lenient.txt"
+else
+  echo "sandbox mode: strict (the scorer's: highest wheel of every package)"
+fi
 if [ -n "${MODELS_YAML:-}" ]; then
   [ -f "$MODELS_YAML" ] || { echo "MODELS_YAML=$MODELS_YAML not found"; exit 1; }
   [ -n "${LITELLM_API_KEY:-}" ] || { echo "MODELS_YAML set but LITELLM_API_KEY is empty"; exit 1; }
@@ -215,6 +221,7 @@ PY
     --display quiet ${BUDGET_FLAGS[@]+"${BUDGET_FLAGS[@]}"} ${MODEL_FLAGS[@]+"${MODEL_FLAGS[@]}"} || echo "swegemma eval exited $? for $arm (summary below may be partial)"
   after=$(overflows); mkdir -p "$RUN"                   # the eval may die before creating $RUN
   if [ "$before" = "?" ] || [ "$after" = "?" ]; then echo "?"; else echo $(( after - before )); fi > "$RUN/ctx_overflow.txt"
+  [ "${LENIENT:-0}" = 1 ] && printf 'LENIENT=1 — analysis only, not the reference\npins: scripts/sandbox_shim.py PINS%s\n' "${LENIENT_PINS:+ + LENIENT_PINS=$LENIENT_PINS}" > "$RUN/lenient.txt"
 done
 
 [ "${BUILD_ONLY:-0}" = 1 ] && exit 0

@@ -361,6 +361,20 @@ python3 scripts/compare_runs.py runs/dev33_base_k1 runs/dev33_base_k1_rv runs/de
 has the shim (eval_dev.sh prints `sandbox shim: … on`), so new runs need no re-verification. B-3h (Docker goldcheck) still decides
 pygments/werkzeug: the denominator is 26 here, 31 at best in Docker, 24–26 if the public image shares the drift.
 
+**B-3i-L · LENIENT sandbox mode ✅ 2026-10-22 (laptop) — analysis only, never the reference.** `LENIENT=1` makes
+`scripts/sandbox_shim.py` pin the per-task venv of the 5 dependency-drift tasks to the versions their tests were written
+against (3 rich → pygments 2.18.0 / 2.19.2, 2 requests → werkzeug 2.3.8 + flask 2.3.3; an explicit verified table — a
+date rule does not work), installed offline from `harness/wheels/` + `runs/lenient_wheels/` (fetched by
+`install_testdeps.sh`). Prints `sandbox mode: LENIENT …` and one `lenient: <task> → <pins>` line per task; goldcheck writes
+to `runs/goldcheck_lenient`, reverify to `<run>_rvl`, eval_dev.sh needs a TAG containing `len`; every such dir gets
+`lenient.txt` and compare_runs.py marks it `L`. Result: gold patch RESOLVED on all 5 (the 2 async fastapi tasks stay
+unfixable: `-p no:anyio` is a harness flag, no pin). Use it to ask "is this patch right?" (ceiling runs, trajectories);
+reference numbers stay strict because the scorer is strict.
+```bash
+LENIENT=1 .venv-eval/bin/python scripts/goldcheck.py $(cat splits/dev33.txt)      # expect 31 RESOLVED (26 strict + 5)
+LENIENT=1 .venv-eval/bin/python scripts/reverify.py runs/dev33_base_ceilx          # → _rvl; compare with _rv
+```
+
 *Original step list:*
 
 1. `scripts/sandbox_shim.py` (loaded like the ceiling adapter, via the PYTHONPATH `sitecustomize`): after the per-task venv
