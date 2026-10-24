@@ -490,6 +490,16 @@ then log the public score in `RESULTS.md`. Compare with the public top's 0.22–
 
 ---
 
+
+**Course candidates (2026-10-23, laptop):** both B-3l arms are packaged and waiting for the box result — user decision:
+submit only after B-3l. Rebuild + push the winner (laptop; the laptop asks before the submit):
+```bash
+BUILD_ONLY=1 SUBMISSION=runs/base_lb024 ARMS=<course|coursefull> TAG=nb bash scripts/eval_dev.sh
+MINUTES=7 NAME=<arm>_nb .venv-eval/bin/python scripts/make_submission.py runs/subs/<arm>_nb        # 8 checks + validate_directory
+python3 scripts/build_notebook.py dist/<arm>_nb/submission.zip dist/<arm>_nb/notebook "<title>"     # CPU notebook, 9 checks
+kaggle kernels push -p dist/<arm>_nb/notebook       # private kernel; run completes → submit that version (asks first)
+```
+
 ## Not in this plan
 - **Small-model bonus (E4B/E2B):** planned separately. On the box (or a rented
   32 GB card): `MODEL=google/gemma-4-E4B-it-qat-w4a16-ct TP=1 GPU_UTIL=0.9 bash scripts/serve_vllm.sh` serves it
