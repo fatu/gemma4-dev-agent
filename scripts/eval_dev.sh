@@ -68,7 +68,8 @@
 #   lean   — prompts/system.md replaced by scripts/arms/lean_system.md (~2.5K chars vs 7K): the same hard limits, five
 #            steps, the repro check built in, edit_file with 2-5 whole lines (E4B wave 1: 32 of 70 edits mismatched).
 #   t00    — temperature 0.0 (course lecture 3's "LB 0.24 v5 safe" sampling.yaml; forum #746250 had 0.0: 47 vs 0.2-1.0: 48-51)
-#   time7  — eval_config max_time_minutes 8 → 7 in the submission, and the run's --max-time-minutes scaled the same way:
+#   time7  — eval_config max_time_minutes 8 → 7 in the submission (the base prompt's '28 tool calls and 8 minutes'
+#            line too), and the run's --max-time-minutes scaled the same way:
 #            TIME_MIN × 7/8 (the box's TIME_MIN is already the L4-equivalent of 8, see Budgets above). Printed per arm.
 #   tail40 — the base prompt's targeted pytest command piped through `2>&1 | tail -40`, with `set -o pipefail;` so the
 #            exit code stays pytest's (run_command is bash -c; the harness keeps the FIRST 5000 chars of stdout)
@@ -232,6 +233,8 @@ top_k: 64' "$Y"; fi; fi
       ARM_BUDGET=(--max-tool-calls "${MAX_CALLS:-28}" --max-time-minutes "$T7"
                   --timeout-seconds "${CMD_TIMEOUT:-240}" --verification-timeout-seconds "${VERIFY_TIMEOUT:-300}")
     fi
+    P7="$SUB/prompts/system.md"; if has coursefull; then echo "time7: prompt = the course's own (already says 7 minutes)"; else sedi 's/28 tool calls and 8 minutes in total/28 tool calls and 7 minutes in total/' "$P7"
+    echo "time7: prompt budget line -> $(grep -c '28 tool calls and 7 minutes' "$P7") x '28 tool calls and 7 minutes'"; fi
     echo "time7: submission eval_config max_time_minutes $(grep -hoE 'max_time_minutes: *[0-9.]+' "$E" 2>/dev/null | sed 's/.*: *//') · run flag --max-time-minutes ${T7:-none (BUDGET=none)} (= TIME_MIN ${TIME_MIN:-4} × 7/8)"
   fi
   if [ -n "${MODEL_ALIAS:-}" ]; then           # every agent YAML (sub-agents too), not adapter configs

@@ -465,11 +465,11 @@ X
 longer prompt); locstats' "first edit" call should move earlier if the SOP helps (base: call 14). Adopt only if the pooled
 difference is ≥ +3 tasks with more winning than losing pairs. Round 2 (next free 3 lanes, `ARMS=callchain`): the one
 rule aimed at the multi-file gap, alone on base, to see whether it carries any course effect.
-**Round 2 first if time allows only one more: `ARMS=coursefull`** (dirs `runs/dev33_coursefull_l1..3`) — the course's
+**Optional comparison (user 2026-10-23: one version, `course`): `ARMS=coursefull`** (dirs `runs/dev33_coursefull_l1..3`) — the course's
 own "final deliverable": prompts/system.md replaced by its ~20-line prompt verbatim (1,037 chars,
 `scripts/arms/course_system.md`) + `t00+out6k+time7`. Build check: `coursefull = scripts/arms/course_system.md … +
-t00+out6k+time7`, `==` line `prompt 1037 chars`, temperature 0.0, 6144, `time7:` 4.375. `course` (base + every slide
-rule) vs `coursefull` (the course's prompt) decides which one the submission notebook carries.
+t00+out6k+time7`, `==` line `prompt 1037 chars`, temperature 0.0, 6144, `time7:` 4.375. The submission candidate is `course`
+only (it contains every slide rule; coursefull is the final slide's condensed prompt).
 
 ## B-4 · Repeat the best 2 configs (~2–3 h) ✖ dropped: nothing to repeat. New protocol: an arm = 3 passes pooled vs the 4 base passes
 
@@ -491,13 +491,13 @@ then log the public score in `RESULTS.md`. Compare with the public top's 0.22–
 ---
 
 
-**Course candidates (2026-10-23, laptop):** both B-3l arms are packaged and waiting for the box result — user decision:
-submit only after B-3l. Rebuild + push the winner (laptop; the laptop asks before the submit):
+**Course candidate (2026-10-23, laptop):** `course` only (user: one complete version), packaged and waiting for the
+box result — user decision: submit only after B-3l. Rebuild + push the winner (laptop; the laptop asks before the submit):
 ```bash
-BUILD_ONLY=1 SUBMISSION=runs/base_lb024 ARMS=<course|coursefull> TAG=nb bash scripts/eval_dev.sh
-MINUTES=7 NAME=<arm>_nb .venv-eval/bin/python scripts/make_submission.py runs/subs/<arm>_nb        # 8 checks + validate_directory
-python3 scripts/build_notebook.py dist/<arm>_nb/submission.zip dist/<arm>_nb/notebook "<title>"     # CPU notebook, 9 checks
-kaggle kernels push -p dist/<arm>_nb/notebook       # private kernel; run completes → submit that version (asks first)
+BUILD_ONLY=1 SUBMISSION=runs/base_lb024 ARMS=course TAG=nb bash scripts/eval_dev.sh
+MINUTES=7 NAME=course_nb .venv-eval/bin/python scripts/make_submission.py runs/subs/course_nb        # 8 checks + validate_directory
+python3 scripts/build_notebook.py dist/course_nb/submission.zip dist/course_nb/notebook "Gemma 4 agent course slides config"     # CPU notebook, 9 checks
+kaggle kernels push -p dist/course_nb/notebook       # private kernel; run completes → submit that version (asks first)
 ```
 
 ## Not in this plan
