@@ -11,8 +11,9 @@ both submission-only (our checklist, course slides 26 + 32):
   nolora   — drop every `adapter:` line (agent.yaml + sub_agents/*.yaml) and adapters/: any adapter makes the scorer's
              vLLM reserve 8 × rank-128 LoRA slots and the KV cache falls ~46K → ~7.6K tokens (forum #744331).
              NOLORA=0 keeps them.
-  budget   — eval_config.yaml evaluation = TIMEOUT 240 s / CALLS 28 / MINUTES 8 / TURNS 80 (the sample's 60/10/1/50 is why
-             the organiser baseline scores ~0). Override with the env vars.
+  budget   — eval_config.yaml evaluation = scripts/arms/latest/eval_config.yaml, the one latest setting (2026-10-25:
+             240 s / 28 calls / 7 min / 80 turns; the sample's 60/10/1/50 is why the organiser baseline scores ~0).
+             Override with TIMEOUT / CALLS / MINUTES / TURNS. The card also says whether configs/sampling.yaml = latest.
 Then the course's 8 checks (slide 34) on the built dir, the zip, and again on an unzipped copy (round trip):
   1 agent.yaml at the root · 2 every YAML parses (SafeLoader + an !include constructor) · 3 every !include and
   config_path exists · 4 model = the base alias, no adapter left · 5 tools ⊆ the 9 harness tools (+ agent_tool) ·
@@ -42,6 +43,7 @@ TOOLS = {"run_command", "read_file", "edit_file", "write_file", "submit_patch", 
          "get_code_neighbors", "search_similar_code", "get_code_subgraph"}
 EXTS = {".yaml", ".yml", ".md", ".txt", ".py", ".json", ".safetensors"}
 DATASET = os.environ.get("DATASET", "gemma4-submission")                 # private dataset the notebook reads
+LATEST = ROOT / "scripts" / "arms" / "latest"                            # the one latest setting (eval_dev.sh LATEST)
 results = []                                            # (check, ok, detail)
 
 
@@ -131,8 +133,10 @@ def main():
             if t2 != t:
                 y.write_text(t2)
     # budget
-    ev = {"timeout_seconds": int(os.environ.get("TIMEOUT", 240)), "max_tool_calls": int(os.environ.get("CALLS", 28)),
-          "max_time_minutes": int(os.environ.get("MINUTES", 8)), "max_turns": int(os.environ.get("TURNS", 80))}
+    lev = yaml.safe_load((LATEST / "eval_config.yaml").read_text())["evaluation"]
+    ev = {k: int(os.environ.get(env, lev[k])) for k, env in [("timeout_seconds", "TIMEOUT"), ("max_tool_calls", "CALLS"),
+                                                          ("max_time_minutes", "MINUTES"), ("max_turns", "TURNS")]}
+    ev_src = "latest" if ev == {k: lev[k] for k in ev} else f"≠ latest {lev} (env override)"
     (sub / "eval_config.yaml").write_text(
         "# Per-task execution budgets and sandbox command timeouts (scripts/make_submission.py).\n"
         + yaml.safe_dump({"evaluation": ev}, sort_keys=False))
@@ -167,6 +171,9 @@ def main():
     shutil.rmtree(sub)
 
     s = yaml.safe_load((src / "configs" / "sampling.yaml").read_text())
+    ls_ = yaml.safe_load((LATEST / "configs" / "sampling.yaml").read_text())
+    s_src = "latest" if s == ls_ else "≠ latest: " + ", ".join(
+        f"{k} {s.get(k)} (latest {ls_.get(k)})" for k in sorted(set(s) | set(ls_)) if s.get(k) != ls_.get(k))
     mot = s.get("max_output_tokens")
     if mot and mot > 8192:
         print(f"  ! max_output_tokens {mot} > 8192: Finding #1 context overflows — use an out8k-based arm")
@@ -175,8 +182,8 @@ def main():
     git = subprocess.run(["git", "-C", str(ROOT), "log", "--oneline", "-1"], capture_output=True, text=True).stdout.strip()
     card = (f"name {name} · repo {git} · zip sha256 {zsha[:16]} · system.md sha256 {psha[:16]}\n"
             f"model {ALIAS} · dataset {DATASET}\n"
-            f"sampling {json.dumps(s, separators=(',', ':'))}\n"
-            f"eval_config {ev} · lora {'kept' if os.environ.get('NOLORA', '1') == '0' else 'removed'}")
+            f"sampling {json.dumps(s, separators=(',', ':'))} · {s_src}\n"
+            f"eval_config {ev} · {ev_src} · lora {'kept' if os.environ.get('NOLORA', '1') == '0' else 'removed'}")
     (out / "card.txt").write_text(card + "\n")
 
     print(f"== submission {name}  ←  {src}")

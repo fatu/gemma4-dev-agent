@@ -1,0 +1,8 @@
+# THE latest per-task budget (one copy, user rule 2026-10-25; same slide as configs/sampling.yaml).
+# eval_dev.sh turns it into run flags (minutes scaled to the box: TIME_MIN x max_time_minutes / 8);
+# make_submission.py writes it into every submission unless TIMEOUT / CALLS / MINUTES / TURNS override it.
+evaluation:
+  timeout_seconds: 240
+  max_tool_calls: 28
+  max_time_minutes: 7
+  max_turns: 80

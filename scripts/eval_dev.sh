@@ -67,7 +67,8 @@
 #            existing tests that don't cover the issue; runs end at ~10 of 28 calls, so the extra checks fit).
 #   lean   — prompts/system.md replaced by scripts/arms/lean_system.md (~2.5K chars vs 7K): the same hard limits, five
 #            steps, the repro check built in, edit_file with 2-5 whole lines (E4B wave 1: 32 of 70 edits mismatched).
-#   t00    — temperature 0.0 (course lecture 3's "LB 0.24 v5 safe" sampling.yaml; forum #746250 had 0.0: 47 vs 0.2-1.0: 48-51)
+#   t00    — temperature 0.0 (an Oct-23 course lecture 3 slide's sampling.yaml; its later config-upgrade slide = the latest
+#            setting says 0.2; forum #746250 had 0.0: 47 vs 0.2-1.0: 48-51)
 #   time7  — eval_config max_time_minutes 8 → 7 in the submission (the base prompt's '28 tool calls and 8 minutes'
 #            line too), and the run's --max-time-minutes scaled the same way:
 #            TIME_MIN × 7/8 (the box's TIME_MIN is already the L4-equivalent of 8, see Budgets above). Printed per arm.
@@ -99,12 +100,19 @@
 #   tmprepro — repro scripts always in /tmp/repro.py, written via run_command heredoc (write_file rejects /tmp; notes
 #            Insight 13) — course upgrade-4 slide
 #   coursefull — the course's "final deliverable" slide: prompts/system.md replaced by its ~20-line "LB 0.24 v5 Safe" prompt
-#            verbatim (scripts/arms/course_system.md) + t00+out6k+time7. `course` = base prompt + every slide rule;
-#            `coursefull` = the course's own prompt. Both measured; the notebook uses the better one.
+#            verbatim (scripts/arms/course_system.md) on the latest setting (LATEST=0: + t00+out6k+time7, the pre-10-25
+#            build). `course` = base prompt + every slide rule; `coursefull` = the course's own prompt.
 #   course — every executable item from the course slides the user sends, as one part (= $COURSE below; grows as slides
-#            arrive): t00 out6k time7 tail40 outline win100 grepbatch twins5 callchain dryhelper noregress ask3 editctx editguard tmprepro. Thinking 4096,
-#            include_thoughts, 28 calls, 240 s, graph-tool ban, edit recovery, /tmp, git status are base's already.
-#            Printed as "course = …" per arm.
+#            arrive): tail40 outline win100 grepbatch twins5 callchain dryhelper noregress ask3 editctx editguard tmprepro
+#            on the latest setting (LATEST=0: t00 out6k time7 first). Graph-tool ban, edit recovery, /tmp, git status are
+#            base's already. Printed as "course = …" per arm.
+# LATEST=1 (default since 2026-10-25, user: "maintain one latest setting, use this one"): every arm copy, base and sample
+# included, gets scripts/arms/latest/configs/sampling.yaml + eval_config.yaml in place of the base's before any arm part
+# (course lecture 3's config-upgrade slide: temp 0.2 · top_p 0.95 · 6144 · thinking 4096 · 240 s · 28 calls · 7 min ·
+# 80 turns). Arms are deltas on top of it. The run flags take calls / timeout from it and minutes as
+# TIME_MIN × max_time_minutes / 8; the prompt's "N tool calls and M minutes in total" line follows it. Printed as
+# "latest setting: …" at the top and "latest: …" per arm. LATEST=0 = the old behaviour (the base's own config, W3+ arms
+# on out8k, course/coursefull with t00+out6k+time7) for reruns of pre-2026-10-25 rows.
 #   edit1  — on top of lean: old_string = ONE whole line copied from the latest read_file output, new_string = that
 #            line's full replacement (E4B waves 1-3: ~75% of the mismatched old_strings had lines never shown by a read).
 # BUILD_ONLY=1: build runs/subs/<arm>[_TAG] for each arm and stop (no server, no test deps, no eval) — the source dir
@@ -134,6 +142,19 @@ ARMS="${ARMS:-sample out8k}"
 if [ "${BUDGET:-scorer}" = none ]; then BUDGET_FLAGS=(); else
   BUDGET_FLAGS=(--max-tool-calls "${MAX_CALLS:-28}" --max-time-minutes "${TIME_MIN:-4}"
                 --timeout-seconds "${CMD_TIMEOUT:-240}" --verification-timeout-seconds "${VERIFY_TIMEOUT:-300}"); fi
+LATEST="${LATEST:-1}"; LDIR=scripts/arms/latest       # the one latest setting (header: LATEST)
+if [ "$LATEST" = 1 ]; then
+  lval() { grep -oE "^ *$1: *[0-9.]+" "$LDIR/eval_config.yaml" | sed 's/.*: *//'; }
+  L_MIN=$(lval max_time_minutes); L_CALLS=$(lval max_tool_calls); L_TO=$(lval timeout_seconds); L_FLAG_MIN=""
+  if [ ${#BUDGET_FLAGS[@]} -gt 0 ]; then
+    L_FLAG_MIN=$(python3 -c "print(round(${TIME_MIN:-4} * $L_MIN / 8, 3))")
+    BUDGET_FLAGS=(--max-tool-calls "${MAX_CALLS:-$L_CALLS}" --max-time-minutes "$L_FLAG_MIN"
+                  --timeout-seconds "${CMD_TIMEOUT:-$L_TO}" --verification-timeout-seconds "${VERIFY_TIMEOUT:-300}")
+  fi
+  echo "latest setting: $LDIR → $(grep -hE '^(temperature|top_p|top_k):|max_output_tokens|thinking_budget|include_thoughts' "$LDIR/configs/sampling.yaml" | tr -s ' \n' ' ')· eval_config $L_TO s / $L_CALLS calls / $L_MIN min · run flag --max-time-minutes ${L_FLAG_MIN:-none (BUDGET=none)} (= TIME_MIN ${TIME_MIN:-4} × $L_MIN/8)"
+else
+  echo "latest setting: OFF (LATEST=0) — the base's own sampling/eval_config, W3+ arms on out8k (pre-2026-10-25 behaviour)"
+fi
 LOG="${VLLM_LOG:-runs/vllm.log}"
 # MODELS_YAML=<file>: no local server. The harness's --models-yaml re-registers the submission's alias with a litellm
 # `path` (e.g. anthropic/claude-opus-5-5) and `api_base`; the key comes from LITELLM_API_KEY (BOX_PLAN.md B-3f/B-3g
@@ -204,8 +225,9 @@ done
 
 overflows() { [ -f "$LOG" ] || { echo "?"; return; }; n=$(grep -c "maximum context length" "$LOG") || true; echo "${n:-0}"; }
 
-COURSE="t00 out6k time7 tail40 outline win100 grepbatch twins5 callchain dryhelper noregress ask3 editctx editguard tmprepro"   # the course slides' test case (part "course")
-COURSEFULL="t00 out6k time7"                          # part "coursefull": the slides' final prompt + the slides' config
+[ "$LATEST" = 1 ] && CCFG="" || CCFG="t00 out6k time7 "   # the slides' config: the latest setting, or the pre-10-25 parts
+COURSE="${CCFG}tail40 outline win100 grepbatch twins5 callchain dryhelper noregress ask3 editctx editguard tmprepro"   # the course slides' test case (part "course")
+COURSEFULL="${CCFG% }"                                # part "coursefull": the slides' final prompt (+ the config parts if LATEST=0)
 has() { [[ "+$arm+" == *"+$1+"* ]] || { [[ "+$arm+" == *"+course+"* ]] && [[ " $COURSE " == *" $1 "* ]]; } \
         || { [[ "+$arm+" == *"+coursefull+"* ]] && [[ " $COURSEFULL " == *" $1 "* ]]; }; }   # "nothink+readdisc" has both
 
@@ -213,9 +235,10 @@ for arm in $ARMS; do
   SUB="runs/subs/$arm${TAG:+_$TAG}"; RUN="runs/dev33_$arm${TAG:+_$TAG}"   # per TAG: parallel lanes must not share it
   rm -rf "$SUB"; mkdir -p runs/subs; cp -r "$BASE" "$SUB"
   Y="$SUB/configs/sampling.yaml"
-  has course && echo "course = ${COURSE// /+} (course slides test case)"
-  has coursefull && echo "coursefull = scripts/arms/course_system.md (the slides' final ~20-line prompt, verbatim) + ${COURSEFULL// /+}"
-  [ "$arm" != sample ] && [ "$arm" != base ] && sedi 's/^max_output_tokens: .*/max_output_tokens: 8192/' "$Y"   # W3+ arms build on out8k
+  [ "$LATEST" = 1 ] && { cp "$LDIR/configs/sampling.yaml" "$Y"; cp "$LDIR/eval_config.yaml" "$SUB/eval_config.yaml"; }
+  has course && echo "course = ${COURSE// /+} (course slides test case)$([ "$LATEST" = 1 ] && echo ' on the latest setting')"
+  has coursefull && echo "coursefull = scripts/arms/course_system.md (the slides' final ~20-line prompt, verbatim) + ${COURSEFULL:-the latest setting}"
+  [ "$LATEST" != 1 ] && [ "$arm" != sample ] && [ "$arm" != base ] && sedi 's/^max_output_tokens: .*/max_output_tokens: 8192/' "$Y"   # W3+ arms built on out8k before LATEST
   has out6k && sedi 's/^max_output_tokens: .*/max_output_tokens: 6144/' "$Y"
   if has out4k; then sedi 's/^max_output_tokens: .*/max_output_tokens: 4096/' "$Y"
     sedi 's/^\( *\)thinking_budget: .*/\1thinking_budget: 2048/' "$Y"; fi
@@ -243,6 +266,10 @@ top_k: 64' "$Y"; fi; fi
   fi
   has coursefull && cp scripts/arms/course_system.md "$SUB/prompts/system.md"   # replaces the whole prompt
   has lean && cp scripts/arms/lean_system.md "$SUB/prompts/system.md"   # first: rule arms then append to it
+  if [ "$LATEST" = 1 ]; then                   # after the prompt swaps: the budget line says the latest calls / minutes
+    P="$SUB/prompts/system.md"; sedi "s/[0-9][0-9]* tool calls and [0-9][0-9]* minutes in total/$L_CALLS tool calls and $L_MIN minutes in total/" "$P"
+    echo "latest: $Y + eval_config.yaml from $LDIR · prompt budget line -> $(grep -c "$L_CALLS tool calls and $L_MIN minutes in total" "$P") x '$L_CALLS tool calls and $L_MIN minutes' (0 = the prompt words it differently)"
+  fi
   has readdisc && cat scripts/arms/readdisc.md >> "$SUB/prompts/system.md"
   if has noanalyzer; then                      # drop the 3-line agent_tool entry (code_analyzer) from the tool list
     sedi '/^ *- agent_tool:/,/skip_summarization/d' "$SUB/agent.yaml"
