@@ -8,7 +8,8 @@ and appends one JSON line per call to <TRAJ_DIR>/<task>.jsonl:
   new       the request messages added since that task's previous call (the first call: system + task prompt), so the
             file grows linearly; the previous reply comes back here too, which shows how it was RE-SENT (with or
             without reasoning_content, role tool_responses, …)
-  setup     first call only: model, sampling params, extra_body (enable_thinking / thinking budget), tool names
+  setup     first call only: model, sampling params, extra_body (enable_thinking / thinking budget), tool names, and
+            tool_schemas = the full tool list as sent (needed to re-render the exact prompt with the chat template)
   resp      what the model returned: reasoning (the thinking), content (text), tool_calls, finish_reason
   usage     prompt / completion / cached tokens · s = seconds for the call · err = the exception if the call failed
 The task id comes from the ContextVar scripts/sandbox_shim.py sets around run_agent_sandbox (task_context()).
@@ -88,7 +89,8 @@ if litellm is not None and DIR:
                 rec["setup"] = {"model": kwargs.get("model"),
                                 "params": _plain({k: kwargs.get(k) for k in ("temperature", "top_p", "top_k", "max_tokens",
                                                                              "max_completion_tokens", "extra_body", "stream")}),
-                                "tools": [(t.get("function") or {}).get("name") for t in tools if isinstance(t, dict)]}
+                                "tools": [(t.get("function") or {}).get("name") for t in tools if isinstance(t, dict)],
+                                "tool_schemas": _plain(tools)}
             if kwargs.get("stream"):
                 rec["resp"] = {"unparsed": "stream=True — reply not captured"}
             elif r is not None:
