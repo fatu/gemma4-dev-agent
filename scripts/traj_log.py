@@ -12,7 +12,9 @@ and appends one JSON line per call to <TRAJ_DIR>/<task>.jsonl:
             tool_schemas = the full tool list as sent (needed to re-render the exact prompt with the chat template)
   resp      what the model returned: reasoning (the thinking), content (text), tool_calls, finish_reason
   usage     prompt / completion / cached tokens · s = seconds for the call · err = the exception if the call failed
-The task id comes from the ContextVar scripts/sandbox_shim.py sets around run_agent_sandbox (task_context()).
+The task id comes from TRAJ_TASK when set (the Kaggle lab kernel runs one task per `swegemma eval`, no shim), else from
+the ContextVar scripts/sandbox_shim.py sets around run_agent_sandbox (task_context()). The sandbox's own python never
+sees TRAJ_DIR (swegemma builds a sanitized env for it), so tool outputs stay clean.
 Render one task: python3 scripts/walkthrough.py <run>/traj/<task>.jsonl [--brief]   (📷 --brief).
 Outputs quote task data → they stay in runs/ (gitignored).
 """
@@ -45,9 +47,14 @@ def _plain(x):
 
 
 if litellm is not None and DIR:
-    import sandbox_shim
+    if os.environ.get("TRAJ_TASK"):
+        def _current_task():
+            return os.environ["TRAJ_TASK"]
+    else:
+        import sandbox_shim
 
-    sandbox_shim.task_context()
+        sandbox_shim.task_context()
+        _current_task = sandbox_shim.current_task
     _out = pathlib.Path(DIR)
     _out.mkdir(parents=True, exist_ok=True)
     _seen = {}                          # task → (calls so far, messages already logged)
@@ -77,7 +84,7 @@ if litellm is not None and DIR:
 
     def _write(kwargs, r, t0, err=None):
         try:
-            task = sandbox_shim.current_task() or "unknown_task"
+            task = _current_task() or "unknown_task"
             msgs = kwargs.get("messages") or []
             n_calls, n_prev = _seen.get(task, (0, 0))
             reset = len(msgs) < n_prev          # history shrank (compaction / restart): log it all again
