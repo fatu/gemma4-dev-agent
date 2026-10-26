@@ -165,6 +165,7 @@ LOG="${VLLM_LOG:-runs/vllm.log}"
 # remote-model request adapter. Both print their effective settings into this log.
 mkdir -p runs/pypath && ln -sf "$PWD/scripts/eval_sitecustomize.py" runs/pypath/sitecustomize.py
 export PYTHONPATH="$PWD/runs/pypath${PYTHONPATH:+:$PYTHONPATH}"
+echo "trajectory log: $([ "${TRAJ:-1}" = 1 ] && echo "on (TRAJ=1) → <run>/traj/<task>.jsonl: every model call's new messages, thinking, reply, tokens · render: scripts/walkthrough.py" || echo "off (TRAJ=0)")"
 echo "sandbox shim: scripts/sandbox_shim.py $([ "${SANDBOX_SHIM:-1}" = 0 ] && echo OFF || echo "on — per-task venv gets 00_workspace.pth → workspace + workspace/src first on sys.path (subprocess sandbox only)")"
 if [ "${LENIENT:-0}" = 1 ]; then                      # B-3i-L: era pins for the drift tasks — analysis only, never the reference
   case "${TAG:-}" in *len*) ;; *) echo "LENIENT=1 needs a TAG containing 'len' (e.g. TAG=lenA) so the run dir says so"; exit 1;; esac
@@ -296,7 +297,7 @@ PY
   echo; echo "== $arm: model $(grep -rhoE '^ *model: *[A-Za-z0-9_.-]+' --include='*.y*ml' --exclude-dir=adapters "$SUB" | sed 's/.*model: *//' | sort -u | tr '\n' ' ')· $(grep -hE '^(temperature|top_p|top_k):|max_output_tokens|thinking_budget|include_thoughts' "$SUB/configs/sampling.yaml" | tr -s ' \n' ' ')· tools $(grep -c '^  - ' "$SUB/agent.yaml") · prompt $(wc -c < "$SUB/prompts/system.md") chars → $RUN   ($(date +%H:%M))"
   [ "${BUILD_ONLY:-0}" = 1 ] && { echo "   built $SUB (BUILD_ONLY: no eval)"; continue; }
   before=$(overflows)
-  swegemma eval \
+  TRAJ_DIR=$([ "${TRAJ:-1}" = 1 ] && echo "$PWD/$RUN/traj") swegemma eval \
     --tasks harness/tasks.jsonl \
     --snapshots-dir harness/snapshots \
     --submission-dir "$SUB" \
@@ -319,3 +320,4 @@ done
 echo; python3 scripts/compare_runs.py $REF $DIRS
 echo; python3 scripts/growth.py $REF $DIRS | grep -E '^==|Δprompt|→ b|growth explained' || true
 echo; python3 scripts/rulestats.py $REF $DIRS || true      # did the agent follow the prompt rules? (📷)
+[ "${TRAJ:-1}" = 1 ] && { echo; for d in $DIRS; do python3 scripts/walkthrough.py "$d/traj"; done; } || true   # 📷 thinking re-sent? (scripts/traj_log.py)

@@ -461,6 +461,14 @@ for d in ["runs/dev33_course_l1", "runs/dev33_course_l2", "runs/dev33_course_l3"
     print(d, "outline used in", n, "of", len(fs), "runs")
 X
 ```
+**Trajectories (on by default since 2026-10-26; `TRAJ=0` turns it off):** every run dir now gets `traj/<task>.jsonl`
+from `scripts/traj_log.py`: each Gemma call's new messages, its thinking, reply, tool calls, finish reason and tokens.
+The harness trace drops the thinking. The lane log ends with one `traj …` line per run (📷): thinking in how many
+replies, and **re-sent turns with thinking x/y**, which answers whether old thoughts go back to the model. One task, call
+by call (📷), pick any task id from `ls runs/dev33_course_l1/traj`:
+```bash
+python3 scripts/walkthrough.py runs/dev33_course_l1/traj/<task>.jsonl --brief
+```
 **Read:** pooled resolved over 3 passes vs k4–k6. Overflows should fall (6144), timeouts may rise (7/8 of the minutes,
 longer prompt); locstats' "first edit" call should move earlier if the SOP helps (base: call 14). Adopt only if the pooled
 difference is ≥ +3 tasks with more winning than losing pairs. Round 2 (next free 3 lanes, `ARMS=callchain`): the one

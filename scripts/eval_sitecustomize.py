@@ -1,6 +1,7 @@
 """Loaded as `sitecustomize` through PYTHONPATH by eval_dev.sh (symlinked to runs/pypath/sitecustomize.py) for every
 `swegemma eval` it starts: always the sandbox shim (scripts/sandbox_shim.py, B-3i); plus the remote-model request adapter
-(scripts/ceil_sitecustomize.py) when MODELS_YAML is set (B-3f/B-3g ceiling runs). Both print what they do into the run log."""
+(scripts/ceil_sitecustomize.py) when MODELS_YAML is set (B-3f/B-3g ceiling runs); plus the trajectory log
+(scripts/traj_log.py) when TRAJ_DIR is set. Each prints what it does into the run log."""
 import os
 import pathlib
 import sys
@@ -10,3 +11,6 @@ import sandbox_shim   # noqa: E402,F401
 
 if os.environ.get("MODELS_YAML"):
     import ceil_sitecustomize   # noqa: E402,F401
+
+if os.environ.get("TRAJ_DIR"):          # last: it wraps whatever litellm.acompletion is by now
+    import traj_log   # noqa: E402,F401

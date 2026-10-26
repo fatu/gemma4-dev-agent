@@ -100,9 +100,16 @@ def _pin(manager, sid):
         print(f"lenient: {task} → {' '.join(pins)} FAILED — task runs strict: {(r.stderr or r.stdout).strip()[-200:]}", flush=True)
 
 
-def _wrap_task_context():
-    """LENIENT only: make the task id visible to start() via a ContextVar."""
+def current_task():
+    return _task.get()
+
+
+def task_context():
+    """Make the task id visible via a ContextVar (LENIENT pins; scripts/traj_log.py). Wraps once."""
     import swegemma.evaluate as ev
+    if getattr(ev, "_task_ctx_wrapped", False):
+        return
+    ev._task_ctx_wrapped = True
 
     def wrap(fn):
         @functools.wraps(fn)
@@ -145,7 +152,7 @@ def install():
     cls.start = start
     cls._shim_installed = True
     if LENIENT:
-        _wrap_task_context()
+        task_context()
         print(f"sandbox mode: LENIENT — analysis only, not the reference; pins: {pins_text()}", flush=True)
     return True
 
