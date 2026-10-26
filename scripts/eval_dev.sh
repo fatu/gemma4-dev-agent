@@ -107,7 +107,9 @@
 #            on the latest setting (LATEST=0: t00 out6k time7 first). Graph-tool ban, edit recovery, /tmp, git status are
 #            base's already. Printed as "course = …" per arm.
 # LATEST=1 (default since 2026-10-25, user: "maintain one latest setting, use this one"): every arm copy, base and sample
-# included, gets scripts/arms/latest/configs/sampling.yaml + eval_config.yaml in place of the base's before any arm part
+# included, gets scripts/arms/latest/configs/sampling.yaml + eval_config.yaml in place of the base's before any arm part,
+# and every arm but sample gets scripts/arms/latest/prompts/system.md (since 2026-10-26: the base prompt + the course
+# lecture-3 notebook's 3 edits — git status --short before git diff, keep behaviour the issue does not mention, | tail -40)
 # (course lecture 3's config-upgrade slide: temp 0.2 · top_p 0.95 · 6144 · thinking 4096 · 240 s · 28 calls · 7 min ·
 # 80 turns). Arms are deltas on top of it. The run flags take calls / timeout from it and minutes as
 # TIME_MIN × max_time_minutes / 8; the prompt's "N tool calls and M minutes in total" line follows it. Printed as
@@ -237,6 +239,10 @@ for arm in $ARMS; do
   rm -rf "$SUB"; mkdir -p runs/subs; cp -r "$BASE" "$SUB"
   Y="$SUB/configs/sampling.yaml"
   [ "$LATEST" = 1 ] && { cp "$LDIR/configs/sampling.yaml" "$Y"; cp "$LDIR/eval_config.yaml" "$SUB/eval_config.yaml"; }
+  if [ "$LATEST" = 1 ] && [ "$arm" != sample ]; then   # the latest prompt too (2026-10-26); sample keeps the organiser's
+    cp "$LDIR/prompts/system.md" "$SUB/prompts/system.md"
+    echo "latest prompt: $LDIR/prompts/system.md ($(wc -c < "$LDIR/prompts/system.md" | tr -d ' ') chars) in place of $BASE's — arm parts apply on top"
+  fi
   has course && echo "course = ${COURSE// /+} (course slides test case)$([ "$LATEST" = 1 ] && echo ' on the latest setting')"
   has coursefull && echo "coursefull = scripts/arms/course_system.md (the slides' final ~20-line prompt, verbatim) + ${COURSEFULL:-the latest setting}"
   [ "$LATEST" != 1 ] && [ "$arm" != sample ] && [ "$arm" != base ] && sedi 's/^max_output_tokens: .*/max_output_tokens: 8192/' "$Y"   # W3+ arms built on out8k before LATEST

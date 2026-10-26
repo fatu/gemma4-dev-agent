@@ -4,11 +4,11 @@
     python3 scripts/latest_diff.py dist/course_nb/submission.zip          # a built zip
     python3 scripts/latest_diff.py runs/subs/course                       # an arm dir (agent.yaml at the root)
     python3 scripts/latest_diff.py /tmp/k03/some-notebook.ipynb           # a notebook that writes the files inline
-    REF=runs/base_lb024 python3 scripts/latest_diff.py …                  # the reference prompt dir (default)
+    REF=runs/base_lb024 python3 scripts/latest_diff.py …                  # compare the prompt with another dir's instead
 
 Latest = configs/sampling.yaml + eval_config.yaml from scripts/arms/latest/, agent.yaml = the base model alias with the
-9 harness tools and no adapter, prompt = $REF/prompts/system.md with its budget line rewritten to the latest calls /
-minutes (what eval_dev.sh LATEST=1 builds for the base arm). Prints every knob as `same` or `latest → this`, then the
+9 harness tools and no adapter, prompt = scripts/arms/latest/prompts/system.md (what eval_dev.sh LATEST=1 builds for
+the base arm; with REF=<dir>, that dir's prompt with its budget line rewritten to the latest calls / minutes). Prints every knob as `same` or `latest → this`, then the
 prompt's changed lines. Read-only.
 """
 import ast
@@ -24,7 +24,7 @@ import yaml
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 LDIR = ROOT / "scripts" / "arms" / "latest"
-REF = pathlib.Path(os.environ.get("REF", ROOT / "runs" / "base_lb024"))
+REF = pathlib.Path(os.environ.get("REF", LDIR))
 TOOLS9 = ["run_command", "read_file", "edit_file", "write_file", "get_status", "submit_patch",
           "get_code_neighbors", "search_similar_code", "get_code_subgraph"]
 
@@ -83,7 +83,7 @@ agent = y(F.get("agent.yaml"))
 inc = lambda key, default: (str(agent.get(key) or "").removeprefix("!include ").strip() or default) if agent else default
 s = y(F.get(inc("generate_content_config", "configs/sampling.yaml"))) or {}
 e = (y(F.get("eval_config.yaml")) or {}).get("evaluation", {})
-print(f"latest_diff: {sys.argv[1]}  vs  latest ({LDIR.relative_to(ROOT)}) + prompt {REF}/prompts/system.md")
+print(f"latest_diff: {sys.argv[1]}  vs  latest + prompt {REF.relative_to(ROOT) if REF.is_relative_to(ROOT) else REF}/prompts/system.md")
 diffs = 0
 
 

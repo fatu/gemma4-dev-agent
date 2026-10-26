@@ -14,6 +14,12 @@ correctly. L4 is kept for one confirmation run of the final candidate.
 the laptop. So the laptop writes code → you `git pull` on the box and run → you photograph the result → the laptop
 logs it in `RESULTS.md` and `05_run_log.md`. Each step below = one run + its photos.
 
+**Latest setting (since 2026-10-26).** Every arm except `sample` starts from `scripts/arms/latest/`: sampling, eval_config
+**and prompts/system.md** (= the old base prompt + 3 edits: `git status --short && git diff` before submitting, "keep the
+current behaviour for every input the issue does not mention", pytest `2>&1 | tail -40`). Arm parts apply on top. So
+`base` from 2026-10-26 on is not the earlier `base`: compare arms only with the `base` of the same run. The run prints
+`latest prompt: … (7144 chars)`; `python3 scripts/latest_diff.py runs/subs/<arm>` shows any arm's delta.
+
 **Decision rule** (dev33 noise is about ±2 tasks): an arm counts as better only if it solves **≥ 2 more tasks than
 `base` in the same run, with ≥ 2 arm-only tasks** in the pairs. Otherwise drop it. An arm that loses ≥ 2 tasks is
 dropped too.

@@ -13,7 +13,8 @@ both submission-only (our checklist, course slides 26 + 32):
              NOLORA=0 keeps them.
   budget   — eval_config.yaml evaluation = scripts/arms/latest/eval_config.yaml, the one latest setting (2026-10-25:
              240 s / 28 calls / 7 min / 80 turns; the sample's 60/10/1/50 is why the organiser baseline scores ~0).
-             Override with TIMEOUT / CALLS / MINUTES / TURNS. The card also says whether configs/sampling.yaml = latest.
+             Override with TIMEOUT / CALLS / MINUTES / TURNS. The card also says whether configs/sampling.yaml and
+             prompts/system.md = latest (scripts/latest_diff.py shows the delta).
 Then the course's 8 checks (slide 34) on the built dir, the zip, and again on an unzipped copy (round trip):
   1 agent.yaml at the root · 2 every YAML parses (SafeLoader + an !include constructor) · 3 every !include and
   config_path exists · 4 model = the base alias, no adapter left · 5 tools ⊆ the 9 harness tools (+ agent_tool) ·
@@ -180,7 +181,10 @@ def main():
     zsha = hashlib.sha256(zpath.read_bytes()).hexdigest()
     psha = hashlib.sha256((src / "prompts" / "system.md").read_bytes()).hexdigest()
     git = subprocess.run(["git", "-C", str(ROOT), "log", "--oneline", "-1"], capture_output=True, text=True).stdout.strip()
-    card = (f"name {name} · repo {git} · zip sha256 {zsha[:16]} · system.md sha256 {psha[:16]}\n"
+    lp = (LATEST / "prompts" / "system.md").read_text()
+    sp = (src / "prompts" / "system.md").read_text()
+    p_src = "= latest prompt" if sp == lp else f"≠ latest prompt ({len(lp):,} → {len(sp):,} chars: arm parts / other base)"
+    card = (f"name {name} · repo {git} · zip sha256 {zsha[:16]} · system.md sha256 {psha[:16]} {p_src}\n"
             f"model {ALIAS} · dataset {DATASET}\n"
             f"sampling {json.dumps(s, separators=(',', ':'))} · {s_src}\n"
             f"eval_config {ev} · {ev_src} · lora {'kept' if os.environ.get('NOLORA', '1') == '0' else 'removed'}")

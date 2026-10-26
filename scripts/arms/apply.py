@@ -3,6 +3,7 @@
 Rule file = a small header, `---`, then the rule text:
   mode: after | replace     after: insert the rule as a new line after the line holding `anchor`
   anchor: <exact text>      replace: swap the exact `anchor` text for the rule
+  anchor_alt: <exact text>  optional: used when `anchor` is missing (the same line in an older base prompt)
 If the anchor is missing (another base prompt) the rule is appended under "# EXTRA RULES", and that is printed.
 Usage: python3 scripts/arms/apply.py <name> <system.md>
 """
@@ -15,6 +16,9 @@ rule = rule.strip()
 assert "{" not in rule and "}" not in rule, "ADK templates {name} from session state"
 s = target.read_text()
 anchor = meta["anchor"]
+if anchor not in s and meta.get("anchor_alt", "\0") in s:
+    anchor = meta["anchor_alt"]
+    name += " (anchor_alt)"
 if anchor not in s:
     s, how = s.rstrip() + "\n\n# EXTRA RULES\n" + (rule if rule.startswith("- ") else "- " + rule) + "\n", "appended (anchor not found)"
 elif meta["mode"] == "replace":
