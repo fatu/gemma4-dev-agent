@@ -73,14 +73,17 @@ def from_traj(path):
     tot_c = sum((r.get("usage") or {}).get("completion") or 0 for r in recs)
     think = sum(len((r.get("resp") or {}).get("reasoning") or "") for r in recs)
     if BRIEF:
-        print(f"{task}: {len(recs)} calls · prompt {tot_p:,} · completion {tot_c:,} · thinking {think:,} chars")
+        nc = sum(1 for r in recs if r.get("compaction"))
+        print(f"{task}: {len(recs)} calls{f' ({nc} compaction)' if nc else ''} · prompt {tot_p:,} · completion {tot_c:,} · thinking {think:,} chars")
         print(" #  prompt  Δ      out  think   s    reply")
         prev = None
         for r in recs:
             u, rp = r.get("usage") or {}, r.get("resp") or {}
             p = u.get("prompt") or 0
             tc = rp.get("tool_calls") or []
-            if tc:   # every tool call of the reply; the first one with its arguments
+            if r.get("compaction"):   # an events-compaction summary call (scripts/compaction_shim.py), not an agent turn
+                reply = f"COMPACTION summary → {len(text_of(rp.get('content'))):,} chars"
+            elif tc:   # every tool call of the reply; the first one with its arguments
                 reply = f"{tc[0]['name']} {one(tc[0].get('args'), 60 if len(tc) == 1 else 40)}" + "".join(f" + {t['name']}" for t in tc[1:])
             else:
                 reply = f"TEXT {one(rp.get('content'), 60)}" if rp.get("content") else rp.get("unparsed") or "-"
@@ -88,7 +91,7 @@ def from_traj(path):
             print(f"{r['call']:2} {p:7,} {'' if prev is None else format(p - prev, '+,'):>6} {u.get('completion') or 0:5,} "
                   f"{len(rp.get('reasoning') or ''):6,} {r.get('s', 0):5.1f}  {reply}"
                   f"{'  [' + fr + ']' if fr and fr not in ('stop', 'tool_calls') else ''}{'  ERR ' + one(r['err'], 50) if r.get('err') else ''}")
-            prev = p
+            prev = p if not r.get("compaction") else prev
         resent = [m for r in recs for m in r.get("new", []) if m.get("role") == "assistant"]
         with_r = sum(1 for m in resent if m.get("reasoning_content") or m.get("reasoning"))
         print(f"re-sent assistant turns: {len(resent)} · with thinking attached: {with_r}")
@@ -108,7 +111,7 @@ def from_traj(path):
     for r in recs:
         u, rp = r.get("usage") or {}, r.get("resp") or {}
         p = u.get("prompt") or 0
-        w(f"## Call {r['call']}\n")
+        w(f"## Call {r['call']}{' — COMPACTION summary (not an agent turn)' if r.get('compaction') else ''}\n")
         w(f"**Request:** {r['n_msgs']} messages{' (history RESET: logged in full)' if r.get('reset') else ''} · "
           f"prompt {p:,} tok{'' if prev is None else f' (Δ {p - prev:+,})'} · cached {u.get('cached') or 0:,} · "
           f"{r.get('s', 0):.1f} s\n")
@@ -132,7 +135,7 @@ def from_traj(path):
               fence(json.dumps(a, indent=1) if not isinstance(a, str) else a, "json"))
         w(f"finish_reason `{rp.get('finish_reason')}` · completion {u.get('completion') or 0:,} tok"
           f"{' · ERROR ' + r['err'] if r.get('err') else ''}{' · ' + rp['unparsed'] if rp.get('unparsed') else ''}\n")
-        prev = p
+        prev = p if not r.get("compaction") else prev
 
 
 def from_trace(path):

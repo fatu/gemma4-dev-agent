@@ -12,6 +12,8 @@ and appends one JSON line per call to <TRAJ_DIR>/<task>.jsonl:
             tool_schemas = the full tool list as sent (needed to re-render the exact prompt with the chat template)
   resp      what the model returned: reasoning (the thinking), content (text), tool_calls, finish_reason
   usage     prompt / completion / cached tokens · s = seconds for the call · err = the exception if the call failed
+  compaction  true on an events-compaction summary call (scripts/compaction_shim.py): one user message, logged in full,
+            numbered `call` like the rest but not counted as an agent turn and not moving the history pointer
 The task id comes from TRAJ_TASK when set (the Kaggle lab kernel runs one task per `swegemma eval`, no shim), else from
 the ContextVar scripts/sandbox_shim.py sets around run_agent_sandbox (task_context()). The sandbox's own python never
 sees TRAJ_DIR (swegemma builds a sanitized env for it), so tool outputs stay clean.
@@ -87,6 +89,20 @@ if litellm is not None and DIR:
             task = _current_task() or "unknown_task"
             msgs = kwargs.get("messages") or []
             n_calls, n_prev = _seen.get(task, (0, 0))
+            c = (_plain(msgs[0]) or {}).get("content") if len(msgs) == 1 else None
+            c = "".join(x.get("text", "") if isinstance(x, dict) else str(x) for x in c) if isinstance(c, list) else c
+            summary = isinstance(c, str) and c.startswith("The following is a conversation history")   # ADK's prompt
+            if summary:                         # compaction summary: its own record, the agent's history pointer stays
+                rec = {"task": task, "call": n_calls + 1, "t": round(t0, 2), "s": round(time.time() - t0, 2),
+                       "n_msgs": 1, "compaction": True, "new": _plain(msgs)}
+                if r is not None:
+                    rec["resp"], rec["usage"] = _resp(r), _usage(r)
+                if err is not None:
+                    rec["err"] = f"{type(err).__name__}: {str(err)[:300]}"
+                _seen[task] = (n_calls + 1, n_prev)
+                with open(_out / f"{task}.jsonl", "a") as f:
+                    f.write(json.dumps(rec, default=str) + "\n")
+                return
             reset = len(msgs) < n_prev          # history shrank (compaction / restart): log it all again
             start = 0 if reset else n_prev
             rec = {"task": task, "call": n_calls + 1, "t": round(t0, 2), "s": round(time.time() - t0, 2),

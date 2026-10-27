@@ -20,6 +20,14 @@ current behaviour for every input the issue does not mention", pytest `2>&1 | ta
 `base` from 2026-10-26 on is not the earlier `base`: compare arms only with the `base` of the same run. The run prints
 `latest prompt: … (7144 chars)`; `python3 scripts/latest_diff.py runs/subs/<arm>` shows any arm's delta.
 
+**Compaction (since 2026-10-27).** swegemma's CLI never set `events_compaction_config`, so every box run before this
+date had no compaction (the history only grew to the 32K window); the scorer compacts. `scripts/compaction_shim.py`
+(loaded with the sandbox shim) now gives every `swegemma eval` the scorer's config: interval 15 · overlap 2 · threshold
+14,336 · retention 5; the summary is a call to the same model (ADK's default prompt, no temperature). The log prints
+`compaction: on …` at the start and one `compaction: #n summarised k events …` line per summary; `traj/` marks them
+`compaction: true` and `walkthrough.py --brief` shows them as `COMPACTION`. `COMPACTION=0` = the old runs. Runs before
+and after this date are not comparable either: compare only within one run.
+
 **Decision rule** (dev33 noise is about ±2 tasks): an arm counts as better only if it solves **≥ 2 more tasks than
 `base` in the same run, with ≥ 2 arm-only tasks** in the pairs. Otherwise drop it. An arm that loses ≥ 2 tasks is
 dropped too.

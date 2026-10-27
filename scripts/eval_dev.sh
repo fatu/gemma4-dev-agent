@@ -163,12 +163,14 @@ LOG="${VLLM_LOG:-runs/vllm.log}"
 # ceiling runs). Nothing in swegemma caps the context: the 32K limit is the vLLM server's max_model_len, so such a run
 # has the remote model's own window — printed here so the log says what was measured.
 # Every eval loads scripts/eval_sitecustomize.py (PYTHONPATH sitecustomize): the sandbox shim (B-3i — the subprocess sandbox
-# otherwise never imports a src-layout repo such as requests, so its patches were never tested) and, with MODELS_YAML, the
-# remote-model request adapter. Both print their effective settings into this log.
+# otherwise never imports a src-layout repo such as requests, so its patches were never tested), the scorer's events compaction
+# (scripts/compaction_shim.py — swegemma's CLI sets none; COMPACTION=0 = the old no-compaction runs) and, with MODELS_YAML, the
+# remote-model request adapter. All print their effective settings into this log.
 mkdir -p runs/pypath && ln -sf "$PWD/scripts/eval_sitecustomize.py" runs/pypath/sitecustomize.py
 export PYTHONPATH="$PWD/runs/pypath${PYTHONPATH:+:$PYTHONPATH}"
 echo "trajectory log: $([ "${TRAJ:-1}" = 1 ] && echo "on (TRAJ=1) → <run>/traj/<task>.jsonl: every model call's new messages, thinking, reply, tokens · render: scripts/walkthrough.py" || echo "off (TRAJ=0)")"
 echo "sandbox shim: scripts/sandbox_shim.py $([ "${SANDBOX_SHIM:-1}" = 0 ] && echo OFF || echo "on — per-task venv gets 00_workspace.pth → workspace + workspace/src first on sys.path (subprocess sandbox only)")"
+echo "compaction: $([ "${COMPACTION:-1}" = 0 ] && echo "OFF (COMPACTION=0) — history only grows, unlike the scorer" || echo "on (scripts/compaction_shim.py) — the scorer's EventsCompactionConfig: interval ${COMPACT_INTERVAL:-15} · overlap ${COMPACT_OVERLAP:-2} · threshold ${COMPACT_THRESHOLD:-14336} · retention ${COMPACT_RETAIN:-5}; before 2026-10-27 box runs had none")"
 if [ "${LENIENT:-0}" = 1 ]; then                      # B-3i-L: era pins for the drift tasks — analysis only, never the reference
   case "${TAG:-}" in *len*) ;; *) echo "LENIENT=1 needs a TAG containing 'len' (e.g. TAG=lenA) so the run dir says so"; exit 1;; esac
   echo "sandbox mode: LENIENT — analysis only, not the reference (pins per task from scripts/sandbox_shim.py PINS${LENIENT_PINS:+ + LENIENT_PINS=$LENIENT_PINS}); runs get lenient.txt"
