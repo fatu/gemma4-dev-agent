@@ -329,3 +329,4 @@ echo; python3 scripts/compare_runs.py $REF $DIRS
 echo; python3 scripts/growth.py $REF $DIRS | grep -E '^==|Δprompt|→ b|growth explained' || true
 echo; python3 scripts/rulestats.py $REF $DIRS || true      # did the agent follow the prompt rules? (📷)
 [ "${TRAJ:-1}" = 1 ] && { echo; for d in $DIRS; do python3 scripts/walkthrough.py "$d/traj"; done; } || true   # 📷 thinking re-sent? (scripts/traj_log.py)
+[ "${TRAJ:-1}" = 1 ] && { for d in $DIRS; do echo; python3 scripts/run_costs.py "$d"; done; } || true   # 📷 tokens per tool output, command times, compactions (scripts/run_costs.py)

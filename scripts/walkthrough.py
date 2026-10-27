@@ -184,7 +184,8 @@ def summary(dirs):
     """one line per run: calls, thinking volume, and whether re-sent assistant turns still carry their thinking"""
     import pathlib
     for dd in dirs:
-        recs = [json.loads(x) for f in sorted(pathlib.Path(dd).glob("*.jsonl")) for x in open(f) if x.strip()]
+        recs = [json.loads(x) for f in sorted(pathlib.Path(dd).glob("*.jsonl")) if not f.name.endswith(".tools.jsonl")
+                for x in open(f) if x.strip()]
         if not recs:
             print(f"traj {dd}: no calls logged")
             continue

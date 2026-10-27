@@ -137,4 +137,49 @@ if litellm is not None and DIR:
         return r
 
     litellm.acompletion = acompletion
-    print(f"traj log: on → {DIR}/<task>.jsonl (per call: new messages, thinking, reply, tokens)", flush=True)
+
+    # per tool call: name, argument size, wall time, output size → <TRAJ_DIR>/<task>.tools.jsonl (scripts/run_costs.py).
+    # SwegemmaContext.create_tools() returns the 9 bound tool functions; each is wrapped with functools.wraps, so ADK
+    # builds the same declaration (signature + docstring, annotations resolved through __wrapped__).
+    try:
+        import functools
+        from swegemma import context as _sc
+
+        _orig_tools = _sc.SwegemmaContext.create_tools
+
+        def _timed(ctx, name, fn):
+            task = getattr(ctx, "task_id", None) or getattr(getattr(ctx, "task", None), "instance_id", None) or "unknown_task"
+
+            @functools.wraps(fn)
+            def tool(*a, **kw):
+                t0 = time.time()
+                out, err = None, None
+                try:
+                    out = fn(*a, **kw)
+                    return out
+                except Exception as e:
+                    err = e
+                    raise
+                finally:
+                    try:
+                        o = out if isinstance(out, (dict, list)) else str(out or "")
+                        rec = {"task": task, "tool": name, "t": round(t0, 2), "s": round(time.time() - t0, 3),
+                               "args": _plain(kw if kw else list(a)), "out_chars": len(json.dumps(o, default=str)),
+                               "exit_code": o.get("exit_code") if isinstance(o, dict) else None,
+                               "status": o.get("status") if isinstance(o, dict) else None}
+                        if err is not None:
+                            rec["err"] = f"{type(err).__name__}: {str(err)[:200]}"
+                        with open(_out / f"{task}.tools.jsonl", "a") as f:
+                            f.write(json.dumps(rec, default=str) + "\n")
+                    except Exception as e:
+                        print(f"traj log: tool record failed: {type(e).__name__}: {e}", flush=True)
+            return tool
+
+        def create_tools(self):
+            return {k: (_timed(self, k, v) if callable(v) else v) for k, v in _orig_tools(self).items()}
+
+        _sc.SwegemmaContext.create_tools = create_tools
+        _tools_note = " + <task>.tools.jsonl (per tool call: wall time, output chars)"
+    except Exception as e:
+        _tools_note = f" (tool timing off: {type(e).__name__}: {e})"
+    print(f"traj log: on → {DIR}/<task>.jsonl (per call: new messages, thinking, reply, tokens){_tools_note}", flush=True)

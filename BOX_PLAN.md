@@ -28,6 +28,13 @@ date had no compaction (the history only grew to the 32K window); the scorer com
 `compaction: true` and `walkthrough.py --brief` shows them as `COMPACTION`. `COMPACTION=0` = the old runs. Runs before
 and after this date are not comparable either: compare only within one run.
 
+**Cost report (since 2026-10-27, every run).** At the end of each eval `scripts/run_costs.py <run>` prints 📷: where
+the tokens go (prompt tokens processed, the fixed prefix per call, model output and thinking, tool outputs once and
+re-paid in later prompts, harness nudges, compaction calls) · tool outputs by tool (n, ≈tok sum/mean/p50/p90/max,
+wall seconds) · every compaction with context before → after · the 10 slowest tool calls · the 10 largest outputs · time
+per task (model vs tools). Tool times come from `traj/<task>.tools.jsonl` (traj_log.py now times each tool call); older
+runs show sizes only. Every single call: `<run>/costs_calls.tsv`; one task call by call: `run_costs.py <run> --task <id>`.
+
 **Decision rule** (dev33 noise is about ±2 tasks): an arm counts as better only if it solves **≥ 2 more tasks than
 `base` in the same run, with ≥ 2 arm-only tasks** in the pairs. Otherwise drop it. An arm that loses ≥ 2 tasks is
 dropped too.
