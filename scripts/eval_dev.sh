@@ -160,8 +160,8 @@ fi
 LOG="${VLLM_LOG:-runs/vllm.log}"
 # MODELS_YAML=<file>: no local server. The harness's --models-yaml re-registers the submission's alias with a litellm
 # `path` (e.g. anthropic/claude-opus-5-5) and `api_base`; the key comes from LITELLM_API_KEY (BOX_PLAN.md B-3f/B-3g
-# ceiling runs). Nothing in swegemma caps the context: the 32K limit is the vLLM server's max_model_len, so such a run
-# has the remote model's own window — printed here so the log says what was measured.
+# ceiling runs). Nothing in swegemma caps the context: the 32K limit is the vLLM server's max_model_len, so since
+# 2026-10-28 the request adapter emulates it (CEIL_GEMMA_CTX below) — printed here so the log says what was measured.
 # Every eval loads scripts/eval_sitecustomize.py (PYTHONPATH sitecustomize): the sandbox shim (B-3i — the subprocess sandbox
 # otherwise never imports a src-layout repo such as requests, so its patches were never tested), the scorer's events compaction
 # (scripts/compaction_shim.py — swegemma's CLI sets none; COMPACTION=0 = the old no-compaction runs) and, with MODELS_YAML, the
@@ -181,7 +181,22 @@ if [ -n "${MODELS_YAML:-}" ]; then
   [ -f "$MODELS_YAML" ] || { echo "MODELS_YAML=$MODELS_YAML not found"; exit 1; }
   [ -n "${LITELLM_API_KEY:-}" ] || { echo "MODELS_YAML set but LITELLM_API_KEY is empty"; exit 1; }
   echo "models: --models-yaml $MODELS_YAML → $(grep -E '^\s*path:' "$MODELS_YAML" | sed 's/.*path: *//' | tr '\n' ' ')(remote; the submission alias is overridden)"
-  echo "context cap: none in the harness (the 32K cap is the vLLM server's) — this run has the remote model's own window · max_output_tokens from the submission"
+  # CEIL_GEMMA_CTX (default 32768, 0 = off): the vLLM server's window, emulated in scripts/ceil_sitecustomize.py with
+  # Gemma 4's tokenizer + chat template (runs/gemma_tok, fetched once from the ungated E4B repo); the reply's prompt
+  # tokens are relabelled to that count so the compaction threshold fires as for Gemma. Before 2026-10-28: no cap.
+  export CEIL_GEMMA_CTX="${CEIL_GEMMA_CTX:-32768}" CEIL_GEMMA_TOK="${CEIL_GEMMA_TOK:-$PWD/runs/gemma_tok}"
+  if [ "$CEIL_GEMMA_CTX" != 0 ] && [ ! -f "$CEIL_GEMMA_TOK/chat_template.jinja" ]; then
+    .venv-eval/bin/python -c "
+from huggingface_hub import hf_hub_download
+for f in ('tokenizer.json', 'tokenizer_config.json', 'chat_template.jinja'):
+    hf_hub_download('google/gemma-4-E4B-it-qat-w4a16-ct', f, local_dir='$CEIL_GEMMA_TOK')" >/dev/null 2>&1 \
+      || { echo "CEIL_GEMMA_CTX: could not fetch Gemma's tokenizer into $CEIL_GEMMA_TOK (CEIL_GEMMA_CTX=0 to run without the cap)"; exit 1; }
+  fi
+  if [ "$CEIL_GEMMA_CTX" != 0 ]; then
+    echo "context cap: Gemma's $CEIL_GEMMA_CTX emulated (CEIL_GEMMA_CTX) — requests counted with Gemma 4's tokenizer + chat template ($CEIL_GEMMA_TOK), prompt + max_output_tokens > $CEIL_GEMMA_CTX → vLLM's ContextWindowExceededError; reply prompt_tokens relabelled to the Gemma count (compaction threshold in Gemma tokens)"
+  else
+    echo "context cap: OFF (CEIL_GEMMA_CTX=0) — the remote model's own window, its own token counts for compaction · max_output_tokens from the submission"
+  fi
   MODEL_FLAGS=(--models-yaml "$MODELS_YAML")
   export CEIL_CALL_LOG="${CEIL_CALL_LOG:-$PWD/runs/ceil/calls${TAG:+_$TAG}.jsonl}"; mkdir -p runs/ceil
   echo "request adapter: scripts/ceil_sitecustomize.py (extra_body dropped; anthropic thinking $([ "${CEIL_NOTHINK:-0}" = 1 ] && echo off || echo adaptive), temperature left to the provider) · call log $CEIL_CALL_LOG"
@@ -210,7 +225,8 @@ if missing:
     sys.exit(f"the server lacks {missing} — restart it with SUBMISSION=$BASE scripts/serve_vllm.sh")
 PY
 fi
-[ "${BUILD_ONLY:-0}" = 1 ] || python3 -c 'import pytest_httpbin, inline_snapshot' 2>/dev/null || {   # without them requests/fastapi tests can't run
+TDPY=python3; [ -x .venv-eval/bin/python ] && TDPY=.venv-eval/bin/python   # the venv the sandboxes see (laptop python3 ≠ it)
+[ "${BUILD_ONLY:-0}" = 1 ] || "$TDPY" -c 'import pytest_httpbin, inline_snapshot' 2>/dev/null || {   # without them requests/fastapi tests can't run
   echo "test deps missing (pytest-httpbin / inline-snapshot): run scripts/install_testdeps.sh first, or set NO_TESTDEPS=1"
   [ -n "${NO_TESTDEPS:-}" ] || exit 1; }
 [ -f "$LOG" ] || echo "warning: no $LOG — ctx_overflow will be '?' (set VLLM_LOG=… to the server's log)"
