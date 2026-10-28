@@ -1,0 +1,4 @@
+# Rendering only (Phase 0 step 2). Training deps (torch, peft, accelerate) are added when sft_lora.py lands.
+# On the laptop the eval venv already has this: .venv-eval/bin/python (transformers 5.20.2 at the time of writing).
+transformers>=5.13
+jinja2>=3.1
