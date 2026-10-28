@@ -308,6 +308,15 @@ designing for them. (c) Opus's calls / first-edit / tested rows vs Gemma's tell 
 calls — the shape of a trajectory worth imitating in the prompt. (d) If `ceil` is below the union of base passes,
 the proxy or the prompt mismatch is the problem, not the ceiling; check the error column before reading anything else.
 
+## B-3g-SC · Opus 5.5 under Gemma's harness limits ✅ 2026-10-28 (laptop, 8.5 min): **22/33** · 0 overflows · 0 call-cap hits · 1 compaction
+Same harness limits as a Gemma run, time lifted (user: calls, compaction, 32K the same; no time limit): latest setting (0 diffs), 28 calls, the scorer's events compaction (compaction_shim.py), and Gemma's 32K window emulated in `scripts/ceil_sitecustomize.py` (`CEIL_GEMMA_CTX`): every request is counted with Gemma 4's own tokenizer + chat template (fetched once into `runs/gemma_tok`; equals vLLM's prompt_tokens exactly on 823 E4B calls), prompt + max_output_tokens > 32,768 raises vLLM's own ContextWindowExceededError, and the reply's prompt_tokens are relabelled to the Gemma count so the 14,336 compaction threshold fires where it would for Gemma (Opus's own count runs ≈ 1.5× higher). Result: the limits never bind — max prompt 14.4K Gemma tokens, calls p50 6, first edit at call 3 — and the score matches the uncapped B-3g (20/33; 2 flips, both gains). The Gemma gap on dev33 is the model, not the harness limits. Not matched: speed (2–4 s/call) and thinking (adaptive, not a 4,096 budget).
+```bash
+eval "$(sed -n 141p ~/.zshrc | grep -E '^export ANTHROPIC_APIKEY=')"
+PATH="$PWD/.venv-eval/bin:$PATH" LITELLM_API_KEY="$ANTHROPIC_APIKEY" SUBMISSION=runs/base_lb024 MODELS_YAML=runs/ceil/models.yaml \
+  CONC=3 MAX_CALLS=28 TIME_MIN=40 CMD_TIMEOUT=240 VERIFY_TIMEOUT=900 TAG=ceilsc ARMS=base REFS="base_ceilx" \
+  bash scripts/eval_dev.sh > runs/eval_dev_ceilsc.log 2>&1      # CEIL_GEMMA_CTX=32768 is the default; 0 = the old uncapped window
+```
+
 ## B-3g · Uncapped ceiling: Opus 5.5, budget lifted ✅ 2026-10-21 (laptop, 11 min, $6–19): **20/33 = 20 of the 24 tasks whose gold patch passes here** · 4 genuine wrong patches · 0 budget deaths (max 21 calls · 250 s · 24.8K prompt) · calls p50 6 · first edit at call 3 · 30 s/task p50. Gemma's 7 passes: 16 distinct, all inside Opus's 20; 4 reachable tasks (2 fastapi · 2 rich; ids in the private log). Per-task table: `python3 scripts/tasktable.py runs/dev33_base_ceilx`. Gold check → B-3h
 
 B-3f says *who* is reachable under the scorer's budget. This pass says *how much* budget each task really needs and what a
