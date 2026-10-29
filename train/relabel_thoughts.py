@@ -163,6 +163,8 @@ def main():
     ap.add_argument("--model", choices=["gemma31b", "glm"], required=True)
     ap.add_argument("--url", default=None, help="server (default vLLM 127.0.0.1:8000; GLM: $GLM_API_BASE)")
     ap.add_argument("--served", default=None, help="served model id (default: the first gemma-4-* id; GLM glm-5.2)")
+    ap.add_argument("--all", action="store_true", help="every call with a target (ignores --tasks/--sample)")
+    ap.add_argument("--retries", type=int, default=0, help="re-ask the writer up to N times when a thought fails the checks")
     ap.add_argument("--tasks", type=int, default=10)
     ap.add_argument("--sample", type=int, default=30)
     ap.add_argument("--seed", type=int, default=0)
@@ -188,10 +190,14 @@ def main():
         return 0
     src = f"synthetic_{'31b' if a.model == 'gemma31b' else 'glm'}"
     records = [json.load(open(f)) | {"_file": f} for f in sorted(glob.glob(os.path.join(a.records, "*.json")))]
-    recs, picks = pick(records, a.tasks, a.sample, a.seed)
+    if a.all:
+        recs = [r for r in records if any(c.get("target") for c in r["calls"])]
+        picks = [(r, c) for r in recs for c in r["calls"] if c.get("target")]
+    else:
+        recs, picks = pick(records, a.tasks, a.sample, a.seed)
     print(f"relabel_thoughts · {a.records}: {len(records)} records → {len(recs)} tasks, {len(picks)} calls · writer {a.model} "
           f"· thought_source {src} · max {a.max_words} words / {a.max_thought_tokens} tokens · seed {a.seed}")
-    print("  picked: " + " ".join(f"{r['instance_id']}:c{c['call']}" for r, c in picks))
+    print("  picked: " + (" ".join(f"{r['instance_id']}:c{c['call']}" for r, c in picks) if len(picks) <= 40 else f"all {len(picks)} calls of {len(recs)} records"))
     if a.dry_run:
         for r, c in picks[:2]:
             print(f"\n--- {r['instance_id']} call {c['call']} · context {len(c['input_messages'])} messages · last role {c['input_messages'][-1]['role']}")
@@ -209,14 +215,21 @@ def main():
     print(f"  server {url} · served model {w.served}")
     os.makedirs(a.out, exist_ok=True)
     by_file = {}
-    rows, bad = [], 0
+    rows, bad, n_retried = [], 0, 0
     for i, (r, c) in enumerate(picks, 1):
         msgs = c["input_messages"] + [{"role": "user", "content": INSTRUCTION.format(words=a.max_words, action=render_action(c["target"]))}]
-        try:
-            thought, u = w.write(msgs, r["tools"])
-        except Exception as e:  # noqa: BLE001
-            thought, u = "", {"error": f"{type(e).__name__}: {str(e)[:120]}", "seconds": None, "prompt_tokens": None, "completion_tokens": None}
-        problems, n_tok = check(thought, a.max_thought_tokens, tok)
+        attempts = 0
+        while True:
+            attempts += 1
+            try:
+                thought, u = w.write(msgs, r["tools"])
+            except Exception as e:  # noqa: BLE001
+                thought, u = "", {"error": f"{type(e).__name__}: {str(e)[:120]}", "seconds": None, "prompt_tokens": None, "completion_tokens": None}
+            problems, n_tok = check(thought, a.max_thought_tokens, tok)
+            if not problems or attempts > a.retries:
+                break
+        u["attempts"] = attempts
+        n_retried += attempts - 1
         ok = not problems
         bad += not ok
         rows.append({"instance_id": r["instance_id"], "call": c["call"], "ok": ok, "problems": problems, "thought_tokens": n_tok,
@@ -247,7 +260,8 @@ def main():
                          "seconds": round(sum(sec) / max(len(sec), 1), 1)},
             "rows": rows}
     json.dump(summ, open(a.out.rstrip("/") + ".summary.json", "w"), ensure_ascii=False, indent=1)   # beside the dir: the dir holds records only
-    print(f"relabel: {len(rows)} calls · ok {len(done)} · bad {bad} · thought tokens p50 {summ['thought_tokens']['p50']} max {summ['thought_tokens']['max']} · "
+    summ["retries"] = n_retried
+    print(f"relabel: {len(rows)} calls · ok {len(done)} · bad {bad} · retries used {n_retried} · thought tokens p50 {summ['thought_tokens']['p50']} max {summ['thought_tokens']['max']} · "
           f"per call prompt {summ['per_call']['prompt_tokens']} + out {summ['per_call']['completion_tokens']} tok, {summ['per_call']['seconds']} s · "
           f"total {summ['seconds_total']} s → {a.out} ({len(by_file)} records)")
     print(f"  Phase 1 estimate at this rate: 498 calls ≈ {498 * summ['per_call']['seconds'] / 3600:.1f} h of writer time")
