@@ -188,7 +188,7 @@ def main():
     R = Renderer(tok)
     fails, n_calls, n_targets, label_tot, packed_tot = [], 0, 0, 0, 0
     rendered, shares, a3_pool, mism, malformed = [], [], [], [], []
-    n_src = {"delta": 0, "synthetic": 0, "mixed": 0, "delta!=synthetic": 0, "pack_fallback_mixed": 0,
+    n_src = {"delta": 0, "synthetic": 0, "mixed": 0, "delta!=synthetic": 0, "pack_fallback_mixed": 0, "pack_fallback_nothought": 0,
              "content_control_tokens": 0}
     ref_checked = ref_ok = 0
     for f in sorted(glob.glob(os.path.join(a.records, "*.json"))):
@@ -267,8 +267,17 @@ def main():
                 for (c0, r0), (c1, r1) in zip(items, items[1:]):
                     if r1["prompt_ids"][:len(r0["input_ids"])] != r0["input_ids"]:
                         ok = False
-                        if r0["reply_source"] == "mixed":     # expected: the template re-orders text+tool replies
+                        mixed_hist = any(m.get("role") == "assistant" and m.get("tool_calls") and (m.get("content") or "").strip()
+                                         for m in c0["input_messages"])
+                        if r0["reply_source"] == "mixed" or mixed_hist:
+                            # expected: the template re-orders text+tool replies; when such a reply sits in the history,
+                            # the generation prompt closes it with "<turn|>\n" before opening the thought channel while
+                            # the next prompt renders the following model turn without that boundary (pod_a5 rich_3454)
                             n_src["pack_fallback_mixed"] += 1
+                        elif not c0["target"].get("reasoning") and r0["prompt"].endswith("<|channel>thought\n"):
+                            # expected: a reply without thought after a tool response closes the channel the
+                            # prompt opened (<channel|>…), while the template re-renders that turn with no channel
+                            n_src["pack_fallback_nothought"] += 1
                         else:
                             fails.append(f"PACK {rec['instance_id']} segment {seg}: call {c1['call']} does not "
                                          f"extend call {c0['call']} (prefix property broken)")
@@ -318,7 +327,7 @@ def main():
             for row in rendered:
                 w.write(json.dumps(row) + "\n")
     print(f"calls {n_calls} · targets {n_targets} · label tokens {label_tot}"
-          + (f" · packed label tokens {packed_tot} (sequences {len(rendered)}, segments unpacked because of a mixed reply {n_src['pack_fallback_mixed']})" if a.pack else "")
+          + (f" · packed label tokens {packed_tot} (sequences {len(rendered)}, segments unpacked because of a mixed reply {n_src['pack_fallback_mixed']} / a no-thought reply after a tool response {n_src['pack_fallback_nothought']})" if a.pack else "")
           + (f" · A2 server-rendered prompts equal {ref_ok}/{ref_checked}" if a.check else "")
           + f" · reply from delta {n_src['delta']} / synthetic {n_src['synthetic']} / mixed text+tool {n_src['mixed']} / delta≠synthetic {n_src['delta!=synthetic']}"
           + (f" e.g. {mism[:5]}" if mism else "")
