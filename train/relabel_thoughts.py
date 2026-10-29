@@ -64,6 +64,30 @@ def render_action(target):
     return "\n".join(lines) or "(empty reply)"
 
 
+def propagate(rec):
+    """copy every relabelled call's thought into the later calls' history: the harness re-sends an assistant turn with
+    its `reasoning_content`, so the thought must appear wherever that turn is part of a later call's input (else the
+    next prompt's delta has no thought and the segment's prefix property breaks). Matched by tool-call ids, else by
+    content. Returns the number of history messages updated."""
+    n = 0
+    for c in rec["calls"]:
+        t = c.get("target")
+        if not t or not t.get("reasoning") or c.get("thought_source") in (None, "none"):
+            continue
+        ids = {tc.get("id") for tc in t.get("tool_calls") or [] if tc.get("id")}
+        for later in rec["calls"]:
+            if later["call"] <= c["call"]:
+                continue
+            for m in later["input_messages"]:
+                if m.get("role") != "assistant":
+                    continue
+                m_ids = {tc.get("id") for tc in m.get("tool_calls") or [] if tc.get("id")}
+                same = (ids and m_ids == ids) or (not ids and not m_ids and (m.get("content") or "").strip() == (t.get("content") or "").strip())
+                if same and m.get("reasoning_content") != t["reasoning"]:
+                    m["reasoning_content"] = t["reasoning"]; n += 1
+    return n
+
+
 def pick(records, n_tasks, n_sample, seed):
     rnd = random.Random(seed)
     recs = [r for r in records if any(c.get("target") for c in r["calls"])]
@@ -148,7 +172,20 @@ def main():
     ap.add_argument("--tokenizer", default=None, help="count thought tokens with this tokenizer (else chars/4)")
     ap.add_argument("--out", default=None)
     ap.add_argument("--dry-run", action="store_true", help="print 2 requests, call nothing")
+    ap.add_argument("--propagate-only", action="store_true", help="only copy existing thoughts into the later calls' history (records dir in place)")
     a = ap.parse_args()
+    if a.propagate_only:
+        tot = 0
+        for f in sorted(glob.glob(os.path.join(a.records, "*.json"))):
+            rec = json.load(open(f))
+            if not isinstance(rec, dict) or not isinstance(rec.get("calls"), list):
+                continue
+            n = propagate(rec); tot += n
+            if n:
+                json.dump(rec, open(f, "w"), ensure_ascii=False)
+            print(f"  {rec['instance_id']:<16} history messages updated {n}")
+        print(f"propagate: {tot} history messages now carry the relabelled thought → {a.records}")
+        return 0
     src = f"synthetic_{'31b' if a.model == 'gemma31b' else 'glm'}"
     records = [json.load(open(f)) | {"_file": f} for f in sorted(glob.glob(os.path.join(a.records, "*.json")))]
     recs, picks = pick(records, a.tasks, a.sample, a.seed)
@@ -193,8 +230,11 @@ def main():
             tgt["target"]["reasoning"] = thought
             tgt["thought_source"] = src
         tgt["relabel"] = {"model": w.served, **u, "ok": ok, "problems": problems}
+    n_prop = 0
     for f, rec in by_file.items():
+        n_prop += propagate(rec)
         json.dump(rec, open(os.path.join(a.out, os.path.basename(f)), "w"), ensure_ascii=False)
+    print(f"  propagated the thoughts into {n_prop} later history messages (re-sent reasoning_content)")
     done = [x for x in rows if x["ok"]]
     pt = [x["prompt_tokens"] for x in rows if x.get("prompt_tokens")]
     ct = [x["completion_tokens"] for x in rows if x.get("completion_tokens")]
