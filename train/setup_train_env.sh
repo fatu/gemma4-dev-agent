@@ -17,7 +17,7 @@ ln -sfn "$VENV" .venv-train
 if [ -f train/requirements-train.lock ] && [ "${LOCK:-1}" = 1 ]; then
   echo "installing train/requirements-train.lock"
   # the lock pins torch==…+cu128, which only the PyTorch index serves
-  uv pip install -q --python "$VENV/bin/python" --extra-index-url https://download.pytorch.org/whl/cu128 -r train/requirements-train.lock
+  uv pip install -q --python "$VENV/bin/python" --index-strategy unsafe-best-match --extra-index-url https://download.pytorch.org/whl/cu128 -r train/requirements-train.lock
 else
   echo "installing fresh (no lock): torch cu128 + transformers 5.20.2 + peft + accelerate + compressed-tensors"
   uv pip install -q --python "$VENV/bin/python" torch --index-url https://download.pytorch.org/whl/cu128
