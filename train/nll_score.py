@@ -53,6 +53,8 @@ def main():
     print("  task             call  src            action_tok  nll/tok no-thought  with-thought   Δ      thought_tok  thought nll/tok")
     for f in sorted(glob.glob(os.path.join(a.records, "*.json"))):
         rec = json.load(open(f))
+        if not isinstance(rec.get("calls"), list):      # a summary or verdict file next to the records
+            continue
         for c in rec["calls"]:
             t = c.get("target")
             if not t or (a.only_relabelled and not t.get("reasoning")):

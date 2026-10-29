@@ -206,7 +206,7 @@ def main():
             "per_call": {"prompt_tokens": round(sum(pt) / max(len(pt), 1)), "completion_tokens": round(sum(ct) / max(len(ct), 1)),
                          "seconds": round(sum(sec) / max(len(sec), 1), 1)},
             "rows": rows}
-    json.dump(summ, open(os.path.join(a.out, "relabel_summary.json"), "w"), ensure_ascii=False, indent=1)
+    json.dump(summ, open(a.out.rstrip("/") + ".summary.json", "w"), ensure_ascii=False, indent=1)   # beside the dir: the dir holds records only
     print(f"relabel: {len(rows)} calls · ok {len(done)} · bad {bad} · thought tokens p50 {summ['thought_tokens']['p50']} max {summ['thought_tokens']['max']} · "
           f"per call prompt {summ['per_call']['prompt_tokens']} + out {summ['per_call']['completion_tokens']} tok, {summ['per_call']['seconds']} s · "
           f"total {summ['seconds_total']} s → {a.out} ({len(by_file)} records)")
