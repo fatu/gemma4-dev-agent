@@ -53,9 +53,10 @@ if run subs; then
   cp -r runs/base_lb024 runs/subs_sft; mkdir -p runs/subs_sft/adapters
   for m in m1 m2; do
     cp -r adapters/e4b_$m/epoch2 runs/subs_sft/adapters/e4b_$m
-    cp -r runs/base_lb024 runs/subs_$m
-    sed -i "s/^model: .*/model: $ALIAS\nadapter: e4b_$m/" runs/subs_$m/agent.yaml
-    echo "subs_$m:"; head -3 runs/subs_$m/agent.yaml; ls -la runs/subs_sft/adapters/e4b_$m
+    cp -r runs/base_lb024 runs/subs_$m; mkdir -p runs/subs_$m/adapters
+    cp -r adapters/e4b_$m/epoch2 runs/subs_$m/adapters/e4b_$m   # the harness discovers adapters in the SUBMISSION dir: the
+    sed -i "s/^model: .*/model: $ALIAS\nadapter: e4b_$m/" runs/subs_$m/agent.yaml   # line alone → AdapterNotFoundError every task (pod 2026-10-29)
+    echo "subs_$m:"; head -3 runs/subs_$m/agent.yaml; ls -la runs/subs_$m/adapters/e4b_$m
   done
   cat <<EOF
 next (eval, one card, like the pod run):
