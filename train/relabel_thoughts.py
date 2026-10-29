@@ -226,6 +226,8 @@ def main():
             except Exception as e:  # noqa: BLE001
                 thought, u = "", {"error": f"{type(e).__name__}: {str(e)[:120]}", "seconds": None, "prompt_tokens": None, "completion_tokens": None}
             problems, n_tok = check(thought, a.max_thought_tokens, tok)
+            if u.get("finish_reason") == "length":
+                problems.append(f"cut at the writer's max_tokens {a.max_tokens}")
             if not problems or attempts > a.retries:
                 break
         u["attempts"] = attempts
