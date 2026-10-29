@@ -196,3 +196,14 @@ _Plan for the training lane of this repo. Everything that quotes task text (traj
 - OOD-45 F < base + 4 → 不上 LB；当前 LB 入口维持无 adapter 的 latest。
 - 带 adapter 超时率 > 10% → 28 calls → 24，重评；仍超 → 不上 LB。
 - 任何 Kaggle / RunPod 付费动作前都要用户确认；本轮只改 plan。
+
+
+## Decision (2026-10-28): D1, D2a and D2b dropped; training data = D3 + self-mined tasks
+
+D2's sampling pool is the same local task bank as the Opus trajectories (D3), and D1 leaves 13 trajectories under the
+harness limits. Changes: data = D3 (Opus passing trajectories on the 96 non-dev tasks, env-defect tasks removed, about
+60) plus Phase 2's self-mined tasks; dev set = the 33 dev tasks (their Opus trajectories are not trained on); final
+check = the OOD set. Thought relabelling with Gemma 31B becomes mandatory (the Opus traces have no thinking); the GLM
+variant is the control. Matrix: M0 base · M1 D3 without thoughts · M2 D3 + 31B thoughts · M3 D3 + GLM thoughts
+(optional) · alpha sweep · final. No sampling cost in Phase 1. Expert iteration and the mined-task pilot stay as the
+route to on-policy data later.
