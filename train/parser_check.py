@@ -117,7 +117,7 @@ def main():
     kinds, fails, verdicts = {}, [], {}
     for f in files:
         rec = json.load(open(f))
-        if not isinstance(rec.get("calls"), list) or "tools" not in rec:   # not a record
+        if not isinstance(rec, dict) or not isinstance(rec.get("calls"), list) or "tools" not in rec:   # not a record
             continue
         schemas = {t["function"]["name"]: t["function"].get("parameters") or {} for t in rec["tools"]}
         if not req.tools:

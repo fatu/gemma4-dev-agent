@@ -193,7 +193,7 @@ def main():
     ref_checked = ref_ok = 0
     for f in sorted(glob.glob(os.path.join(a.records, "*.json"))):
         rec = json.load(open(f))
-        if not isinstance(rec.get("calls"), list):   # a summary / verdict json beside the records
+        if not isinstance(rec, dict) or not isinstance(rec.get("calls"), list):   # a summary / verdict json beside the records
             continue
         ref = None
         if a.check:

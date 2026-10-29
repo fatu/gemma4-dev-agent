@@ -53,7 +53,7 @@ def main():
     print("  task             call  src            action_tok  nll/tok no-thought  with-thought   Δ      thought_tok  thought nll/tok")
     for f in sorted(glob.glob(os.path.join(a.records, "*.json"))):
         rec = json.load(open(f))
-        if not isinstance(rec.get("calls"), list):      # a summary or verdict file next to the records
+        if not isinstance(rec, dict) or not isinstance(rec.get("calls"), list):      # a summary or verdict file next to the records
             continue
         for c in rec["calls"]:
             t = c.get("target")
@@ -93,7 +93,7 @@ def main():
     better = sum(1 for r in rows if r["nll_with_thought"] < r["nll_no_thought"])
     print(f"nll_score: {len(rows)} calls · action nll/tok without thought {m('nll_no_thought'):.3f} · with thought {m('nll_with_thought'):.3f} "
           f"(Δ {m('nll_with_thought') - m('nll_no_thought'):+.3f}; lower with thought in {better}/{len(rows)}) · thought nll/tok {m('thought_nll'):.3f}")
-    json.dump(rows, open(os.path.join(a.records, "nll_score.json"), "w"), indent=1)
+    json.dump(rows, open(a.records.rstrip("/") + ".nll.json", "w"), indent=1)   # beside the dir: it holds records only
     return 0
 
 
