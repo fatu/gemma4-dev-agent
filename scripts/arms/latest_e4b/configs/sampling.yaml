@@ -1,0 +1,9 @@
+# THE latest small-model (E4B + LoRA) setting, LATEST=e4b (2026-10-30; copy of latest/ that day, may diverge): every E4B arm and build starts
+# from this file. Source: course lecture 3 "Hands-On Configuration Upgrade" slide = honghanhhh's "LB 0.24 v5 (safe)".
+# Change it here only, when the user sends a newer setting; arms are explicit deltas on top (t10, out4k, ...).
+temperature: 0.2
+top_p: 0.95
+max_output_tokens: 6144
+thinking_config:
+  thinking_budget: 4096
+  include_thoughts: true

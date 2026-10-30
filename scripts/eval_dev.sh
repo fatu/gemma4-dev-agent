@@ -144,7 +144,31 @@ ARMS="${ARMS:-sample out8k}"
 if [ "${BUDGET:-scorer}" = none ]; then BUDGET_FLAGS=(); else
   BUDGET_FLAGS=(--max-tool-calls "${MAX_CALLS:-28}" --max-time-minutes "${TIME_MIN:-4}"
                 --timeout-seconds "${CMD_TIMEOUT:-240}" --verification-timeout-seconds "${VERIFY_TIMEOUT:-300}"); fi
-LATEST="${LATEST:-1}"; LDIR=scripts/arms/latest       # the one latest setting (header: LATEST)
+# Two latest settings since 2026-10-30 (user: "我们维护两个最新配置，31B和小模型LoRA"), chosen with LATEST:
+#   LATEST=31b (default; 1 = the same) → scripts/arms/latest      the 31B entry, no adapter
+#   LATEST=e4b                         → scripts/arms/latest_e4b  the small-model entry: MODEL_ALIAS + ADAPTER from its
+#     model.env (E4B + the PLE-fix LoRA); the adapter files come from runs/adapters/<ADAPTER>/ (gitignored, fetched once
+#     from the public Kaggle dataset in model.env) into every arm copy, with `adapter: <ADAPTER>` on the root agent.
+#     Serve it with: MODEL=google/gemma-4-E4B-it-qat-w4a16-ct SUBMISSION=runs bash scripts/serve_vllm.sh
+#   LATEST=0                           → off (the base's own config)
+LSET="${LATEST:-31b}"
+case "$LSET" in 1|31b) LSET=31b; LATEST=1; LDIR=scripts/arms/latest ;; e4b) LATEST=1; LDIR=scripts/arms/latest_e4b ;;
+  0) LDIR=scripts/arms/latest ;; *) echo "LATEST=$LSET: use 31b (default), e4b or 0"; exit 1 ;; esac
+L_ADAPTER=""
+if [ "$LSET" = e4b ]; then
+  menv() { sed -n "s/^$1=//p" "$LDIR/model.env"; }
+  MODEL_ALIAS="${MODEL_ALIAS:-$(menv MODEL_ALIAS)}"; L_ADAPTER="${ADAPTER-$(menv ADAPTER)}"; ADIR="runs/adapters/$L_ADAPTER"
+  if [ -n "$L_ADAPTER" ] && [ ! -f "$ADIR/adapter_model.safetensors" ]; then
+    mkdir -p "$ADIR"; for f in adapter_config.json adapter_model.safetensors; do
+      kaggle datasets download "$(menv ADAPTER_DATASET)" -f "$f" -p "$ADIR" >/dev/null 2>&1 || true; done
+    [ -f "$ADIR/adapter_model.safetensors" ] || { echo "LATEST=e4b: no $ADIR/adapter_model.safetensors and the kaggle download failed — fetch $(menv ADAPTER_DATASET) into $ADIR (or ADAPTER= for none)"; exit 1; }
+  fi
+  if [ -n "$L_ADAPTER" ]; then
+    A_SHA=$(python3 -c "import hashlib,sys;print(hashlib.sha256(open(sys.argv[1],'rb').read()).hexdigest())" "$ADIR/adapter_model.safetensors")
+    [ "$A_SHA" = "$(menv ADAPTER_SHA256)" ] || { echo "LATEST=e4b: $ADIR/adapter_model.safetensors sha256 $A_SHA ≠ model.env's $(menv ADAPTER_SHA256)"; exit 1; }
+  fi
+fi
+echo "latest set: $LSET ($LDIR)$([ "$LSET" = e4b ] && echo " · model $MODEL_ALIAS · adapter ${L_ADAPTER:-none (ADAPTER=)}${L_ADAPTER:+ ← $ADIR, sha256 ${A_SHA:0:16} ✓}")"
 if [ "$LATEST" = 1 ]; then
   lval() { grep -oE "^ *$1: *[0-9.]+" "$LDIR/eval_config.yaml" | sed 's/.*: *//'; }
   L_MIN=$(lval max_time_minutes); L_CALLS=$(lval max_tool_calls); L_TO=$(lval timeout_seconds); L_FLAG_MIN=""
@@ -207,7 +231,7 @@ else
 curl -s --max-time 2 http://127.0.0.1:8000/v1/models >/dev/null || { echo "no vLLM on :8000 — start scripts/serve_vllm.sh first"; exit 1; }
 # the server must serve the alias AND every adapter of the submission, else each task dies in ~2 s with NotFoundError
 # and the run looks like a 0/33 result instead of a failure (seen in W1)
-SUB="$BASE" python3 - <<'PY'
+SUB="$BASE" ADAPTER="$L_ADAPTER" python3 - <<'PY'
 import json, os, pathlib, re, sys, urllib.request
 ids = [m["id"] for m in json.load(urllib.request.urlopen("http://127.0.0.1:8000/v1/models"))["data"]]
 # every agent YAML's `model:` (one base model per submission: 31B, or E4B/E2B for the small-model bonus)
@@ -219,6 +243,7 @@ if os.environ.get("MODEL_ALIAS"):
 else:
     print("submission models:", ", ".join(models))
 need = models + sorted(p.parent.name for p in pathlib.Path(os.environ["SUB"], "adapters").glob("*/adapter_config.json"))
+need += [os.environ["ADAPTER"]] if os.environ.get("ADAPTER") else []   # LATEST=e4b adds it to every arm copy
 missing = [m for m in need if m not in ids]
 print("served:", ", ".join(ids))
 if missing:
@@ -288,6 +313,12 @@ top_k: 64' "$Y"; fi; fi
   if [ -n "${MODEL_ALIAS:-}" ]; then           # every agent YAML (sub-agents too), not adapter configs
     find "$SUB" -name '*.y*ml' -not -path '*/adapters/*' | while IFS= read -r f; do
       sedi -E "s/^( *model: *)['\"]?[A-Za-z0-9_.-]+['\"]?/\1$MODEL_ALIAS/" "$f"; done
+  fi
+  if [ -n "$L_ADAPTER" ]; then                 # LATEST=e4b: the adapter files in the submission dir + the root agent's line
+    mkdir -p "$SUB/adapters"; rm -rf "$SUB/adapters/$L_ADAPTER"; cp -r "$ADIR" "$SUB/adapters/$L_ADAPTER"
+    awk -v a="$L_ADAPTER" '!/^adapter:/ {print} /^model:/ {print "adapter: " a}' "$SUB/agent.yaml" > "$SUB/agent.yaml.new"
+    mv "$SUB/agent.yaml.new" "$SUB/agent.yaml"
+    echo "latest e4b: adapter $L_ADAPTER → $SUB/adapters/$L_ADAPTER · agent.yaml: $(grep -E '^(model|adapter):' "$SUB/agent.yaml" | tr '\n' ' ')"
   fi
   has coursefull && cp scripts/arms/course_system.md "$SUB/prompts/system.md"   # replaces the whole prompt
   has lean && cp scripts/arms/lean_system.md "$SUB/prompts/system.md"   # first: rule arms then append to it

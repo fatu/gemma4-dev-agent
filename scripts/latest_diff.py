@@ -5,6 +5,7 @@
     python3 scripts/latest_diff.py runs/subs/course                       # an arm dir (agent.yaml at the root)
     python3 scripts/latest_diff.py /tmp/k03/some-notebook.ipynb           # a notebook that writes the files inline
     REF=runs/base_lb024 python3 scripts/latest_diff.py …                  # compare the prompt with another dir's instead
+    LATEST=e4b python3 scripts/latest_diff.py dist/<e4b>/submission.zip  # against the small-model set (latest_e4b/)
 
 Latest = configs/sampling.yaml + eval_config.yaml from scripts/arms/latest/, agent.yaml = the base model alias with the
 9 harness tools and no adapter, prompt = scripts/arms/latest/prompts/system.md (what eval_dev.sh LATEST=1 builds for
@@ -23,7 +24,11 @@ import zipfile
 import yaml
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
-LDIR = ROOT / "scripts" / "arms" / "latest"
+LSET = {"1": "31b", "": "31b"}.get(os.environ.get("LATEST", ""), os.environ.get("LATEST"))   # 2026-10-30: 31b | e4b
+if LSET not in ("31b", "e4b"):
+    sys.exit(f"LATEST={LSET}: use 31b (default) or e4b")
+LDIR = ROOT / "scripts" / "arms" / ("latest" if LSET == "31b" else "latest_e4b")
+MENV = dict(l.split("=", 1) for l in (LDIR / "model.env").read_text().splitlines() if "=" in l and not l.startswith("#"))
 REF = pathlib.Path(os.environ.get("REF", LDIR))
 TOOLS9 = ["run_command", "read_file", "edit_file", "write_file", "get_status", "submit_patch",
           "get_code_neighbors", "search_similar_code", "get_code_subgraph"]
@@ -83,7 +88,7 @@ agent = y(F.get("agent.yaml"))
 inc = lambda key, default: (str(agent.get(key) or "").removeprefix("!include ").strip() or default) if agent else default
 s = y(F.get(inc("generate_content_config", "configs/sampling.yaml"))) or {}
 e = (y(F.get("eval_config.yaml")) or {}).get("evaluation", {})
-print(f"latest_diff: {sys.argv[1]}  vs  latest + prompt {REF.relative_to(ROOT) if REF.is_relative_to(ROOT) else REF}/prompts/system.md")
+print(f"latest_diff: {sys.argv[1]}  vs  latest set {LSET} ({LDIR.relative_to(ROOT)}) + prompt {REF.relative_to(ROOT) if REF.is_relative_to(ROOT) else REF}/prompts/system.md")
 diffs = 0
 
 
@@ -106,9 +111,9 @@ for k in sorted(set(lat_e) | set(e)):
     row(f"eval {k}", lat_e.get(k), e.get(k))
 tools = [t if isinstance(t, str) else next(iter(t)) for t in (agent or {}).get("tools", [])]
 row("agent tools", "9 harness tools", "9 harness tools" if tools == TOOLS9 else ", ".join(tools))
-row("agent adapter", None, (agent or {}).get("adapter"))
+row("agent adapter", MENV.get("ADAPTER") or None, (agent or {}).get("adapter"))
 row("agent sub_agents", None, (agent or {}).get("sub_agents"))
-print(f"  {'agent model':36} {(agent or {}).get('model')}")
+row("agent model", MENV["MODEL_ALIAS"], (agent or {}).get("model"))
 
 prompt = F.get(inc("instruction", "prompts/system.md"), "")
 ref = (REF / "prompts" / "system.md").read_text() if (REF / "prompts" / "system.md").exists() else None

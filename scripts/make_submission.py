@@ -3,8 +3,12 @@
 
     .venv-eval/bin/python scripts/make_submission.py runs/subs/nothink              # 📷 the check table
     UPLOAD=1 .venv-eval/bin/python scripts/make_submission.py runs/subs/nothink     # + new version of the private dataset
-    ALIAS=gemma-4-e4b-it-qat-w4a16-ct DATASET=gemma4-submission-e4b UPLOAD=1 … runs/subs/<arm>   # small-model bonus entry
-      (build the arm dir without an eval: BUILD_ONLY=1 MODEL_ALIAS=… ARMS=<arm> TAG=… bash scripts/eval_dev.sh)
+    LATEST=e4b UPLOAD=1 … runs/subs/<arm>                                    # small-model entry (E4B + its LoRA)
+      (build the arm dir without an eval: BUILD_ONLY=1 LATEST=e4b ARMS=base TAG=… bash scripts/eval_dev.sh)
+
+LATEST=31b (default) checks against scripts/arms/latest/, LATEST=e4b against scripts/arms/latest_e4b/ (2026-10-30: two
+latest settings). The set's model.env gives the default ALIAS and its ADAPTER: with an adapter, NOLORA defaults to 0
+and check 4 wants exactly that adapter on the agent plus adapters/<name>/ with its two files.
 
 Source = the arm dir eval_dev.sh evaluated (runs/subs/<arm>), so what we submit is what we measured. Two edits on top,
 both submission-only (our checklist, course slides 26 + 32):
@@ -39,12 +43,19 @@ import zipfile
 import yaml
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
-ALIAS = os.environ.get("ALIAS", "gemma-4-31b-it-qat-w4a16-ct")        # check 4; E4B/E2B for the small-model bonus
+LSET = {"1": "31b", "": "31b"}.get(os.environ.get("LATEST", ""), os.environ.get("LATEST"))   # 31b | e4b
+if LSET not in ("31b", "e4b"):
+    sys.exit(f"LATEST={LSET}: use 31b (default) or e4b")
+LATEST = ROOT / "scripts" / "arms" / ("latest" if LSET == "31b" else "latest_e4b")   # this set's latest setting
+MENV = dict(l.split("=", 1) for l in (LATEST / "model.env").read_text().splitlines() if "=" in l and not l.startswith("#"))
+ALIAS = os.environ.get("ALIAS", MENV["MODEL_ALIAS"])                    # check 4
+ADAPTER = MENV.get("ADAPTER", "")                                        # check 4 when NOLORA=0
+if ADAPTER and "NOLORA" not in os.environ:
+    os.environ["NOLORA"] = "0"                                           # the set carries its LoRA
+DATASET = os.environ.get("DATASET", "gemma4-submission" if LSET == "31b" else "gemma4-submission-e4b")   # the notebook reads it
 TOOLS = {"run_command", "read_file", "edit_file", "write_file", "submit_patch", "get_status",
          "get_code_neighbors", "search_similar_code", "get_code_subgraph"}
 EXTS = {".yaml", ".yml", ".md", ".txt", ".py", ".json", ".safetensors"}
-DATASET = os.environ.get("DATASET", "gemma4-submission")                 # private dataset the notebook reads
-LATEST = ROOT / "scripts" / "arms" / "latest"                            # the one latest setting (eval_dev.sh LATEST)
 results = []                                            # (check, ok, detail)
 
 
@@ -104,6 +115,10 @@ def run_checks(d, tag):
     want_lora = os.environ.get("NOLORA", "1") == "0"
     check(f"{tag} 4 model = base alias" + ("" if want_lora else ", no adapter"),
           models == {ALIAS} and (want_lora or not adapters), f"models {sorted(models)} adapters {adapters}")
+    if want_lora and ADAPTER:                            # LATEST=e4b: the set's adapter, on the agent and on disk
+        files = sorted(f.name for f in (d / "adapters" / ADAPTER).glob("adapter_*"))
+        check(f"{tag} 4b adapter = {ADAPTER} ({LSET}) + files", adapters == [f"agent.yaml: {ADAPTER}"]
+              and files == ["adapter_config.json", "adapter_model.safetensors"], f"adapters {adapters} files {files}")
     extra = sorted(set(tools) - TOOLS - {"agent_tool"})
     check(f"{tag} 5 tools ⊆ the 9 (+agent_tool)", tools and not extra, f"not allowed: {extra}" if extra else f"{len(tools)} entries")
     files = [p for p in d.rglob("*") if p.is_file() or p.is_symlink()]
@@ -185,7 +200,7 @@ def main():
     sp = (src / "prompts" / "system.md").read_text()
     p_src = "= latest prompt" if sp == lp else f"≠ latest prompt ({len(lp):,} → {len(sp):,} chars: arm parts / other base)"
     card = (f"name {name} · repo {git} · zip sha256 {zsha[:16]} · system.md sha256 {psha[:16]} {p_src}\n"
-            f"model {ALIAS} · dataset {DATASET}\n"
+            f"latest set {LSET} ({LATEST.relative_to(ROOT)}) · model {ALIAS} · adapter {ADAPTER if os.environ.get('NOLORA') == '0' else 'none'} · dataset {DATASET}\n"
             f"sampling {json.dumps(s, separators=(',', ':'))} · {s_src}\n"
             f"eval_config {ev} · {ev_src} · lora {'kept' if os.environ.get('NOLORA', '1') == '0' else 'removed'}")
     (out / "card.txt").write_text(card + "\n")
