@@ -24,7 +24,7 @@ names = zipfile.ZipFile(out).namelist()
 assert "agent.yaml" in names, f"agent.yaml not at the zip root: {names[:5]}"
 if ADAPTER is None:
     assert not any(n.startswith("adapters/") for n in names), "adapters/ in the zip (LoRA trap)"
-else:                                             # adapter name ≠ base alias · rank ≤ 128 (scorer: --max-lora-rank 128) · agent.yaml uses it
+else:                                             # adapter name ≠ base alias · rank ≤ 128 (HARNESS_README; the server sets --max-lora-rank to the rank rounded up) · agent.yaml uses it
     with zipfile.ZipFile(out) as z:
         cfg = json.loads(z.read(f"adapters/{ADAPTER}/adapter_config.json"))
         assert f"adapters/{ADAPTER}/adapter_model.safetensors" in names, f"adapters/{ADAPTER}/adapter_model.safetensors missing"

@@ -36,7 +36,7 @@ _Plan for the training lane of this repo. Everything that quotes task text (traj
 
 ## 硬事实（已核实）
 
-- 比赛 vLLM 0.19.1：`max_model_len` 32,768，`reasoning_parser`/`tool_call_parser` = gemma4，`enable_lora, max_loras 8, max_lora_rank 128`；带一个 r16 adapter 时 KV ≈ 27.7K token，我们的 agent 峰值 16–24K。
+- 比赛 vLLM 0.19.1：`max_model_len` 32,768，`reasoning_parser`/`tool_call_parser` = gemma4，`enable_lora, max_loras 8, max_lora_rank 128`（HARNESS_README 的配置值；adk_submission 0.2.13 启动时实际用 `--max-loras` = adapter 个数、`--max-lora-rank` = 秩向上取档，`serve_vllm.sh` 自 2026-10-30 起照此计算）；带一个 r16 adapter 时 KV ≈ 27.7K token，我们的 agent 峰值 16–24K。
 - PEFT 挂不上 `-ct` 权重。训练用 bf16：(a) Kaggle `google/gemma-4` transformers 变体，或 (b) `-ct` 反量化副本（icfoer 的做法，#750713）。Phase 0 比对两者权重差异后二选一。
 - scorer 加载过 rank ≤ 64 的 adapter（Ryan Holbrook，#749191）；adapter 在前向里生效（#749528）；**没人展示 adapter 超过 base**。
 - 推理时的 prompt 规则：同一回合内所有 thought 都在 prompt 里；harness 的 nudge（user 消息）之后更早的 thought 消失；compaction（interval 15 · threshold 14,336 · retain 5）用**模型自己**写的摘要替换历史（`scripts/compaction_shim.py`）。

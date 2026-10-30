@@ -31,17 +31,48 @@ TP="${TP:-4}"; GPU_UTIL="${GPU_UTIL:-0.80}"; MAX_LEN="${MAX_LEN:-32768}"; PORT="
 REASONING_START="${REASONING_START:-<|channel>}"
 SUBMISSION="${SUBMISSION:-harness/sample_submission}"
 LORA=()
-for d in "$SUBMISSION"/adapters/*/; do
-  [ -f "$d/adapter_config.json" ] && LORA+=("$(basename "$d")=$(cd "$d" && pwd)")
+for d in "$SUBMISSION"/adapters/*/; do   # a PEFT dir with weights (the scorer only discovers .safetensors files)
+  [ -f "$d/adapter_config.json" ] && compgen -G "$d*.safetensors" > /dev/null && LORA+=("$(basename "$d")=$(cd "$d" && pwd)")
 done
 LORA_NAMES="${LORA[*]%%=*}"
+LORA_LIMITS=""
 if [ ${#LORA[@]} -gt 0 ]; then
-  LORA=(--enable-lora --max-loras 8 --max-lora-rank 128 --lora-modules "${LORA[@]}")
+  # LoRA limits as the scorer's server sets them (adk_submission 0.2.13 VllmServer, server.py:780-791): --max-loras = the
+  # number of mounted adapters, --max-lora-rank = the largest adapter rank (adapter_config.json "r", else the lora_A/B
+  # shapes) rounded up to vLLM's sizes; 128 only when a rank can't be read. HARNESS_README §3.1's 8 / 128 are the config
+  # input the code replaces. MAX_LORAS=8 MAX_LORA_RANK=128 reproduce the fixed values used before 2026-10-30.
+  read -r RANKS RANK_EFF < <(python3 - "${LORA[@]#*=}" <<'EOF'
+import json, os, struct, sys
+SIZES = (1, 8, 16, 32, 64, 128, 256, 320, 512)
+def rank(d):
+    try:
+        r = json.load(open(os.path.join(d, "adapter_config.json"))).get("r")
+        if isinstance(r, int) and not isinstance(r, bool) and r > 0:
+            return r
+    except Exception:
+        pass
+    try:
+        with open(os.path.join(d, "adapter_model.safetensors"), "rb") as f:
+            h = json.loads(f.read(struct.unpack("<Q", f.read(8))[0]))
+        rs = [min(m["shape"]) for k, m in h.items() if k != "__metadata__" and ("lora_a" in k.lower() or "lora_b" in k.lower())
+              and len(m.get("shape", [])) == 2]
+        return max(rs) if rs else None
+    except Exception:
+        return None
+rs = [rank(d) for d in sys.argv[1:]]
+known = [r for r in rs if r]
+top = max(known) if known and len(known) == len(rs) else max([128, *known])
+print(",".join(str(r) for r in rs), next((s for s in SIZES if s >= top), SIZES[-1]))
+EOF
+)
+  MAX_LORAS="${MAX_LORAS:-${#LORA[@]}}"; MAX_LORA_RANK="${MAX_LORA_RANK:-$RANK_EFF}"
+  LORA_LIMITS=" · max_loras $MAX_LORAS · max_lora_rank $MAX_LORA_RANK (adapter r $RANKS → $RANK_EFF as the scorer)"
+  LORA=(--enable-lora --max-loras "$MAX_LORAS" --max-lora-rank "$MAX_LORA_RANK" --lora-modules "${LORA[@]}")
 fi
 # what this server is, at the top of runs/vllm.log (📷 it next to the eval summary)
 echo "serve_vllm $(date '+%F %T %Z') · commit $(git rev-parse --short HEAD 2>/dev/null || echo '?')"
 echo "  model $MODEL → served as $SERVED + gemma4 · TP $TP · gpu_util $GPU_UTIL · max_len $MAX_LEN · port $PORT"
-echo "  reasoning_start $REASONING_START · lora: ${LORA_NAMES:-none} · extra: ${EXTRA[*]:-none}${*:+ $*} · CUDA_VISIBLE_DEVICES ${CUDA_VISIBLE_DEVICES:-all}"
+echo "  reasoning_start $REASONING_START · lora: ${LORA_NAMES:-none}${LORA_LIMITS} · extra: ${EXTRA[*]:-none}${*:+ $*} · CUDA_VISIBLE_DEVICES ${CUDA_VISIBLE_DEVICES:-all}"
 nvidia-smi --query-gpu=index,name,memory.total --format=csv,noheader 2>/dev/null | sed 's/^/  gpu /' || true
 exec vllm serve "$MODEL" \
   --served-model-name "$SERVED" gemma4 \
