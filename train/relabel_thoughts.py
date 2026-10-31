@@ -98,7 +98,10 @@ def render_action(target):
             parts.append(f"{k}={s}")
         lines.append(f"{tc['name']}({', '.join(parts)})")
     if (target.get("content") or "").strip():
-        lines.append("Reply to the user with: " + target["content"].strip()[:1500])
+        # visible text next to a tool call is the agent's own note in the same turn (D3: 42 of 498 targets, e.g.
+        # "`copy` is now unused; tidy import."), not a reply; only a text-only turn is a reply to the user (D3: 68)
+        label = "Alongside the call you also write: " if lines else "Reply to the user with: "
+        lines.append(label + target["content"].strip()[:1500])
     return "\n".join(lines) or "(empty reply)"
 
 
