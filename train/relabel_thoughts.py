@@ -313,6 +313,7 @@ def main():
     ap.add_argument("--url", default=None, help="server (default vLLM 127.0.0.1:8000; GLM: $GLM_API_BASE)")
     ap.add_argument("--served", default=None, help="served model id (default: the first gemma-4-* id; GLM glm-5.2)")
     ap.add_argument("--all", action="store_true", help="every call with a target (ignores --tasks/--sample)")
+    ap.add_argument("--calls", default=None, help="exactly these calls, e.g. rich_2943:3,fastapi_14306:8 (ignores --tasks/--sample)")
     ap.add_argument("--retries", type=int, default=0, help="re-ask the writer up to N times when a thought fails the checks")
     ap.add_argument("--style", choices=sorted(INSTRUCTIONS), default="name",
                     help="writer instruction: name = the thought names the next file/function/command (default); bare = M2's writer")
@@ -343,7 +344,15 @@ def main():
         return 0
     src = f"synthetic_{'31b' if a.model == 'gemma31b' else 'glm'}"
     records = [json.load(open(f)) | {"_file": f} for f in sorted(glob.glob(os.path.join(a.records, "*.json")))]
-    if a.all:
+    if a.calls:
+        want = [(x.rsplit(":", 1)[0], int(x.rsplit(":", 1)[1])) for x in a.calls.split(",") if x.strip()]
+        by_id = {r["instance_id"]: r for r in records}
+        missing = [f"{i}:{n}" for i, n in want if i not in by_id or not any(c["call"] == n and c.get("target") for c in by_id[i]["calls"])]
+        if missing:
+            print("  --calls not found (or no target): " + ", ".join(missing)); return 1
+        picks = [(by_id[i], next(c for c in by_id[i]["calls"] if c["call"] == n)) for i, n in want]
+        recs = list({id(r): r for r, _ in picks}.values())
+    elif a.all:
         recs = [r for r in records if any(c.get("target") for c in r["calls"])]
         picks = [(r, c) for r in recs for c in r["calls"] if c.get("target")]
     else:
@@ -370,7 +379,7 @@ def main():
         return c["input_messages"] + [{"role": "user", "content": body}], r["tools"], None, None
     print("  picked: " + (" ".join(f"{r['instance_id']}:c{c['call']}" for r, c in picks) if len(picks) <= 40 else f"all {len(picks)} calls of {len(recs)} records"))
     if a.dry_run:
-        for r, c in picks[:2]:
+        for r, c in (picks if a.calls else picks[:2]):
             msgs, tools, pc, cut = build(r, c)
             print(f"\n--- {r['instance_id']} call {c['call']} · context {len(c['input_messages'])} messages · request {len(msgs)} "
                   f"message(s), {sum(len(m.get('content') or '') for m in msgs)} chars" + (f" · prev {pc} chars, cut {cut}" if standalone else ""))
