@@ -55,7 +55,9 @@ INSTRUCTIONS = {
         "NEXT ACTION:\n{action}"),
     # "name" (default since 2026-10-30, rewritten by the user the same day): reconstruct the reasoning right before the
     # turn — {prev} = the last step and its result, {action} = what the agent then said and did; rules: no hindsight,
-    # land on the actual action, do not restate the visible output, no fabrication, no meta, first-person voice, length
+    # land on the actual action, do not copy the visible text but end on the concrete next step in plain words (2026-10-31:
+    # "do not restate the output" kept the thoughts from naming the action, 0.227 of its identifiers on the 11 problem
+    # calls, the same as `bare`), no fabrication, no meta, first-person voice, length
     # matched to the step. No word limit: the writer's --max-tokens is the only cap (a cut thought fails the checks).
     "name": (
         "You are reconstructing the internal reasoning of a coding agent working in a real repository. You will be shown one "
@@ -72,8 +74,8 @@ INSTRUCTIONS = {
         "2. IT MUST LAND ON THE ACTUAL ACTION. The reasoning has to make the observed output the natural next step. Do not argue "
         "for a different approach, and do not critique the action even if you think it is suboptimal -- you are recovering the "
         "reasoning that led here, not improving it.\n"
-        "3. DO NOT RESTATE THE OUTPUT. The thinking precedes the decision. If the agent then says \"I'll update the retry "
-        "handler\", your thinking works out *why* that is the next move; it does not announce it again.\n"
+        "3. DO NOT COPY THE VISIBLE TEXT. If the agent then says something, work out why rather than repeating it word for "
+        "word. Do end by deciding the concrete next step in plain words: which file, function, test or command.\n"
         "4. NO FABRICATION. Do not invent file paths, class names, config keys, ticket numbers, or test results that do not appear "
         "in the context. If you need to refer to something unseen, refer to it the way the agent would -- as something still to be "
         "checked.\n"
