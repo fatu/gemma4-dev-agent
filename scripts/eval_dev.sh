@@ -62,6 +62,8 @@
 #   test1  — one targeted test before submit_patch is required (only 6 of 33 runs ran a test)
 #   t10    — temperature 1.0 + top_k 64 (Gemma's recommended sampling; forum try-list #1: 0.2 → 1.0 raised two
 #            independent runs, #747696 / #746250). ADK passes top_k through LiteLLM (google/adk/models/lite_llm.py).
+#   t07    — temperature 0.7, nothing else: the rejection-sampling temperature of the fine-tune plan (TRAIN_PLAN.md
+#            decision 5) for on-policy training trajectories (SPLIT=splits/d3_train.txt TAG=k1..k4 TRAJ=1); eval stays 0.2
 #   repro  — "## 4. Verify" becomes: first a `python -c` run of the issue's own example, compared with what the issue
 #            asks for; then one test file (E4B wave 1: failed runs said "the tests passed, so the fix is verified" after
 #            existing tests that don't cover the issue; runs end at ~10 of 28 calls, so the extra checks fit).
@@ -261,7 +263,7 @@ echo "tasks: ${#IDS[@]} from $SPLIT"
 echo "dev split: ${#IDS[@]} tasks · arms: $ARMS · budget: ${BUDGET_FLAGS[*]:-none} · concurrency ${CONC:-1}"
 for arm in $ARMS; do                                  # check every arm up front, not 2 h into the first one
   for part in ${arm//+/ }; do
-    case "$part" in out8k|nothink|think1k|readdisc|noanalyzer|out6k|out4k|tools6|submit|editrecover|issuefirst|tmpfix|test1|t10|repro|lean|edit1|r1|r2|r3|v4|t00|time7|tail40|outline|win100|course|callchain|grepbatch|twins5|dryhelper|noregress|ask3|editctx|editguard|tmprepro|coursefull) ;;
+    case "$part" in out8k|nothink|think1k|readdisc|noanalyzer|out6k|out4k|tools6|submit|editrecover|issuefirst|tmpfix|test1|t10|t07|repro|lean|edit1|r1|r2|r3|v4|t00|time7|tail40|outline|win100|course|callchain|grepbatch|twins5|dryhelper|noregress|ask3|editctx|editguard|tmprepro|coursefull) ;;
       sample|base) [ "$arm" = "$part" ] || { echo "$part can't stack: $arm"; exit 1; } ;;
       *) echo "unknown arm part $part in $arm"; exit 1 ;; esac
   done
@@ -298,6 +300,7 @@ for arm in $ARMS; do
     if grep -q '^top_k:' "$Y"; then sedi 's/^top_k: .*/top_k: 64/' "$Y"; else sedi '/^top_p:/a\
 top_k: 64' "$Y"; fi; fi
   has t00 && sedi 's/^temperature: .*/temperature: 0.0/' "$Y"
+  has t07 && sedi 's/^temperature: .*/temperature: 0.7/' "$Y"
   T7=""; ARM_BUDGET=(${BUDGET_FLAGS[@]+"${BUDGET_FLAGS[@]}"})
   if has time7; then
     E="$SUB/eval_config.yaml"; [ -f "$E" ] && sedi 's/^\( *\)max_time_minutes: .*/\1max_time_minutes: 7/' "$E"

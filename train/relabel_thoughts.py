@@ -34,13 +34,51 @@ CTRL = ["<|channel>", "<channel|>", "<|tool_call>", "<tool_call|>", "<|tool_resp
 LEAK = re.compile(r"\b(the )?(given|provided|specified|predetermined|chosen|instructed|required) (next )?(action|step|call|command)"
                   r"|as (told|asked|instructed|requested)|next action:|you (told|asked) me|the user (told|asked|wants) me to (call|run|use)",
                   re.I)
-INSTRUCTION = (
-    "You are the software engineer agent in this conversation. Your next action has already been decided and is shown "
-    "below. Write the private reasoning that leads you to exactly this action: what the latest results tell you, what "
-    "is still uncertain, and why this is the right next step now. First person, as thoughts, 2 to 8 sentences, under "
-    "{words} words. Do not mention that the action was given to you, do not quote tool outputs verbatim, do not use "
-    "any tool-call syntax or markup, and do not write the action itself. Output only the reasoning text.\n\n"
-    "NEXT ACTION:\n{action}")
+INSTRUCTIONS = {
+    # "bare" = M2's writer (2026-10-29). Its "do not write the action itself" made thoughts that name only 22% of the
+    # action's identifiers (E4B's native thoughts: 47%), decoupling thought from action — one measured source of the
+    # copy-the-previous-call loop (notes/14 § 训练数据与 loss mask 复查). Kept for reproducing M2.
+    "bare": (
+        "You are the software engineer agent in this conversation. Your next action has already been decided and is shown "
+        "below. Write the private reasoning that leads you to exactly this action: what the latest results tell you, what "
+        "is still uncertain, and why this is the right next step now. First person, as thoughts, 2 to 8 sentences, under "
+        "{words} words. Do not mention that the action was given to you, do not quote tool outputs verbatim, do not use "
+        "any tool-call syntax or markup, and do not write the action itself. Output only the reasoning text.\n\n"
+        "NEXT ACTION:\n{action}"),
+    # "name" (default since 2026-10-30): the thought ends by saying what exactly it is about to do — file, function,
+    # symbol, test or command in plain words — the way the native thoughts do. Tool-call syntax is still forbidden.
+    "name": (
+        "You are the software engineer agent in this conversation. Your next action has already been decided and is shown "
+        "below. Write the private reasoning that leads you to exactly this action: what the latest results tell you, what "
+        "is still uncertain, why this is the right next step now, and what exactly you are about to do — name the file, "
+        "function, symbol, test or command you will use next in plain words, as you would think it (for example "
+        "\"I will grep for split_graphemes in rich/cells.py\" or \"I will edit the while loop in rich/cells.py so the "
+        "index advances\"). First person, as thoughts, 2 to 8 sentences, under {words} words. Do not mention that the "
+        "action was given to you, do not quote tool outputs verbatim, do not use any tool-call syntax or markup. Output "
+        "only the reasoning text.\n\n"
+        "NEXT ACTION:\n{action}"),
+}
+IDENT = re.compile(r"[A-Za-z_][A-Za-z0-9_./-]{3,}")
+
+
+def action_idents(target):
+    """identifiers (≥ 4 chars: paths, symbols, flags, test names) in the action's arguments — not the tool names"""
+    out = set()
+    for tc in target.get("tool_calls") or []:
+        args = tc.get("args")
+        if isinstance(args, str):
+            try:
+                args = json.loads(args)
+            except json.JSONDecodeError:
+                pass
+        out |= set(IDENT.findall(args if isinstance(args, str) else json.dumps(args, ensure_ascii=False)))
+    return out
+
+
+def overlap(target, thought):
+    """share of the action's identifiers that the thought names (E4B native thoughts 0.47; M2's bare writer 0.22)"""
+    a = action_idents(target)
+    return round(len(a & set(IDENT.findall(thought or ""))) / len(a), 2) if a else None
 
 
 def render_action(target):
@@ -165,6 +203,8 @@ def main():
     ap.add_argument("--served", default=None, help="served model id (default: the first gemma-4-* id; GLM glm-5.2)")
     ap.add_argument("--all", action="store_true", help="every call with a target (ignores --tasks/--sample)")
     ap.add_argument("--retries", type=int, default=0, help="re-ask the writer up to N times when a thought fails the checks")
+    ap.add_argument("--style", choices=sorted(INSTRUCTIONS), default="name",
+                    help="writer instruction: name = the thought names the next file/function/command (default); bare = M2's writer")
     ap.add_argument("--tasks", type=int, default=10)
     ap.add_argument("--sample", type=int, default=30)
     ap.add_argument("--seed", type=int, default=0)
@@ -195,8 +235,9 @@ def main():
         picks = [(r, c) for r in recs for c in r["calls"] if c.get("target")]
     else:
         recs, picks = pick(records, a.tasks, a.sample, a.seed)
+    INSTRUCTION = INSTRUCTIONS[a.style]
     print(f"relabel_thoughts · {a.records}: {len(records)} records → {len(recs)} tasks, {len(picks)} calls · writer {a.model} "
-          f"· thought_source {src} · max {a.max_words} words / {a.max_thought_tokens} tokens · seed {a.seed}")
+          f"· style {a.style} · thought_source {src} · max {a.max_words} words / {a.max_thought_tokens} tokens · seed {a.seed}")
     print("  picked: " + (" ".join(f"{r['instance_id']}:c{c['call']}" for r, c in picks) if len(picks) <= 40 else f"all {len(picks)} calls of {len(recs)} records"))
     if a.dry_run:
         for r, c in picks[:2]:
@@ -234,10 +275,11 @@ def main():
         n_retried += attempts - 1
         ok = not problems
         bad += not ok
+        ov = overlap(c["target"], thought)
         rows.append({"instance_id": r["instance_id"], "call": c["call"], "ok": ok, "problems": problems, "thought_tokens": n_tok,
-                     **u, "thought": thought})
-        print(f"  {i:>2} {r['instance_id']:<16} c{c['call']:<3} {'ok ' if ok else 'BAD'} {n_tok:>4} tok · prompt {u.get('prompt_tokens')} · "
-              f"out {u.get('completion_tokens')} · {u.get('seconds')} s{(' · ' + '; '.join(problems)) if problems else ''}")
+                     "overlap": ov, **u, "thought": thought})
+        print(f"  {i:>2} {r['instance_id']:<16} c{c['call']:<3} {'ok ' if ok else 'BAD'} {n_tok:>4} tok · names {ov if ov is not None else '-':<4} · "
+              f"prompt {u.get('prompt_tokens')} · out {u.get('completion_tokens')} · {u.get('seconds')} s{(' · ' + '; '.join(problems)) if problems else ''}")
         print(f"       {thought[:160]!r}")
         rec = by_file.setdefault(r["_file"], json.loads(json.dumps({k: v for k, v in r.items() if k != '_file'})))
         tgt = next(x for x in rec["calls"] if x["call"] == c["call"])
@@ -255,7 +297,9 @@ def main():
     ct = [x["completion_tokens"] for x in rows if x.get("completion_tokens")]
     sec = [x["seconds"] for x in rows if x.get("seconds")]
     tt = sorted(x["thought_tokens"] for x in done)
-    summ = {"writer": a.model, "served": w.served, "calls": len(rows), "ok": len(done), "bad": bad,
+    ovs = [x["overlap"] for x in done if x.get("overlap") is not None]
+    summ = {"writer": a.model, "served": w.served, "style": a.style, "calls": len(rows), "ok": len(done), "bad": bad,
+            "overlap_mean": round(sum(ovs) / len(ovs), 3) if ovs else None,
             "prompt_tokens_total": sum(pt), "completion_tokens_total": sum(ct), "seconds_total": round(sum(sec), 1),
             "thought_tokens": {"p50": tt[len(tt) // 2] if tt else None, "max": tt[-1] if tt else None},
             "per_call": {"prompt_tokens": round(sum(pt) / max(len(pt), 1)), "completion_tokens": round(sum(ct) / max(len(ct), 1)),
@@ -263,7 +307,8 @@ def main():
             "rows": rows}
     json.dump(summ, open(a.out.rstrip("/") + ".summary.json", "w"), ensure_ascii=False, indent=1)   # beside the dir: the dir holds records only
     summ["retries"] = n_retried
-    print(f"relabel: {len(rows)} calls · ok {len(done)} · bad {bad} · retries used {n_retried} · thought tokens p50 {summ['thought_tokens']['p50']} max {summ['thought_tokens']['max']} · "
+    print(f"relabel ({a.style}): {len(rows)} calls · ok {len(done)} · bad {bad} · retries used {n_retried} · thought tokens p50 {summ['thought_tokens']['p50']} max {summ['thought_tokens']['max']} · "
+          f"action identifiers named by the thought: mean {summ['overlap_mean']} (E4B native 0.47 · M2 bare 0.22) · "
           f"per call prompt {summ['per_call']['prompt_tokens']} + out {summ['per_call']['completion_tokens']} tok, {summ['per_call']['seconds']} s · "
           f"total {summ['seconds_total']} s → {a.out} ({len(by_file)} records)")
     print(f"  Phase 1 estimate at this rate: 498 calls ≈ {498 * summ['per_call']['seconds'] / 3600:.1f} h of writer time")
