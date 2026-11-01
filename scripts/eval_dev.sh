@@ -30,6 +30,7 @@
 # count. Since 2026-10-20 every arm runs under the scorer's per-task budget, passed as flags, with the time scaled
 # to this box's speed:
 #   MAX_CALLS=28 TIME_MIN=4 CMD_TIMEOUT=240 VERIFY_TIMEOUT=300  (the best public eval_config + README's fixed 300 s)
+#   MAX_TURNS=<n>: adds swegemma's --max-turns (unset = the harness default; the "budget:" line shows it when set)
 #   BUDGET=none reproduces the W2/W3 runs (no cap). Those results (Finding #5 included) were unbudgeted: on Kaggle's
 #   4×L4 at the scorer budget, nothink scored 4/33 vs 8/33 for the LB-0.24 config (it ran out of the 8 minutes).
 #   TIME_MIN defaults to 4, not the scorer's 8. Measured by the trace fit (rulestats.py): one lane TP=1 = 51 tok/s, a shared
@@ -145,7 +146,8 @@ BASE="${SUBMISSION:-harness/sample_submission}"
 ARMS="${ARMS:-sample out8k}"
 if [ "${BUDGET:-scorer}" = none ]; then BUDGET_FLAGS=(); else
   BUDGET_FLAGS=(--max-tool-calls "${MAX_CALLS:-28}" --max-time-minutes "${TIME_MIN:-4}"
-                --timeout-seconds "${CMD_TIMEOUT:-240}" --verification-timeout-seconds "${VERIFY_TIMEOUT:-300}"); fi
+                --timeout-seconds "${CMD_TIMEOUT:-240}" --verification-timeout-seconds "${VERIFY_TIMEOUT:-300}"
+                ${MAX_TURNS:+--max-turns $MAX_TURNS}); fi
 # Two latest settings since 2026-10-30 (user: "我们维护两个最新配置，31B和小模型LoRA"), chosen with LATEST:
 #   LATEST=31b (default; 1 = the same) → scripts/arms/latest      the 31B entry, no adapter
 #   LATEST=e4b                         → scripts/arms/latest_e4b  the small-model entry: MODEL_ALIAS + ADAPTER from its
@@ -177,7 +179,8 @@ if [ "$LATEST" = 1 ]; then
   if [ ${#BUDGET_FLAGS[@]} -gt 0 ]; then
     L_FLAG_MIN=$(python3 -c "print(round(${TIME_MIN:-4} * $L_MIN / 8, 3))")
     BUDGET_FLAGS=(--max-tool-calls "${MAX_CALLS:-$L_CALLS}" --max-time-minutes "$L_FLAG_MIN"
-                  --timeout-seconds "${CMD_TIMEOUT:-$L_TO}" --verification-timeout-seconds "${VERIFY_TIMEOUT:-300}")
+                  --timeout-seconds "${CMD_TIMEOUT:-$L_TO}" --verification-timeout-seconds "${VERIFY_TIMEOUT:-300}"
+                  ${MAX_TURNS:+--max-turns $MAX_TURNS})
   fi
   echo "latest setting: $LDIR → $(grep -hE '^(temperature|top_p|top_k):|max_output_tokens|thinking_budget|include_thoughts' "$LDIR/configs/sampling.yaml" | tr -s ' \n' ' ')· eval_config $L_TO s / $L_CALLS calls / $L_MIN min · run flag --max-time-minutes ${L_FLAG_MIN:-none (BUDGET=none)} (= TIME_MIN ${TIME_MIN:-4} × $L_MIN/8)"
 else
@@ -307,7 +310,8 @@ top_k: 64' "$Y"; fi; fi
     if [ ${#ARM_BUDGET[@]} -gt 0 ]; then
       T7=$(python3 -c "print(round(${TIME_MIN:-4} * 7 / 8, 3))")
       ARM_BUDGET=(--max-tool-calls "${MAX_CALLS:-28}" --max-time-minutes "$T7"
-                  --timeout-seconds "${CMD_TIMEOUT:-240}" --verification-timeout-seconds "${VERIFY_TIMEOUT:-300}")
+                  --timeout-seconds "${CMD_TIMEOUT:-240}" --verification-timeout-seconds "${VERIFY_TIMEOUT:-300}"
+                  ${MAX_TURNS:+--max-turns $MAX_TURNS})
     fi
     P7="$SUB/prompts/system.md"; if has coursefull; then echo "time7: prompt = the course's own (already says 7 minutes)"; else sedi 's/28 tool calls and 8 minutes in total/28 tool calls and 7 minutes in total/' "$P7"
     echo "time7: prompt budget line -> $(grep -c '28 tool calls and 7 minutes' "$P7") x '28 tool calls and 7 minutes'"; fi
