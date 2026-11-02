@@ -509,6 +509,64 @@ own "final deliverable": prompts/system.md replaced by its ~20-line prompt verba
 t00+out6k+time7`, `==` line `prompt 1037 chars`, temperature 0.0, 6144, `time7:` 4.375. The submission candidate is `course`
 only (it contains every slide rule; coursefull is the final slide's condensed prompt).
 
+## B-3m · Failure-study prompt fixes on E4B, all 129 tasks ▶ next (~3–4 h, 4 lanes)
+
+The failure study (2026-11-01: an Opus judge on every failed run of E2B, E4B and 31B, plus contrast A on the tasks 31B
+solved and a small model failed) found that the small models:
+- **never reproduce before editing:** 0 of 45 / 36 such tasks, while 31B reproduced in about 2/3;
+- **edit at call 5 vs 31B's 12, and rarely look up the definition;**
+- **misread their own failing tests:** E4B in 90% of its failures.
+
+Four prompt rules came out of it. Each is one arm part (`scripts/arms/<name>.md`), they stack, and every one prints
+`replaced` / `inserted` in the log:
+- `reprofirst` (f): the first call reproduces the issue with `python3 -c`, the same command runs again after the edit,
+  never submit without it. It replaces the "you may run it once" line.
+- `failstop` (d): pytest exit ≠ 0, exit 5 (no tests ran), or an Import-/Indentation-/SyntaxError from an edited file
+  = a broken patch, never "the environment". Fix or revert it, never submit it.
+- `grepdef` (g): `git grep -n -E 'def NAME|class NAME'`, read ~60 lines around the definition, never a whole file.
+- `latedit` (h): calls 1–10 reproduce / locate / read, edit at 11–16 (deadline 12 → 16, no "best-guess edit now"),
+  verify at 17–22.
+
+**Model and split:**
+- E4B through the small-model latest setting with **no adapter** (`LATEST=e4b ADAPTER=`), so the prompt is the only
+  difference; the server needs no LoRA.
+- **All 129 tasks,** because dev33 is too small for E4B's ~4–6 solves.
+- `TIME_MIN=8`, so the run flag is the scorer's 7 min (E4B decodes faster here than on an L4: lenient on time, the
+  same for every lane).
+
+**Four lanes, one pass each:**
+| lane | arm |
+|---|---|
+| GPU 0 `e1` | `base` (control) |
+| GPU 1 `e2` | `reprofirst+failstop` (the verification pair) |
+| GPU 2 `e3` | `reprofirst+failstop+grepdef+latedit` (all four) |
+| GPU 3 `e4` | `base` again (noise: how far two identical passes differ) |
+
+```bash
+cd gemma4-dev-agent && git pull
+cat splits/dev33.txt splits/rest96.txt > runs/all129.txt && wc -l runs/all129.txt                 # 📷 129
+.venv-eval/bin/python -c "from huggingface_hub import snapshot_download as d; print(d('google/gemma-4-E4B-it-qat-w4a16-ct'))"   # once, on the host (lanes are offline)
+BUILD_ONLY=1 LATEST=e4b ADAPTER= SUBMISSION=runs/base_lb024 ARMS="base reprofirst+failstop reprofirst+failstop+grepdef+latedit" \
+  TAG=chk bash scripts/eval_dev.sh | grep -E "latest set|: (replaced|inserted|appended)|^=="           # 📷 6 rule lines, 3 "==" lines
+pkill -f "vllm serve"; sleep 5
+A=(base reprofirst+failstop reprofirst+failstop+grepdef+latedit base)
+for g in 0 1 2 3; do GPU=$g TAG=e$((g+1)) TIME_MIN=8 LATEST=e4b ADAPTER= MODEL=google/gemma-4-E4B-it-qat-w4a16-ct \
+  SPLIT=runs/all129.txt SUBMISSION=runs/base_lb024 ARMS="${A[$g]}" nohup bash scripts/lane.sh run > runs/lane$g.log 2>&1 & done
+```
+After it finishes:
+```bash
+python3 scripts/compare_runs.py runs/dev33_base_e1 runs/dev33_base_e4 runs/dev33_reprofirst+failstop_e2 runs/dev33_reprofirst+failstop+grepdef+latedit_e3   # 📷
+python3 scripts/fail_atlas.py runs/dev33_base_e1 runs/dev33_base_e4 runs/dev33_reprofirst+failstop_e2 runs/dev33_reprofirst+failstop+grepdef+latedit_e3 | grep -E "^==|outcomes|failures:"   # 📷
+for r in runs/dev33_base_e1 runs/dev33_reprofirst+failstop_e2 runs/dev33_reprofirst+failstop+grepdef+latedit_e3; do echo "== $r"; python3 scripts/run_costs.py $r | head -12; done   # 📷
+```
+**Read it as:**
+- an arm counts only if it beats both base passes by more than they differ from each other;
+- the atlas line shows whether the rules were followed (tests run, edit position).
+
+Reference points:
+- E4B under boris v6's prompt, same 129 tasks: 15.
+- E2B under our prompt: 6.
+
 ## B-4 · Repeat the best 2 configs (~2–3 h) ✖ dropped: nothing to repeat. New protocol: an arm = 3 passes pooled vs the 4 base passes
 
 ```bash

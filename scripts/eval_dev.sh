@@ -120,6 +120,14 @@
 # on out8k, course/coursefull with t00+out6k+time7) for reruns of pre-2026-10-25 rows.
 #   edit1  — on top of lean: old_string = ONE whole line copied from the latest read_file output, new_string = that
 #            line's full replacement (E4B waves 1-3: ~75% of the mismatched old_strings had lines never shown by a read).
+# Failure-study prompt fixes (notes/16, 2026-11-01; each a one-line rule in scripts/arms/<name>.md, stackable):
+#   reprofirst — f: the first call reproduces the issue with python3 -c, the same command again after the edit,
+#                never submit without it (replaces the "you may run it once" line)
+#   failstop   — d: pytest exit ≠ 0 / exit 5 (no tests ran) / Import-, Indentation-, SyntaxError in an edited file =
+#                a broken patch, never "the environment": fix or revert, never submit it
+#   grepdef    — g: git grep -n 'def NAME|class NAME', read ~60 lines around the definition, never a whole file
+#   latedit    — h: calls 1-10 reproduce/locate/read, edit 11-16 (deadline 12 → 16, no "best-guess edit now"),
+#                verify 17-22, no exploration from 22 (latedit2/3 move the rest of the call plan)
 # BUILD_ONLY=1: build runs/subs/<arm>[_TAG] for each arm and stop (no server, no test deps, no eval) — the source dir
 # for scripts/make_submission.py, so the submission is built by the same code as the measured arm (works on macOS too).
 # MODEL_ALIAS=gemma-4-e4b-it-qat-w4a16-ct: every agent YAML of each arm copy gets this `model:` (small-model bonus on
@@ -266,7 +274,7 @@ echo "tasks: ${#IDS[@]} from $SPLIT"
 echo "dev split: ${#IDS[@]} tasks · arms: $ARMS · budget: ${BUDGET_FLAGS[*]:-none} · concurrency ${CONC:-1}"
 for arm in $ARMS; do                                  # check every arm up front, not 2 h into the first one
   for part in ${arm//+/ }; do
-    case "$part" in out8k|nothink|think1k|readdisc|noanalyzer|out6k|out4k|tools6|submit|editrecover|issuefirst|tmpfix|test1|t10|t07|repro|lean|edit1|r1|r2|r3|v4|t00|time7|tail40|outline|win100|course|callchain|grepbatch|twins5|dryhelper|noregress|ask3|editctx|editguard|tmprepro|coursefull) ;;
+    case "$part" in out8k|nothink|think1k|readdisc|noanalyzer|out6k|out4k|tools6|submit|editrecover|issuefirst|tmpfix|test1|t10|t07|repro|lean|edit1|r1|r2|r3|v4|t00|time7|tail40|outline|win100|course|callchain|grepbatch|twins5|dryhelper|noregress|ask3|editctx|editguard|tmprepro|coursefull|reprofirst|failstop|grepdef|latedit) ;;
       sample|base) [ "$arm" = "$part" ] || { echo "$part can't stack: $arm"; exit 1; } ;;
       *) echo "unknown arm part $part in $arm"; exit 1 ;; esac
   done
@@ -353,9 +361,10 @@ assert "{" not in rule and "}" not in rule        # ADK templates {name} from se
 print("submit:", "replaced the base's line" if n else "appended")
 PY
   fi
-  for rule in editrecover issuefirst tmpfix test1 repro edit1 r1 r2 r3 v4 tail40 outline win100 grepbatch twins5 callchain dryhelper noregress ask3 editctx editguard tmprepro; do   # one-line prompt rules (scripts/arms/<rule>.md)
+  for rule in editrecover issuefirst tmpfix test1 repro edit1 r1 r2 r3 v4 tail40 outline win100 grepbatch twins5 callchain dryhelper noregress ask3 editctx editguard tmprepro reprofirst failstop grepdef latedit; do   # one-line prompt rules (scripts/arms/<rule>.md)
     has "$rule" && python3 scripts/arms/apply.py "$rule" "$SUB/prompts/system.md"
   done
+  if has latedit; then for r in latedit2 latedit3; do python3 scripts/arms/apply.py "$r" "$SUB/prompts/system.md"; done; fi   # the rest of the call plan
   echo; echo "== $arm: model $(grep -rhoE '^ *model: *[A-Za-z0-9_.-]+' --include='*.y*ml' --exclude-dir=adapters "$SUB" | sed 's/.*model: *//' | sort -u | tr '\n' ' ')· $(grep -hE '^(temperature|top_p|top_k):|max_output_tokens|thinking_budget|include_thoughts' "$SUB/configs/sampling.yaml" | tr -s ' \n' ' ')· tools $(grep -c '^  - ' "$SUB/agent.yaml") · prompt $(wc -c < "$SUB/prompts/system.md") chars → $RUN   ($(date +%H:%M))"
   [ "${BUILD_ONLY:-0}" = 1 ] && { echo "   built $SUB (BUILD_ONLY: no eval)"; continue; }
   before=$(overflows)
