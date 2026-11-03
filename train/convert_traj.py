@@ -16,6 +16,9 @@ import hashlib
 import json
 import os
 import sys
+from collections import Counter
+
+from mask_errors import mask_tool_errors, summary
 
 
 def load_tasks(path):
@@ -96,14 +99,18 @@ def main():
     ap.add_argument("--policy", default=None, help="policy model alias (default: the log's model)")
     ap.add_argument("--tasks", default="harness/tasks.jsonl")
     ap.add_argument("--out", required=True)
+    ap.add_argument("--mask-errors", choices=["on", "off"], default="on",
+                    help="replies whose tool call failed as an action → not targets (train/mask_errors.py); off = count only")
     a = ap.parse_args()
+    print(f"tool-error masking: {a.mask_errors}")
+    mstats = Counter()
     tasks, results = load_tasks(a.tasks), load_results(a.run)
     os.makedirs(a.out, exist_ok=True)
     files = sorted(glob.glob(os.path.join(a.run, "traj", "*.jsonl")))
     files = [f for f in files if not f.endswith(".tools.jsonl")]
     tot = {"tasks": 0, "calls": 0, "targets": 0, "segments": 0, "nudge": 0, "compaction": 0, "reset": 0, "resolved": 0}
     for f in files:
-        rec = convert(f, a.source, a.policy, tasks, results, a.run)
+        rec = mask_tool_errors(convert(f, a.source, a.policy, tasks, results, a.run), mstats, a.mask_errors)
         ev = [e for c in rec["calls"] for e in c["events_before"]]
         n_t = sum(1 for c in rec["calls"] if c["target"])
         tot["tasks"] += 1; tot["calls"] += len(rec["calls"]); tot["targets"] += n_t
@@ -116,6 +123,7 @@ def main():
         print(f"{rec['instance_id']:<16} calls {len(rec['calls']):>3} targets {n_t:>3} segments "
               f"{rec['calls'][-1]['segment'] + 1 if rec['calls'] else 0:>2} nudge {ev.count('nudge')} "
               f"compaction {ev.count('compaction')} reset {ev.count('reset')} resolved {rec['resolved']}")
+    print(summary(mstats, a.mask_errors))
     print("TOTAL " + " · ".join(f"{k} {v}" for k, v in tot.items()) + f" → {a.out}")
     return 0 if tot["tasks"] else 1
 

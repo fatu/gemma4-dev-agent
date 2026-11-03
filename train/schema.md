@@ -45,7 +45,10 @@ Conventions
   reply has `target: null` and is never a training target; its input still documents the trajectory.
 - `excluded` (optional, per call): why a reply that exists is not a target (`target: null`) — `schema_violation` (a
   tool call the tool rejected: unknown key, missing required key) or `repro_write` (write_file of a scratch / repro /
-  test script into the workspace). `kit_31b` = dmitriigluzdov's LoRA kit, native tier (train/convert_kit.py).
+  test script into the workspace), or `tool_error` (its tool call failed as an action: edit old_string not found,
+  unknown tool, missing parameter, budget exhausted, a broken command; a test that fails or an empty grep is not one —
+  `train/mask_errors.py`, both converters, `--mask-errors on` by default). The call stays in the trajectory, so later
+  calls learn the recovery with the error in context. `kit_31b` = dmitriigluzdov's LoRA kit, native tier (train/convert_kit.py).
 - `thought_source` is per call: `native` = produced by the policy itself; `qwen` = folded `think` calls from the
   SWE-rebench conversion; `synthetic_*` = written afterwards by another model given the context and the action;
   `none` = no thought (Opus traces).

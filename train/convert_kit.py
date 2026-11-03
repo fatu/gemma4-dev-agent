@@ -44,6 +44,8 @@ import re
 import sys
 from collections import Counter
 
+from mask_errors import mask_tool_errors, summary
+
 ADK_SUFFIX = '\n\n\nYou are an agent. Your internal name is "swe_agent".'
 SUMMARY_PROMPT = "The following is a conversation history"
 LATEST_BUDGET = {"minutes": "7.0", "calls": "28"}
@@ -566,12 +568,15 @@ def main():
     ap.add_argument("--orig", default=None, help="also write the calls without the re-wrap here (A2 input)")
     ap.add_argument("--ref", default=None, help="also write the kit's rendered prompts here (render.py --check)")
     ap.add_argument("--scratch", choices=["tmp", "keep"], default="tmp", help="workspace scratch files: move to /tmp or keep")
+    ap.add_argument("--mask-errors", choices=["on", "off"], default="on",
+                    help="replies whose tool call failed as an action → not targets (train/mask_errors.py); off = count only")
     a = ap.parse_args()
     system = open(a.system).read().rstrip() + ADK_SUFFIX
     tools = json.load(open(sorted(glob.glob(os.path.join(a.tools_from, "*.json")))[0]))["tools"]
     ours = {t["function"]["name"]: t for t in tools}
     print(f"system prompt: latest {a.system} + ADK suffix = {len(system)} chars · tools: {len(tools)} schemas from {a.tools_from}"
-          f" · budget lines → {LATEST_BUDGET['minutes']} minutes / {LATEST_BUDGET['calls']} calls · scratch files: {a.scratch}")
+          f" · budget lines → {LATEST_BUDGET['minutes']} minutes / {LATEST_BUDGET['calls']} calls · scratch files: {a.scratch}"
+          f" · tool-error masking: {a.mask_errors}")
     for d in (a.out, a.orig, a.ref):
         if d:
             os.makedirs(d, exist_ok=True)
@@ -593,6 +598,7 @@ def main():
         rec["scratch_moved"] = moved.get("scratch_moved", {})
         fix_patch_view(rec, stats, moved.get("scratch_ops", {}))
         cut_repeats(rec, stats)
+        mask_tool_errors(rec, stats, a.mask_errors)
         tasks.add(row["task_id"]); repos[row.get("repository")] += 1
         n_t = sum(1 for c in rec["calls"] if c["target"])
         ev = [e for c in rec["calls"] for e in c["events_before"]]
@@ -626,6 +632,7 @@ def main():
         print("   e.g.", e)
     print("repeated failed calls: " + " · ".join(f"{k[len('repeats: '):]} {v}" for k, v in sorted(stats.items())
                                                   if k.startswith("repeats: ")))
+    print(summary(stats, a.mask_errors))
     print(f"write_file targets left (workspace, not scratch) {stats['write_file_kept']}: {stats['kept_write_paths']}")
     keys = ("trajectories", "calls", "targets", "segments", "compaction", "reset", "summariser_calls",
             "non_canonical_targets", "budget_lines_rewritten")
