@@ -162,12 +162,15 @@ if [ "${BUDGET:-scorer}" = none ]; then BUDGET_FLAGS=(); else
 #     model.env (E4B + the PLE-fix LoRA); the adapter files come from runs/adapters/<ADAPTER>/ (gitignored, fetched once
 #     from the public Kaggle dataset in model.env) into every arm copy, with `adapter: <ADAPTER>` on the root agent.
 #     Serve it with: MODEL=google/gemma-4-E4B-it-qat-w4a16-ct SUBMISSION=runs bash scripts/serve_vllm.sh
+#   LATEST=kit                         → scripts/arms/kit_e4b     the kit line (2026-11-03): the dmitrii kit's Budget-Fit 0.18
+#     prompt and settings, E4B + PLE-fix LoRA as e4b; the task prompt shows the literal minutes (PROMPT_TIME_MIN below)
 #   LATEST=0                           → off (the base's own config)
 LSET="${LATEST:-31b}"
 case "$LSET" in 1|31b) LSET=31b; LATEST=1; LDIR=scripts/arms/latest ;; e4b) LATEST=1; LDIR=scripts/arms/latest_e4b ;;
-  0) LDIR=scripts/arms/latest ;; *) echo "LATEST=$LSET: use 31b (default), e4b or 0"; exit 1 ;; esac
+  kit) LATEST=1; LDIR=scripts/arms/kit_e4b ;;
+  0) LDIR=scripts/arms/latest ;; *) echo "LATEST=$LSET: use 31b (default), e4b, kit or 0"; exit 1 ;; esac
 L_ADAPTER=""
-if [ "$LSET" = e4b ]; then
+if [ "$LSET" = e4b ] || [ "$LSET" = kit ]; then
   menv() { sed -n "s/^$1=//p" "$LDIR/model.env"; }
   MODEL_ALIAS="${MODEL_ALIAS:-$(menv MODEL_ALIAS)}"; L_ADAPTER="${ADAPTER-$(menv ADAPTER)}"; ADIR="runs/adapters/$L_ADAPTER"
   if [ -n "$L_ADAPTER" ] && [ ! -f "$ADIR/adapter_model.safetensors" ]; then
@@ -180,7 +183,7 @@ if [ "$LSET" = e4b ]; then
     [ "$A_SHA" = "$(menv ADAPTER_SHA256)" ] || { echo "LATEST=e4b: $ADIR/adapter_model.safetensors sha256 $A_SHA ≠ model.env's $(menv ADAPTER_SHA256)"; exit 1; }
   fi
 fi
-echo "latest set: $LSET ($LDIR)$([ "$LSET" = e4b ] && echo " · model $MODEL_ALIAS · adapter ${L_ADAPTER:-none (ADAPTER=)}${L_ADAPTER:+ ← $ADIR, sha256 ${A_SHA:0:16} ✓}")"
+echo "latest set: $LSET ($LDIR)$([ "$LSET" != 31b ] && [ "$LATEST" = 1 ] && echo " · model $MODEL_ALIAS · adapter ${L_ADAPTER:-none (ADAPTER=)}${L_ADAPTER:+ ← $ADIR, sha256 ${A_SHA:0:16} ✓}")"
 if [ "$LATEST" = 1 ]; then
   lval() { grep -oE "^ *$1: *[0-9.]+" "$LDIR/eval_config.yaml" | sed 's/.*: *//'; }
   L_MIN=$(lval max_time_minutes); L_CALLS=$(lval max_tool_calls); L_TO=$(lval timeout_seconds); L_FLAG_MIN=""
@@ -190,6 +193,11 @@ if [ "$LATEST" = 1 ]; then
                   --timeout-seconds "${CMD_TIMEOUT:-$L_TO}" --verification-timeout-seconds "${VERIFY_TIMEOUT:-300}"
                   ${MAX_TURNS:+--max-turns $MAX_TURNS})
   fi
+  # PROMPT_TIME_MIN (scripts/prompt_shim.py): the task prompt's time line shows this many minutes instead of the scaled
+  # run flag — the scorer shows the submission's eval_config value. Default: the setting's own for LATEST=kit, off otherwise.
+  [ "$LSET" = kit ] && export PROMPT_TIME_MIN="${PROMPT_TIME_MIN:-$L_MIN}"
+  if [ -n "${PROMPT_TIME_MIN:-}" ]; then echo "task prompt time line: $PROMPT_TIME_MIN minutes (PROMPT_TIME_MIN, scripts/prompt_shim.py)"
+  else echo "task prompt time line: the run flag's minutes, as the harness formats them (PROMPT_TIME_MIN unset)"; fi
   echo "latest setting: $LDIR → $(grep -hE '^(temperature|top_p|top_k):|max_output_tokens|thinking_budget|include_thoughts' "$LDIR/configs/sampling.yaml" | tr -s ' \n' ' ')· eval_config $L_TO s / $L_CALLS calls / $L_MIN min · run flag --max-time-minutes ${L_FLAG_MIN:-none (BUDGET=none)} (= TIME_MIN ${TIME_MIN:-4} × $L_MIN/8)"
 else
   echo "latest setting: OFF (LATEST=0) — the base's own sampling/eval_config, W3+ arms on out8k (pre-2026-10-25 behaviour)"

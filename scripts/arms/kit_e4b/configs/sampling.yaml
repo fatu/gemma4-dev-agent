@@ -1,0 +1,8 @@
+# The kit line's sampling (user decision 2026-11-03): Budget-Fit 0.18's, as saved in every request of the dmitrii kit's
+# native trajectories (temperature 0.65, top_p 0.95, max_completion_tokens 8192, thinking_token_budget 4096, thinking on).
+temperature: 0.65
+top_p: 0.95
+max_output_tokens: 8192
+thinking_config:
+  thinking_budget: 4096
+  include_thoughts: true

@@ -25,9 +25,9 @@ import yaml
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 LSET = {"1": "31b", "": "31b"}.get(os.environ.get("LATEST", ""), os.environ.get("LATEST"))   # 2026-10-30: 31b | e4b
-if LSET not in ("31b", "e4b"):
-    sys.exit(f"LATEST={LSET}: use 31b (default) or e4b")
-LDIR = ROOT / "scripts" / "arms" / ("latest" if LSET == "31b" else "latest_e4b")
+if LSET not in ("31b", "e4b", "kit"):
+    sys.exit(f"LATEST={LSET}: use 31b (default), e4b or kit")
+LDIR = ROOT / "scripts" / "arms" / {"31b": "latest", "e4b": "latest_e4b", "kit": "kit_e4b"}[LSET]
 MENV = dict(l.split("=", 1) for l in (LDIR / "model.env").read_text().splitlines() if "=" in l and not l.startswith("#"))
 REF = pathlib.Path(os.environ.get("REF", LDIR))
 TOOLS9 = ["run_command", "read_file", "edit_file", "write_file", "get_status", "submit_patch",

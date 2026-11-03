@@ -44,15 +44,15 @@ import yaml
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 LSET = {"1": "31b", "": "31b"}.get(os.environ.get("LATEST", ""), os.environ.get("LATEST"))   # 31b | e4b
-if LSET not in ("31b", "e4b"):
-    sys.exit(f"LATEST={LSET}: use 31b (default) or e4b")
-LATEST = ROOT / "scripts" / "arms" / ("latest" if LSET == "31b" else "latest_e4b")   # this set's latest setting
+if LSET not in ("31b", "e4b", "kit"):
+    sys.exit(f"LATEST={LSET}: use 31b (default), e4b or kit")
+LATEST = ROOT / "scripts" / "arms" / {"31b": "latest", "e4b": "latest_e4b", "kit": "kit_e4b"}[LSET]   # this set's setting
 MENV = dict(l.split("=", 1) for l in (LATEST / "model.env").read_text().splitlines() if "=" in l and not l.startswith("#"))
 ALIAS = os.environ.get("ALIAS", MENV["MODEL_ALIAS"])                    # check 4
 ADAPTER = MENV.get("ADAPTER", "")                                        # check 4 when NOLORA=0
 if ADAPTER and "NOLORA" not in os.environ:
     os.environ["NOLORA"] = "0"                                           # the set carries its LoRA
-DATASET = os.environ.get("DATASET", "gemma4-submission" if LSET == "31b" else "gemma4-submission-e4b")   # the notebook reads it
+DATASET = os.environ.get("DATASET", {"31b": "gemma4-submission", "e4b": "gemma4-submission-e4b", "kit": "gemma4-submission-kit"}[LSET])   # the notebook reads it
 TOOLS = {"run_command", "read_file", "edit_file", "write_file", "submit_patch", "get_status",
          "get_code_neighbors", "search_similar_code", "get_code_subgraph"}
 EXTS = {".yaml", ".yml", ".md", ".txt", ".py", ".json", ".safetensors"}

@@ -1,0 +1,9 @@
+# The kit line's per-task budget (user decision 2026-11-03): Budget-Fit 0.18 as the dmitrii kit's 31B data was generated
+# with it — the task prompts of all 103 native trajectories say 8 minutes / 28 calls / 80 turns, 240 s per command.
+# eval_dev.sh LATEST=kit turns it into run flags (minutes scaled to the box: TIME_MIN x max_time_minutes / 8) and shows
+# the literal minutes in the task prompt (PROMPT_TIME_MIN, scripts/prompt_shim.py), as the scorer does.
+evaluation:
+  timeout_seconds: 240
+  max_tool_calls: 28
+  max_time_minutes: 8
+  max_turns: 80
