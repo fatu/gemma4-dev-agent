@@ -47,8 +47,11 @@ Conventions
   tool call the tool rejected: unknown key, missing required key) or `repro_write` (write_file of a scratch / repro /
   test script into the workspace), or `tool_error` (its tool call failed as an action: edit old_string not found,
   unknown tool, missing parameter, budget exhausted, a broken command; a test that fails or an empty grep is not one —
-  `train/mask_errors.py`, both converters, `--mask-errors on` by default). The call stays in the trajectory, so later
-  calls learn the recovery with the error in context. `kit_31b` = dmitriigluzdov's LoRA kit, native tier (train/convert_kit.py).
+  `train/mask_errors.py`, both converters, `--mask-errors on` by default), or `protected_config_edit` (kit prompt: a
+  reply that writes, edits or deletes setup.cfg / tox.ini / conftest.py …, which the harness strips from the patch
+  anyway). The call stays in the trajectory, so later calls learn the recovery with the error in context. `kit_31b` =
+  dmitriigluzdov's LoRA kit, native tier (train/convert_kit.py); its records carry `prompt`: `latest` (our prompt
+  re-wrapped in) or `kit` (the kit's Budget-Fit prompt as served).
 - `thought_source` is per call: `native` = produced by the policy itself; `qwen` = folded `think` calls from the
   SWE-rebench conversion; `synthetic_*` = written afterwards by another model given the context and the action;
   `none` = no thought (Opus traces).

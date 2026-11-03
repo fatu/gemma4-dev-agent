@@ -30,6 +30,19 @@ in tool output `/workspace/<path>` and traceback `File "<path>"` → /tmp/<name>
 dropped. Bare names left in tool output (e.g. an `ls` listing) are counted, not changed. --scratch keep leaves the
 trajectories as they are.
 
+--prompt kit (user decision 2026-11-03: "kit应该是按照kit的提示词去训练比较好" — train, and later run, with the kit's
+own prompt): the messages stay as served (Budget-Fit 0.18 system prompt; task prompt with 8 minutes / 28 calls / 80
+turns), only the tool schemas are ours (whitespace-only difference: what our harness sends at inference). Cleaning by
+the kit prompt's own rules ("NEVER modify, create, or delete test files"): a trajectory that changes the repo's test
+files is dropped (vmware/tern #255, both seeds); a test-named scratch file the 31B created (test_fix.py; swegemma
+strips such files from the patch) is renamed in every message (--scratch rename, the default here: test_x.py →
+repro_x.py, a tests/ file moves to the root), and since a renamed file is no longer stripped, each submit_patch /
+get_status result gains it (files_changed, patch_size via newfile_diff) and a reply quoting an old number gets the new
+one; other scratch files (repro.py …) stay as they are — the kit prompt allows them. A reply that writes, edits or
+deletes a protected runner config (setup.cfg, tox.ini, conftest.py …) is not a target (`protected_config_edit`;
+asottile/yesqa #44). Schema violations, tool errors and repeated failed calls as with --prompt latest. --val-out:
+whole repos (sha1 order) until --val-tasks tasks, both seeds, written apart as the held-out set.
+
 --orig / --ref: the same calls without the re-wrap, plus the kit's server-rendered prompt per call in render.py's
 --check format, so `render.py <orig> --check <ref>` tests our renderer on these data (A2). Both use
 `<task>.<id8>` as instance_id (several trajectories per task). Every number here is the record.
@@ -500,7 +513,253 @@ def scratch_to_tmp(row, stats):
     return out
 
 
-def convert(row, system, tools, stats, rewrite=True):
+# --prompt kit: the kit's own Budget-Fit prompt in front of every call (module docstring)
+PROTECTED_CONFIG = {"conftest.py", "pytest.ini", "pyproject.toml", "tox.ini", "setup.cfg", ".pytest.ini",
+                    "sitecustomize.py", "usercustomize.py"}
+TREE_CAP = 200                          # the task prompt lists at most 200 tree lines (3 levels)
+
+
+def is_test_path(p):
+    """swegemma's protected test files (harness/verification.py _is_protected_test_or_config_path, the .py part) = the
+    kit prompt's "NEVER modify, create, or delete test files (`*_test.py`, `test_*.py`, or anything under `tests/`)";
+    submit_patch strips them from the patch"""
+    parts = p.split("/")
+    name = parts[-1]
+    return name.endswith(".py") and (name.startswith("test_") or name.endswith("_test.py")
+                                     or bool({"tests", "test", "testing"} & {x.lower() for x in parts[:-1]}))
+
+
+def tree_key(p):
+    """the task prompt's tree order: the whole path, lower case, punctuation ignored (all 103 trees follow it)"""
+    return re.sub(r"[^a-z0-9]", "", p.lower())
+
+
+def test_file_use(row):
+    """(test files the trajectory created itself, [changes to the repo's own test files]), in call order. A test path
+    is new when the task prompt's tree (3 levels, at most 200 lines) would list it and does not — the tree is complete
+    or the path sorts before its last line — or a tool output shows it untracked (`?? <path>`). A write_file, a shell
+    redirect, a script's `open(<path>, "w")` or an `rm` of a new test path is a creation; edit_file / write_file /
+    `sed -i` / `rm` of any other test path changes the repo's tests"""
+    u = text_of(row["sft_examples"][0]["request"]["messages"][1]["content"])
+    tree = [ln[2:] for ln in u[u.find("## Workspace Layout"):].splitlines() if ln.startswith("./")]
+    outputs = "\n".join(text_of(m.get("content")) for s in row["sft_examples"] for m in s["request"]["messages"]
+                        if m.get("role") == "tool")
+
+    def new(p):
+        if f"?? {p}\\n" in outputs:
+            return True
+        return p not in tree and p.count("/") < 3 and (len(tree) < TREE_CAP or tree_key(p) < tree_key(tree[-1]))
+
+    created, changes = set(), []
+    for s in row["sft_examples"]:
+        for tc in (s.get("response_message") or {}).get("tool_calls") or []:
+            fn = tc.get("function") or {}
+            try:
+                a = json.loads(fn.get("arguments") or "{}")
+            except Exception:
+                continue
+            name, where = fn.get("name"), f"turn {s.get('turn')} {fn.get('name')}"
+            for p in map(rel, re.findall(r"open\(\s*['\"]([\w./-]+\.py)['\"]\s*,\s*['\"][wa]", json.dumps(a))):
+                if is_test_path(p) and p not in created and new(p):
+                    created.add(p)
+            if name in ("write_file", "edit_file"):
+                p = rel(a.get("filepath", ""))
+                if is_test_path(p) and p not in created:
+                    if name == "write_file" and new(p):
+                        created.add(p)
+                    else:
+                        changes.append(f"{where} {p}")
+            elif name == "run_command":
+                cmd = a.get("command", "")
+                for m in RE_SHELL_OUT.finditer(cmd):
+                    p = rel(m.group(1))
+                    if is_test_path(p) and p not in created:
+                        if new(p):
+                            created.add(p)
+                        else:
+                            changes.append(f"{where} > {p}")
+                if re.search(r"\bsed\s+-i|\brm\s", cmd):
+                    for p in map(rel, re.findall(r"[\w./-]+\.py", cmd)):
+                        if is_test_path(p) and p not in created:
+                            if re.search(r"\brm\s", cmd) and new(p):
+                                created.add(p)      # made by something we cannot see (a script), removed here
+                            else:
+                                changes.append(f"{where} {p}")
+    return created, changes
+
+
+def touches_config(tc):
+    """a tool call that writes, edits or deletes a protected runner config (setup.cfg, tox.ini, conftest.py …): by
+    write_file / edit_file, a shell redirect, `sed -i` or `rm`"""
+    a = json.loads(tc["args"])
+    if tc["name"] in ("write_file", "edit_file"):
+        return os.path.basename(rel(a.get("filepath", ""))) in PROTECTED_CONFIG
+    cmd = a.get("command", "") if tc["name"] == "run_command" else ""
+    hit = [m.group(1) for m in RE_SHELL_OUT.finditer(cmd)]
+    for args in re.findall(r"\b(?:sed\s+-i|rm)\s+([^;&|\n]*)", cmd):    # the words of an rm / sed -i up to the next command
+        hit += re.findall(r"[\w./-]+", args)
+    return any(os.path.basename(rel(p)) in PROTECTED_CONFIG for p in hit)
+
+
+def rename_map(created, row):
+    """test-named scratch file → a name the kit prompt allows: test_x.py / x_test.py → repro_x.py (a stem already
+    starting with "repro" stays: repro_test.py → repro.py); a file in a test directory moves to the root; a name the
+    trajectory already uses gets _2"""
+    text = json.dumps(row, ensure_ascii=False)
+    out, used = {}, set()
+    for p in sorted(created):
+        d, b = os.path.split(p)
+        b = b[:-3]
+        stem = b[5:] if b.startswith("test_") else b[:-5] if b.endswith("_test") else b
+        base = stem if stem.startswith("repro") else "repro_" + stem
+        d = "" if is_test_path(os.path.join(d, "x.py")) else d
+        cand, k = os.path.join(d, base + ".py"), 2
+        while cand in used or re.search(r"(?<![\w.-])" + re.escape(cand) + r"(?![\w.-])", text):
+            cand, k = os.path.join(d, f"{base}_{k}.py"), k + 1
+        used.add(cand)
+        out[p] = cand
+    return out
+
+
+def rename_sub(s, mp):
+    """every mention of a renamed path, with whatever came before it: /workspace/ (also inside a longer sandbox path),
+    ./, a/ b/ of a diff header, an escaped newline/tab of a JSON string, or a non-path character"""
+    for p in sorted(mp, key=len, reverse=True):
+        s = re.sub(r"(?:(?<=/workspace/)|(?<=\b[ab]/)|(?<=\./)|(?<=\\[ntr])|(?<![\w/.-]))" + re.escape(p) + r"(?![\w.-])",
+                   mp[p], s)
+    return s
+
+
+def rename_tests(row, stats):
+    """--scratch rename: the test-named scratch files of one trajectory get their new names in every reply and every
+    later message (not the system prompt and the task prompt); the files stay in the workspace"""
+    created, _ = test_file_use(row)
+    mp = rename_map(created, row) if created else {}
+    if not mp:
+        return row
+    stats["trajectories with test-named scratch files"] += 1
+    stats["test-named scratch files renamed"] += len(mp)
+    cache = {}
+
+    def msg(m):
+        key = json.dumps(m, sort_keys=True)
+        if key not in cache:
+            m2 = dict(m)
+            for k in ("reasoning", "reasoning_content", "content"):
+                if isinstance(m.get(k), str):
+                    m2[k] = rename_sub(m[k], mp)
+                elif isinstance(m.get(k), list):
+                    m2[k] = [{**x, "text": rename_sub(x["text"], mp)} if isinstance(x, dict) and isinstance(x.get("text"), str)
+                             else x for x in m[k]]
+            if m.get("tool_calls"):
+                m2["tool_calls"] = [{**tc, "function": {**tc["function"], "arguments": rename_sub(tc["function"].get("arguments") or "", mp)}}
+                                    for tc in m["tool_calls"]]
+            cache[key] = m2
+        return cache[key]
+
+    steps = []
+    for s in row["sft_examples"]:
+        s2 = dict(s)
+        s2["response_message"] = msg(s.get("response_message") or {})
+        req = dict(s["request"])
+        req["messages"] = [m if i < 2 else msg(m) for i, m in enumerate(s["request"]["messages"])]
+        s2["request"] = req
+        steps.append(s2)
+    out = dict(row)
+    out["sft_examples"] = steps
+    out["scratch_renamed"] = mp
+    blob = json.dumps([[s["response_message"]] + s["request"]["messages"][2:] for s in steps], ensure_ascii=False)
+    for p in mp:
+        left = re.findall(r".{0,60}(?<![\w.-])" + re.escape(os.path.basename(p)) + r"(?![\w.-]).{0,30}", blob)
+        stats["renamed: mentions of an old name left"] += len(left)
+        if left and len(stats["renamed: leftover examples"]) < 6:
+            stats["renamed: leftover examples"].append(f"{row['task_id']}: {left[0]}")
+    return out
+
+
+def fix_renamed_patch(rec, stats):
+    """submit_patch strips test files from the patch (strip_protected_files_from_patch), so the 31B's test-named scratch
+    files never counted there; renamed they are ordinary untracked files that `git add -N .` puts in the patch, like
+    the kit's other scratch files. Each submit_patch result gets the renamed files present at that moment:
+    files_changed + n and patch_size + their new-file diff (newfile_diff, content from the write_file / heredoc and
+    later edit_file calls; files_changed only when a content is unknown); a get_status reports the last submit's size"""
+    names = set((rec.get("scratch_renamed") or {}).values())
+    if not names:
+        return rec
+    variants = {v: n for n in names for v in (n, "./" + n, "/workspace/" + n)}
+    present, content, fixed, last, tool_result_orig = set(), {}, {}, 0, {}
+    for i, tid, name, a in reply_actions(rec):
+        res = tool_result_orig[tid] = tool_result(rec, tid) or ""
+        ok = '"status": "ok"' in res[:40]
+        if name in ("write_file", "edit_file") and rel(a.get("filepath", "")) in names and ok:
+            p = rel(a["filepath"])
+            if name == "write_file":
+                present.add(p)
+                content[p] = a.get("content", "")
+            elif content.get(p) is not None and a.get("old_string") in content[p]:
+                content[p] = content[p].replace(a["old_string"], a.get("new_string", ""), 1)
+            else:
+                content[p] = None
+        elif name == "run_command":
+            cmd = a.get("command", "")
+            for m in RE_SHELL_OUT.finditer(cmd):
+                if m.group(1) in variants:
+                    present.add(variants[m.group(1)])
+                    content[variants[m.group(1)]] = None
+            for t, body in heredoc_writes(cmd, set(variants)).items():
+                content[variants[t]] = body
+            if re.search(r"\brm\b", cmd):
+                for n in [n for n in present if re.search(r"(?<![\w.-])(?:\./|/workspace/)?" + re.escape(n) + r"(?![\w.-])", cmd)]:
+                    present.discard(n)
+        elif name == "submit_patch" and ok:
+            known = [n for n in present if content.get(n) is not None]
+            last = sum(len(newfile_diff(n, content[n])) for n in known)
+            if present:
+                r = re.sub(r'"files_changed": (\d+)', lambda m: f'"files_changed": {int(m.group(1)) + len(present)}', res)
+                fixed[tid] = re.sub(r'"patch_size": (\d+)', lambda m: f'"patch_size": {int(m.group(1)) + last}', r)
+                stats["renamed: submits with the renamed files added" if len(known) == len(present)
+                      else "renamed: submits with files_changed added only (content unknown)"] += 1
+        elif name == "get_status" and last and ok:
+            fixed[tid] = re.sub(r'"patch_size": (\d+)', lambda m: f'"patch_size": {int(m.group(1)) + last}', res)
+            stats["renamed: get_status sizes"] += 1
+    for c in rec["calls"]:
+        for m in c["input_messages"]:
+            if m.get("role") == "tool" and m.get("tool_call_id") in fixed:
+                m["content"] = fixed[m["tool_call_id"]]
+    # the 31B quotes the numbers ("Wait, `files_changed: 2`?"): every reply after a changed result, up to the next
+    # submit_patch / get_status result, gets the new number for a quoted old one — in each history and in the target
+    status_ids = {tid for _, tid, name, _ in reply_actions(rec) if name in ("submit_patch", "get_status")}
+    nums = {}
+    for tid in fixed:
+        o = {k: re.search(rf'"{k}": (\d+)', tool_result_orig[tid]) for k in ("files_changed", "patch_size")}
+        n = {k: re.search(rf'"{k}": (\d+)', fixed[tid]) for k in o}
+        nums[tid] = [(k, o[k].group(1), n[k].group(1)) for k in o if o[k] and n[k] and o[k].group(1) != n[k].group(1)]
+
+    def requote(t, cur):
+        for k, o, n in cur:
+            t = re.sub(rf"({k}`?\s*(?::|=|is|of|was)\s*`?){o}(?!\d)", rf"\g<1>{n}", t)
+        return t
+
+    changed = set()
+    for c in rec["calls"]:
+        cur = []
+        for m in c["input_messages"]:
+            if m.get("role") == "tool" and m.get("tool_call_id") in status_ids:
+                cur = nums.get(m["tool_call_id"], [])
+            elif m.get("role") == "assistant" and cur:
+                for fld in ("reasoning", "reasoning_content", "content"):
+                    if isinstance(m.get(fld), str):
+                        m[fld] = requote(m[fld], cur)
+        for fld in ("reasoning", "content"):
+            t = (c["target"] or {}).get(fld)
+            if t and cur and requote(t, cur) != t:
+                c["target"][fld] = requote(t, cur)
+                changed.add((c["call"], fld))
+    stats["renamed: replies quoting a changed number (targets)"] += len(changed)
+    return rec
+
+
+def convert(row, system, tools, stats, rewrite=True, prompt="latest"):
     params = {t["function"]["name"]: {"required": t["function"]["parameters"].get("required", []),
                                       "properties": t["function"]["parameters"].get("properties", {})} for t in tools}
     calls, prev, pending, segment = [], None, [], 0
@@ -524,13 +783,17 @@ def convert(row, system, tools, stats, rewrite=True):
         elif step.get("_excluded"):
             excluded = step["_excluded"]
             stats[f"{excluded}_excluded"] += 1
+        elif prompt == "kit" and any(touches_config(tc) for tc in target["tool_calls"]):
+            excluded = "protected_config_edit"       # stripped from the patch anyway; e.g. yesqa #44's overwritten setup.cfg
+            stats["protected_config_edit_excluded"] += 1
+            stats["protected config edits"].append(f"{row['task_id']}.{row['id'][:8]} turn {step.get('turn')}")
         else:
             for tc in target["tool_calls"]:
                 if tc["name"] == "write_file":
                     stats["write_file_kept"] += 1
                     stats["kept_write_paths"].append(json.loads(tc["args"]).get("filepath", "?"))
         calls.append({"call": len(calls) + 1, "segment": segment, "events_before": pending,
-                      "input_messages": rewrap(msgs, system, stats) if rewrite else msgs,
+                      "input_messages": rewrap(msgs, system, stats) if rewrite and prompt == "latest" else msgs,
                       "target": None if excluded else target, "excluded": excluded, "thought_source": "native",
                       "usage_prompt_tokens": None if rewrite else step.get("prompt_tokens"), "err": None,
                       "kit_turn": step.get("turn"), "kit_canonical_target": step.get("canonical_target_matches")})
@@ -545,6 +808,7 @@ def convert(row, system, tools, stats, rewrite=True):
                          "enable_thinking": (req.get("chat_template_kwargs") or {}).get("enable_thinking"),
                          "max_tool_calls": 28, "max_time_minutes": 8, "configuration": row.get("configuration")},
             "env_fingerprint": None, "tools": tools if rewrite else req["tools"], "calls": calls,
+            "prompt": "latest" if rewrite and prompt == "latest" else "kit",
             "kit_id": row["id"], "kit_outcome_sha256": row.get("outcome_sha256"), "kit_seed": row.get("seed")}
 
 
@@ -567,22 +831,50 @@ def main():
     ap.add_argument("--out", default="runs/sft/kit31b")
     ap.add_argument("--orig", default=None, help="also write the calls without the re-wrap here (A2 input)")
     ap.add_argument("--ref", default=None, help="also write the kit's rendered prompts here (render.py --check)")
-    ap.add_argument("--scratch", choices=["tmp", "keep"], default="tmp", help="workspace scratch files: move to /tmp or keep")
+    ap.add_argument("--prompt", choices=["latest", "kit"], default="latest",
+                    help="latest = our prompt re-wrapped in; kit = the kit's own prompt as served (our tool schemas)")
+    ap.add_argument("--scratch", choices=["tmp", "keep", "rename"], default=None,
+                    help="scratch files: move to /tmp (default for --prompt latest), keep, or rename the test-named ones "
+                         "(default for --prompt kit)")
+    ap.add_argument("--val-out", default=None, help="--prompt kit: write a repo-disjoint held-out set here")
+    ap.add_argument("--val-tasks", type=int, default=6, help="tasks in the held-out set (whole repos, both seeds)")
     ap.add_argument("--mask-errors", choices=["on", "off"], default="on",
                     help="replies whose tool call failed as an action → not targets (train/mask_errors.py); off = count only")
     a = ap.parse_args()
+    a.scratch = a.scratch or ("tmp" if a.prompt == "latest" else "rename")
     system = open(a.system).read().rstrip() + ADK_SUFFIX
     tools = json.load(open(sorted(glob.glob(os.path.join(a.tools_from, "*.json")))[0]))["tools"]
     ours = {t["function"]["name"]: t for t in tools}
-    print(f"system prompt: latest {a.system} + ADK suffix = {len(system)} chars · tools: {len(tools)} schemas from {a.tools_from}"
-          f" · budget lines → {LATEST_BUDGET['minutes']} minutes / {LATEST_BUDGET['calls']} calls · scratch files: {a.scratch}"
-          f" · tool-error masking: {a.mask_errors}")
-    for d in (a.out, a.orig, a.ref):
+    if a.prompt == "latest":
+        print(f"system prompt: latest {a.system} + ADK suffix = {len(system)} chars · budget lines → "
+              f"{LATEST_BUDGET['minutes']} minutes / {LATEST_BUDGET['calls']} calls", end="")
+    else:
+        print("prompt: the kit's own, as served (Budget-Fit 0.18 system prompt, task prompt with 8 minutes / 28 calls / "
+              "80 turns) · trajectories that change the repo's test files dropped · protected config edits not targets", end="")
+    print(f" · tools: {len(tools)} schemas from {a.tools_from} · scratch files: {a.scratch} · tool-error masking: {a.mask_errors}")
+    drop, val = {}, set()
+    if a.prompt == "kit":
+        repo_tasks = {}
+        for line in open(a.data):
+            row = json.loads(line)
+            changes = test_file_use(row)[1]
+            if changes:
+                drop[f"{row['task_id']}.{row['id'][:8]}"] = changes
+            else:
+                repo_tasks.setdefault(row.get("repository"), set()).add(row["task_id"])
+        if a.val_out:
+            for repo in sorted(repo_tasks, key=lambda r: hashlib.sha1(r.encode()).hexdigest()):
+                if len(val) >= a.val_tasks:
+                    break
+                val |= repo_tasks[repo]
+            print(f"held-out set → {a.val_out}: {len(val)} tasks, whole repos ordered by sha1(repo): {sorted(val)}")
+    for d in (a.out, a.orig, a.ref, a.val_out):
         if d:
             os.makedirs(d, exist_ok=True)
     stats = Counter()
     stats["kept_write_paths"], stats["violations"], moved_names = [], Counter(), Counter()
-    stats["patch claim examples"] = []
+    stats["patch claim examples"], stats["renamed: leftover examples"], stats["protected config edits"] = [], [], []
+    renamed = {}
     schema_diff = Counter()
     tasks, repos = set(), Counter()
     for line in open(a.data):
@@ -592,22 +884,30 @@ def main():
         for n, t in kit_tools.items():
             if t != ours[n]:
                 schema_diff["whitespace only" if norm_ws(t) == norm_ws(ours[n]) else f"{n}: content"] += 1
-        moved = scratch_to_tmp(row, stats) if a.scratch == "tmp" else row
+        name = f"{row['task_id']}.{row['id'][:8]}"
+        if name in drop:
+            print(f"{name:<44} DROPPED: changes the repo's test files ({'; '.join(drop[name][:3])})")
+            continue
+        moved = scratch_to_tmp(row, stats) if a.scratch == "tmp" else rename_tests(row, stats) if a.scratch == "rename" else row
         moved_names.update(os.path.basename(p) for p in moved.get("scratch_moved", {}))
-        rec = convert(moved, system, tools, stats)
+        rec = convert(moved, system, tools, stats, prompt=a.prompt)
         rec["scratch_moved"] = moved.get("scratch_moved", {})
+        if moved.get("scratch_renamed"):
+            rec["scratch_renamed"] = renamed[name] = moved["scratch_renamed"]
         fix_patch_view(rec, stats, moved.get("scratch_ops", {}))
+        fix_renamed_patch(rec, stats)
         cut_repeats(rec, stats)
         mask_tool_errors(rec, stats, a.mask_errors)
         tasks.add(row["task_id"]); repos[row.get("repository")] += 1
         n_t = sum(1 for c in rec["calls"] if c["target"])
         ev = [e for c in rec["calls"] for e in c["events_before"]]
         stats["trajectories"] += 1; stats["calls"] += len(rec["calls"]); stats["targets"] += n_t
+        if row["task_id"] in val:
+            stats["held-out trajectories"] += 1; stats["held-out targets"] += n_t
         stats["compaction"] += ev.count("compaction"); stats["reset"] += ev.count("reset")
         stats["segments"] += rec["calls"][-1]["segment"] + 1 if rec["calls"] else 0
         stats["non_canonical_targets"] += sum(1 for c in rec["calls"] if c["kit_canonical_target"] is False)
-        name = f"{row['task_id']}.{row['id'][:8]}"
-        with open(os.path.join(a.out, f"{name}.json"), "w") as w:
+        with open(os.path.join(a.val_out if row["task_id"] in val else a.out, f"{name}.json"), "w") as w:
             json.dump(rec, w, ensure_ascii=False)
         if a.orig:
             with open(os.path.join(a.orig, f"{name}.json"), "w") as w:
@@ -617,7 +917,7 @@ def main():
             with open(os.path.join(a.ref, f"{name}.json"), "w") as w:
                 json.dump(reference(row), w, ensure_ascii=False)
         print(f"{name:<44} calls {len(rec['calls']):>3} targets {n_t:>3} segments {rec['calls'][-1]['segment'] + 1:>2} "
-              f"compaction {ev.count('compaction')} reset {ev.count('reset')}")
+              f"compaction {ev.count('compaction')} reset {ev.count('reset')}" + (" · HELD OUT" if row["task_id"] in val else ""))
     print(f"tool schemas vs ours: {dict(schema_diff)}")
     print(f"schema violations excluded {stats['schema_violation_excluded']}: {dict(stats['violations'])}")
     print(f"scratch → /tmp: {stats['scratch files moved']} files in {stats['trajectories with scratch files']} trajectories "
@@ -630,6 +930,18 @@ def main():
           + f" · thoughts saying a /tmp file is in the tree/patch, not targets {stats['scratch_patch_reasoning_excluded']}")
     for e in stats["patch claim examples"]:
         print("   e.g.", e)
+    if a.scratch == "rename":
+        print(f"test-named scratch files renamed: {stats['test-named scratch files renamed']} in "
+              f"{stats['trajectories with test-named scratch files']} trajectories · "
+              + " · ".join(f"{k[len('renamed: '):]} {v}" for k, v in sorted(stats.items())
+                           if k.startswith("renamed: ") and not isinstance(v, list)))
+        for n, mp in renamed.items():
+            print(f"   {n}: " + ", ".join(f"{k} → {v}" for k, v in mp.items()))
+        for e in stats["renamed: leftover examples"]:
+            print("   left:", e)
+    if a.prompt == "kit":
+        print(f"dropped (change the repo's test files) {len(drop)}: {sorted(drop)} · protected config edits not targets "
+              f"{stats['protected_config_edit_excluded']}: {stats['protected config edits']}")
     print("repeated failed calls: " + " · ".join(f"{k[len('repeats: '):]} {v}" for k, v in sorted(stats.items())
                                                   if k.startswith("repeats: ")))
     print(summary(stats, a.mask_errors))
@@ -637,7 +949,9 @@ def main():
     keys = ("trajectories", "calls", "targets", "segments", "compaction", "reset", "summariser_calls",
             "non_canonical_targets", "budget_lines_rewritten")
     print("TOTAL " + " · ".join(f"{k} {stats[k]}" for k in keys) + f" · tasks {len(tasks)} · repos {len(repos)} → {a.out}"
-          + (f" (+ {a.orig}, {a.ref})" if a.orig else ""))
+          + (f" (+ {a.orig}, {a.ref})" if a.orig else "")
+          + (f" · of these held out: {stats['held-out trajectories']} trajectories, {stats['held-out targets']} targets, "
+             f"{len(val)} tasks → {a.val_out}" if val else ""))
     return 0 if stats["trajectories"] else 1
 
 
