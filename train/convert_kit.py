@@ -225,6 +225,9 @@ class Scratch:
             # listings of the workspace (grep -r / find / git diff --name-only) would not show a /tmp file
             c2 = re.sub(r"(^|(?<=\\n)|(?<=\": \"))\./" + re.escape(p) + r"(?::.*?)?\\n", r"\1", c2)
             c2 = re.sub(r"(^|(?<=\\n)|(?<=\": \"))" + re.escape(p) + r"\\n", r"\1", c2)
+            # `git diff` after the harness's `git add -N .` shows the new file as a hunk: gone with the file
+            c2 = re.sub(r"diff --git a/" + re.escape(p) + r" b/" + re.escape(p) + r"\\n.*?(?=diff --git |\", \"|\"\}|$)", "",
+                        c2, flags=re.S)
         c2 = sub_paths(c2, self.mp)           # what is left names the file itself (linter output, error echo)
         if c2 != content:
             self.stats["tool outputs rewritten"] += 1
@@ -255,6 +258,110 @@ class Scratch:
                 m2["content"] = self.text(c, True, "summaries")
         self.cache[key] = m2
         return m2
+
+
+CLEANUP_CMD = re.compile(r"^\s*(?:(?:rm|git|ls|cat|echo|find|head|tail|wc|true)\b[^;&|]*?(?:\s*(?:&&|;|\|\|?)\s*|$))+$")
+PATCH_CLAIM = re.compile(r"working tree|patch|untracked|files_changed|git status|git diff|included|clean ?up|before submit", re.I)
+
+
+def reply_actions(rec):
+    """(call index, tool-call id, name, args) of every reply: the target, or for an excluded call the next call's history"""
+    calls, out = rec["calls"], []
+    for i, c in enumerate(calls):
+        if c["target"]:
+            tcs = [(tc.get("id"), tc["name"], tc["args"]) for tc in c["target"]["tool_calls"]]
+        else:
+            nxt = next((c2 for c2 in calls[i + 1:] if c2["segment"] == c["segment"]), None)
+            m = nxt["input_messages"][len(c["input_messages"])] if nxt and len(nxt["input_messages"]) > len(c["input_messages"]) else {}
+            tcs = [(tc.get("id"), tc["function"]["name"], tc["function"]["arguments"]) for tc in m.get("tool_calls") or []]
+        for tid, name, args in tcs:
+            try:
+                a = json.loads(args or "{}")
+            except Exception:
+                a = {}
+            out.append((i, tid, name, a if isinstance(a, dict) else {}))
+    return out
+
+
+def tool_result(rec, tid):
+    return next((m.get("content") or "" for c in rec["calls"] for m in c["input_messages"]
+                 if m.get("role") == "tool" and m.get("tool_call_id") == tid), None)
+
+
+def fix_patch_view(rec, stats):
+    """After the /tmp move, what the 31B saw of its patch no longer fits: a submit_patch made while a scratch file was
+    still in the workspace counted it (files_changed, patch_size), and the 31B then reasoned about it, deleted it and
+    submitted again. Here such a submit returns what the later clean submit returned, the clean-up calls in between
+    (rm / git / ls / get_status / the re-submit; no compaction inside) are cut from the trajectory and from every later
+    history, and any remaining thought that says a /tmp file belongs to the working tree or the patch is not a target
+    (`excluded: "scratch_patch_reasoning"`). A submit with no clean submit after it keeps its numbers minus the files
+    (files_changed only; counted as approximate)."""
+    moved = set((rec.get("scratch_moved") or {}).values())
+    if not moved:
+        return rec
+    acts = reply_actions(rec)
+    present, at = set(), []
+    for i, tid, name, a in acts:
+        if name == "run_command":
+            cmd = a.get("command", "")
+            present |= {m.group(1) for m in RE_SHELL_OUT.finditer(cmd) if m.group(1) in moved}
+            if re.search(r"\brm\b", cmd):
+                present -= {p for p in moved if p in cmd}
+        at.append(set(present))
+    cut_calls, fixed = set(), {}
+    for k, (i, tid, name, a) in enumerate(acts):
+        if name != "submit_patch" or not at[k] or tid in fixed or i in cut_calls:
+            continue
+        k2 = next((j for j in range(k + 1, len(acts)) if acts[j][2] == "submit_patch" and not at[j]), None)
+        window = set(range(acts[k + 1][0], acts[k2][0] + 1)) if k2 is not None and k2 > k + 0 and k + 1 <= k2 else set()
+        ok = bool(window) and all(
+            acts[j][2] in ("submit_patch", "get_status") or (acts[j][2] == "run_command" and CLEANUP_CMD.match(acts[j][3].get("command", "")))
+            for j in range(k + 1, k2 + 1)) and \
+            all(any(x[0] == ci for x in acts[k + 1:k2 + 1]) and not rec["calls"][ci]["events_before"] for ci in window) and \
+            acts[k][0] not in window
+        clean = tool_result(rec, acts[k2][1]) if ok else None
+        if ok and clean and '"status": "ok"' in clean:
+            fixed[tid] = clean
+            cut_calls |= window
+            stats["patch view: submits given the clean result"] += 1
+        else:
+            r = tool_result(rec, tid) or ""
+            m = re.search(r'"files_changed": (\d+)', r)
+            if m:
+                fixed[tid] = r.replace(m.group(0), f'"files_changed": {max(1, int(m.group(1)) - len(at[k]))}')
+            stats["patch view: submits with files_changed lowered only (approximate)"] += 1
+    for c in rec["calls"]:
+        for m in c["input_messages"]:
+            if m.get("role") == "tool" and m.get("tool_call_id") in fixed:
+                m["content"] = fixed[m["tool_call_id"]]
+    if cut_calls:
+        gone = {tid for i, tid, _, _ in acts if i in cut_calls}
+        keep = []
+        for ci, c in enumerate(rec["calls"]):
+            if ci in cut_calls:
+                continue
+            c["input_messages"] = [m for m in c["input_messages"]
+                                   if not (m.get("role") == "tool" and m.get("tool_call_id") in gone)
+                                   and not (m.get("role") == "assistant" and m.get("tool_calls")
+                                            and all(tc.get("id") in gone for tc in m["tool_calls"]))]
+            keep.append(c)
+        stats["patch view: clean-up calls cut"] += len(cut_calls)
+        stats["patch view: trajectories cut"] += 1
+        rec["calls"] = keep
+        for n, c in enumerate(rec["calls"], 1):
+            c["call"] = n
+    for c in rec["calls"]:
+        t = c["target"]
+        if not t:
+            continue
+        for sent in re.split(r"(?<=[.!?])\s+|\n+", t.get("reasoning") or ""):
+            if any(p in sent for p in moved) and PATCH_CLAIM.search(sent):
+                c["target"], c["excluded"] = None, "scratch_patch_reasoning"
+                stats["scratch_patch_reasoning_excluded"] += 1
+                if len(stats["patch claim examples"]) < 6:
+                    stats["patch claim examples"].append(f"{rec['instance_id']} c{c['call']}: {sent.strip()[:150]}")
+                break
+    return rec
 
 
 def scratch_to_tmp(row, stats):
@@ -361,6 +468,7 @@ def main():
             os.makedirs(d, exist_ok=True)
     stats = Counter()
     stats["kept_write_paths"], stats["violations"], moved_names = [], Counter(), Counter()
+    stats["patch claim examples"] = []
     schema_diff = Counter()
     tasks, repos = set(), Counter()
     for line in open(a.data):
@@ -374,6 +482,7 @@ def main():
         moved_names.update(os.path.basename(p) for p in moved.get("scratch_moved", {}))
         rec = convert(moved, system, tools, stats)
         rec["scratch_moved"] = moved.get("scratch_moved", {})
+        fix_patch_view(rec, stats)
         tasks.add(row["task_id"]); repos[row.get("repository")] += 1
         n_t = sum(1 for c in rec["calls"] if c["target"])
         ev = [e for c in rec["calls"] for e in c["events_before"]]
@@ -400,6 +509,11 @@ def main():
           + " · ".join(f"{k} {v}" for k, v in sorted(stats.items()) if k.startswith(("scratch ", "write_file results", "edit_file results",
                                                                                        "read_file results", "tool outputs")))
           + f" · scratch edits not targets {stats['scratch_edit_excluded']}")
+    print("patch view after the move: " + " · ".join(f"{k[len('patch view: '):]} {v}" for k, v in sorted(stats.items())
+                                                       if k.startswith("patch view: "))
+          + f" · thoughts saying a /tmp file is in the tree/patch, not targets {stats['scratch_patch_reasoning_excluded']}")
+    for e in stats["patch claim examples"]:
+        print("   e.g.", e)
     print(f"write_file targets left (workspace, not scratch) {stats['write_file_kept']}: {stats['kept_write_paths']}")
     keys = ("trajectories", "calls", "targets", "segments", "compaction", "reset", "summariser_calls",
             "non_canonical_targets", "budget_lines_rewritten")
