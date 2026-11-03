@@ -10,15 +10,17 @@
 # Knobs (each printed): IDS_FILE (splits/rebench_kit81.txt) · OUT (runs/rebench) · ARM (t07: our latest + temperature
 # 0.7, the plan's sampling temperature; the kit used 0.65) · PASSES (4) · GPUS ("0 1 2 3") · TIME_MIN (7: our latest's
 # literal minutes; the box is faster than an L4, so lenient — fine for data, not for scores) · MODEL (31B) · CONC_GOLD (8)
-# · TOK (tokenizer for render/parser: the 31B id; same chat template as E4B, A2-checked 2026-11-03).
+# · TOK (tokenizer for render/parser: the 31B id; same chat template as E4B, A2-checked 2026-11-03) · MAX_TURNS (80: the
+# scorer reads max_turns: 80 from our eval_config.yaml and then prints "- Max loop iterations: 80 turns" in the task
+# prompt; the local CLI ignores eval_config, so without it the generated prompts would lack that line — as the kit's have it).
 set -uo pipefail
 cd "$(dirname "$0")/.."
 STAGE="${1:?build|gold|gen|data}"
 IDS_FILE="${IDS_FILE:-splits/rebench_kit81.txt}"; OUT="${OUT:-runs/rebench}"; ARM="${ARM:-t07}"; PASSES="${PASSES:-4}"
 GPUS=(${GPUS:-0 1 2 3}); TIME_MIN="${TIME_MIN:-7}"; MODEL="${MODEL:-google/gemma-4-31B-it-qat-w4a16-ct}"
-TOK="${TOK:-$MODEL}"; PY=.venv-eval/bin/python; SFT=runs/sft/rebench31b
+TOK="${TOK:-$MODEL}"; PY=.venv-eval/bin/python; SFT=runs/sft/rebench31b; MAX_TURNS="${MAX_TURNS:-80}"
 export TASKS_FILE="$OUT/tasks.jsonl" SNAPSHOTS_DIR="$OUT/snapshots" REBENCH_SITE="$OUT/site"
-echo "rebench_gen $STAGE · ids $IDS_FILE · out $OUT · arm $ARM · passes $PASSES on GPUs ${GPUS[*]} · TIME_MIN $TIME_MIN · model $MODEL"
+echo "rebench_gen $STAGE · ids $IDS_FILE · out $OUT · arm $ARM · passes $PASSES on GPUs ${GPUS[*]} · TIME_MIN $TIME_MIN · MAX_TURNS $MAX_TURNS · model $MODEL"
 
 case "$STAGE" in
 build)
@@ -39,7 +41,7 @@ gen)
   for i in $(seq 1 "$PASSES"); do
     g=${GPUS[$(( (i - 1) % ${#GPUS[@]} ))]}
     if [ "$i" -gt "${#GPUS[@]}" ]; then echo "PASSES > cards: pass $i waits for nothing — run it after the first wave"; continue; fi
-    GPU=$g TAG=g$i TIME_MIN=$TIME_MIN MODEL=$MODEL ARMS="$ARM" SPLIT="$OUT/ok.txt" SUBMISSION="${SUBMISSION:-runs/base_lb024}" TRAJ=1 \
+    GPU=$g TAG=g$i TIME_MIN=$TIME_MIN MAX_TURNS=$MAX_TURNS MODEL=$MODEL ARMS="$ARM" SPLIT="$OUT/ok.txt" SUBMISSION="${SUBMISSION:-runs/base_lb024}" TRAJ=1 \
       nohup bash scripts/lane.sh run > "runs/rebench_lane$g.log" 2>&1 &
     echo "  pass g$i → GPU $g · runs/dev33_${ARM}_g$i · log runs/rebench_lane$g.log"
   done

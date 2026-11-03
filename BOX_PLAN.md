@@ -599,7 +599,10 @@ bash scripts/rebench_gen.sh gen       # stops any host vLLM, 4 lanes (GPUs 0–3
 tail -2 runs/rebench_lane*.log        # progress
 bash scripts/rebench_gen.sh data      # after all 4 lanes: resolved → records → render → parser → data_stats  📷 all of it
 ```
-Knobs: `IDS_FILE` `OUT` `ARM` `PASSES` `GPUS` `TIME_MIN` `MODEL` `CONC_GOLD` `TOK` (the script prints them).
+Knobs: `IDS_FILE` `OUT` `ARM` `PASSES` `GPUS` `TIME_MIN` `MAX_TURNS` `MODEL` `CONC_GOLD` `TOK` (the script prints them).
+`MAX_TURNS=80` (default) puts "- Max loop iterations: 80 turns" into the task prompt, as the scorer does from our
+eval_config.yaml (found 2026-11-03 reviewing the kit data: our local latest-setting runs never passed it, so their
+prompts lacked that line).
 `TIME_MIN=7` is our latest's literal number; the box decodes faster than an L4 (B-3d: 51 vs 34 tok/s), so this is more
 lenient than the scorer — fine for collecting solved trajectories, not for reading a score.
 
