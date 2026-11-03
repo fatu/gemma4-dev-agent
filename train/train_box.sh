@@ -4,8 +4,15 @@
 # for eval_dev.sh. One stage per call so a shared box can be queued; `all` runs them in order. No `set -e`: every stage
 # prints its own result and the script goes on so the log is complete.
 #   GPU=2 bash train/train_box.sh all | data | env | dequant | smoke | m1 | m2 | subs
+# The kit line (BOX_PLAN.md B-K, 2026-11-03), named stages only (not part of `all`): the dmitrii kit's 31B trajectories with
+# the kit's own prompt (train/convert_kit.py --prompt kit) → E4B LoRA → an adapter for eval_dev.sh LATEST=kit:
+#   bash train/train_box.sh kitdata                      # no GPU: public kit file (207 MB) → records → render → parser
+#   GPU=3 bash train/train_box.sh env|dequant|kit        # train venv, bf16 base, the LoRA (one card)
+#   bash train/train_box.sh kitsubs                      # the epoch with the lower held-out NLL → runs/adapters/e4b_kit
 # Knobs (every one prints its effective value): GPU (CUDA_VISIBLE_DEVICES), DATA (dataset dir), VENV, DQ (dequant dir),
-# KAGGLE_DS (dataset ref), EPOCHS LR ACCUM R ALPHA (sft_lora.py defaults otherwise).
+# KAGGLE_DS (dataset ref), EPOCHS LR ACCUM R ALPHA (sft_lora.py defaults otherwise); kit line: KIT_DS (public dataset),
+# KIT_TOOLS (any run's traj/ dir: our 9 tool schemas), KIT_TOK (tokenizer for render/parser), KIT_OUT (adapter dir),
+# KIT_NAME (name under runs/adapters/), KIT_EPOCH (default: the lower held-out NLL), PARSER_WHEEL (laptop only).
 set -uo pipefail
 cd "$(dirname "$0")/.."
 STEP="${1:-all}"; T0=$(date +%s)
@@ -66,5 +73,59 @@ next (eval, one card, like the pod run):
   MODEL_ALIAS=$ALIAS TIME_MIN=8 SUBMISSION=runs/subs_m2   ARMS=base TAG=m2s1 VLLM_LOG=runs/vllm_sft.log REFS="" CONC=1 bash scripts/eval_dev.sh > runs/eval_m2_s1.log 2>&1 &
   (then the same with s2; python scripts/compare_runs.py runs/dev33_base_s1 runs/dev33_base_m1s1 runs/dev33_base_m2s1)
 EOF
+fi
+only() { [ "$STEP" = "$1" ]; }       # the kit stages run only when named
+KIT_DS="${KIT_DS:-dmitriigluzdov/gemma-4-serving-and-lora-verification-kit}"; KIT_RAW=runs/ext/dmitrii_kit/lora_native_resolved.jsonl
+KIT_SHA=2a4771640ed867adf273945f75e7392707d62427c6c3468c8ad46db8a19fc3ca   # the file the laptop converted and checked (2026-11-03)
+KIT_TOK="${KIT_TOK:-google/gemma-4-E4B-it-qat-w4a16-ct}"; KIT_OUT="${KIT_OUT:-adapters/e4b_kit}"; KIT_NAME="${KIT_NAME:-e4b_kit}"
+KD=runs/sft/kitnat; PY=.venv-eval/bin/python
+if only kitdata; then
+  KIT_TOOLS="${KIT_TOOLS:-$(ls -d runs/*/traj 2>/dev/null | head -1)}"
+  say "kit data: $KIT_DS → $KIT_RAW · tools from ${KIT_TOOLS:-NONE (set KIT_TOOLS=<run>/traj)} · tokenizer $KIT_TOK · parser ${PARSER_WHEEL:-vllm of the eval venv}"
+  if [ ! -f "$KIT_RAW" ]; then
+    mkdir -p "$(dirname "$KIT_RAW")"
+    kaggle datasets download "$KIT_DS" -f lora_native_resolved.jsonl -p "$(dirname "$KIT_RAW")" --unzip >/dev/null 2>&1
+    [ -f "$KIT_RAW.zip" ] && (cd "$(dirname "$KIT_RAW")" && unzip -oq lora_native_resolved.jsonl.zip && rm -f lora_native_resolved.jsonl.zip)
+  fi
+  SHA=$(python3 -c "import hashlib,sys;print(hashlib.sha256(open(sys.argv[1],'rb').read()).hexdigest())" "$KIT_RAW" 2>/dev/null)
+  if [ "$SHA" = "$KIT_SHA" ]; then echo "  $KIT_RAW sha256 ${SHA:0:16} = the laptop's file ✓"
+  else echo "  $KIT_RAW sha256 ${SHA:-missing} ≠ the laptop's ${KIT_SHA:0:16} — stop: download failed or the dataset changed"; exit 1; fi
+  rm -rf $KD ${KD}_val
+  $PY train/convert_kit.py --prompt kit --data "$KIT_RAW" --tools-from "$KIT_TOOLS" --out $KD --val-out ${KD}_val > $KD.convert.log 2>&1
+  echo "  $(grep -oE 'tools: [0-9]+ schemas from [^ ]+ \(sha256 [0-9a-f]+' $KD.convert.log))"
+  grep -E "^held-out|DROPPED|^test-named|^dropped|^TOTAL" $KD.convert.log | cut -c1-260
+  for d in $KD ${KD}_val; do
+    $PY train/render.py $d --tokenizer "$KIT_TOK" --pack --sample 50 --out $d.rendered.jsonl > $d.render.log 2>&1
+    echo "  $d: $(grep -E '^calls' $d.render.log | cut -c1-150) · $(grep -E '^RESULT' $d.render.log)"
+    $PY train/parser_check.py $d --tokenizer "$KIT_TOK" ${PARSER_WHEEL:+--wheel $PARSER_WHEEL} --out $d.parser.json > $d.parser.log 2>&1
+    echo "  $d: $(grep -E '^A5' $d.parser.log | cut -c1-90)"
+  done
+  echo "  laptop 2026-11-03: tools sha256 ee6a6459335f412d · TOTAL trajectories 101 (2 dropped, 24 renamed in 21) · train calls 1505 ·"
+  echo "  targets 1461 · label tokens 416563 · sequences 130 · held out calls 159 · targets 155 · label tokens 33387 · sequences 14 · A5 0 excluded"
+  echo "📷 everything from the 'kit data' line down"
+fi
+if only kit; then
+  say "kit LoRA on GPU $CUDA_VISIBLE_DEVICES: $KD.rendered.jsonl, held out ${KD}_val.rendered.jsonl → $KIT_OUT · sft: $SFT"
+  [ -s $KD.rendered.jsonl ] && [ -s ${KD}_val.rendered.jsonl ] || { echo "run kitdata first"; exit 1; }
+  [ -f "$DQ/config.json" ] || { echo "no bf16 base in $DQ: run env and dequant first"; exit 1; }
+  rm -rf "$KIT_OUT"
+  .venv-train/bin/python train/sft_lora.py $SFT --data $KD.rendered.jsonl --eval ${KD}_val.rendered.jsonl --out "$KIT_OUT" 2>&1 \
+    | grep -v Warning | tee runs/sft_kit.log | cut -c1-250
+  echo "📷 the schedule line, the 'eval[...]' lines and both '== epoch' lines"
+fi
+if only kitsubs; then
+  [ -f "$KIT_OUT/train_summary.json" ] || { echo "no $KIT_OUT/train_summary.json: run kit first"; exit 1; }
+  PICK=$(python3 -c 'import json, sys
+ep = [e for e in json.load(open(sys.argv[1]))["epochs"] if e.get("holdout_nll") is not None and not e.get("export_problems")]
+print(min(ep, key=lambda e: e["holdout_nll"])["epoch"] if ep else 0, " ".join("epoch%d=%.4f" % (e["epoch"], e["holdout_nll"]) for e in ep) or "none")' "$KIT_OUT/train_summary.json")
+  read -r BEST NLLS <<< "$PICK"
+  EP="${KIT_EPOCH:-$BEST}"
+  say "kitsubs: held-out NLL $NLLS → epoch ${EP} (KIT_EPOCH=${KIT_EPOCH:-auto}) → runs/adapters/$KIT_NAME"
+  [ -f "$KIT_OUT/epoch$EP/adapter_model.safetensors" ] || { echo "no $KIT_OUT/epoch$EP/adapter_model.safetensors"; exit 1; }
+  rm -rf "runs/adapters/$KIT_NAME"; mkdir -p runs/adapters; cp -r "$KIT_OUT/epoch$EP" "runs/adapters/$KIT_NAME"
+  ls -la "runs/adapters/$KIT_NAME"; python3 -c "import json,sys;c=json.load(open(sys.argv[1]));print('  adapter_config: r',c.get('r'),'alpha',c.get('lora_alpha'),'base',c.get('base_model_name_or_path'))" "runs/adapters/$KIT_NAME/adapter_config.json"
+  BUILD_ONLY=1 LATEST=kit ADAPTER=$KIT_NAME SUBMISSION=runs/base_lb024 ARMS=base TAG=kitchk bash scripts/eval_dev.sh 2>&1 \
+    | grep -E "^adapter |latest set|task prompt time line|latest e4b" | cut -c1-220
+  echo "📷 these lines; eval lanes: SERVE_ADAPTER is taken from ADAPTER=$KIT_NAME (BOX_PLAN.md B-K step K5)"
 fi
 say "done ($STEP)"

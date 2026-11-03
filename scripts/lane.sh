@@ -15,6 +15,9 @@
 # earlier serve) and the offline switches below stop vLLM/transformers from trying the hub. Stop any host-level vLLM
 # first (it holds memory on every card): pkill -f "vllm serve"; nvidia-smi.
 # Logs: runs/vllm_lane$GPU.log (the server; eval_dev.sh counts its overflow lines) and whatever you redirect this to.
+# SERVE_ADAPTER=<name> (default: ADAPTER when that is set and not empty): the lane's server mounts runs/adapters/<name>
+# only (copied to runs/serve_lane$GPU/adapters/), as the scorer mounts one submission's adapters; pass the same name as
+# ADAPTER for eval_dev.sh. Unset and ADAPTER unset/empty: the server mounts $SUBMISSION/adapters (none in runs/base_lb024).
 set -euo pipefail
 cd "$(dirname "$0")/.."
 MODE="${1:-run}"; GPU="${GPU:-0}"
@@ -33,13 +36,19 @@ fi
 
 [ "$MODE" = smoke ] || [ "$MODE" = run ] || { echo "usage: lane.sh check|smoke|run"; exit 1; }
 [ "$MODE" = run ] && [ -z "${TIME_MIN:-}" ] && { echo "set TIME_MIN explicitly (8 × 34 / <lane fit tok/s>; 5 at the measured 51 tok/s per lane — smoke figures overstate)"; exit 1; }
+SERVE_ADAPTER="${SERVE_ADAPTER:-${ADAPTER:-}}"; SERVE_SUB="${SUBMISSION:-}"
+if [ -n "$SERVE_ADAPTER" ]; then
+  [ -f "runs/adapters/$SERVE_ADAPTER/adapter_model.safetensors" ] || { echo "SERVE_ADAPTER=$SERVE_ADAPTER: no runs/adapters/$SERVE_ADAPTER/adapter_model.safetensors"; exit 1; }
+  SERVE_SUB="runs/serve_lane$GPU"; rm -rf "$SERVE_SUB"; mkdir -p "$SERVE_SUB/adapters"; cp -r "runs/adapters/$SERVE_ADAPTER" "$SERVE_SUB/adapters/"
+fi
+echo "lane gpu $GPU: server adapters from ${SERVE_SUB:-harness/sample_submission}/adapters: $(ls "${SERVE_SUB:-harness/sample_submission}/adapters" 2>/dev/null | tr '\n' ' ')(SERVE_ADAPTER=${SERVE_ADAPTER:-none})"
 # whole lane body runs inside one namespace; env (GPU, TAG, TIME_MIN, ARMS, SUBMISSION, …) is inherited
 exec unshare -rn bash -c '
   set -euo pipefail
   ip link set lo up
   export CUDA_VISIBLE_DEVICES='"$GPU"' VLLM_LOG=runs/vllm_lane'"$GPU"'.log
   mkdir -p runs
-  TP=1 PORT=8000 bash scripts/serve_vllm.sh > "$VLLM_LOG" 2>&1 &
+  SUBMISSION='"$SERVE_SUB"' TP=1 PORT=8000 bash scripts/serve_vllm.sh > "$VLLM_LOG" 2>&1 &
   SRV=$!
   trap "kill $SRV 2>/dev/null; wait $SRV 2>/dev/null || true" EXIT
   for i in $(seq 1 180); do                       # up to 15 min for the first load from disk

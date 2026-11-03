@@ -173,17 +173,23 @@ L_ADAPTER=""
 if [ "$LSET" = e4b ] || [ "$LSET" = kit ]; then
   menv() { sed -n "s/^$1=//p" "$LDIR/model.env"; }
   MODEL_ALIAS="${MODEL_ALIAS:-$(menv MODEL_ALIAS)}"; L_ADAPTER="${ADAPTER-$(menv ADAPTER)}"; ADIR="runs/adapters/$L_ADAPTER"
-  if [ -n "$L_ADAPTER" ] && [ ! -f "$ADIR/adapter_model.safetensors" ]; then
+  # ADAPTER=<another name> (e.g. a LoRA trained on the box, train/train_box.sh kitsubs): runs/adapters/<name>/ must exist;
+  # no download and no pinned sha256 (printed instead)
+  if [ -n "$L_ADAPTER" ] && [ "$L_ADAPTER" != "$(menv ADAPTER)" ]; then
+    [ -f "$ADIR/adapter_model.safetensors" ] || { echo "ADAPTER=$L_ADAPTER: no $ADIR/adapter_model.safetensors"; exit 1; }
+    A_SHA=$(python3 -c "import hashlib,sys;print(hashlib.sha256(open(sys.argv[1],'rb').read()).hexdigest())" "$ADIR/adapter_model.safetensors")
+    echo "adapter $L_ADAPTER is not this setting's ($(menv ADAPTER)): $ADIR, sha256 ${A_SHA:0:16} (not pinned) · r/alpha $(python3 -c "import json,sys;c=json.load(open(sys.argv[1]));print(c.get('r'),c.get('lora_alpha'))" "$ADIR/adapter_config.json")"
+  elif [ -n "$L_ADAPTER" ] && [ ! -f "$ADIR/adapter_model.safetensors" ]; then
     mkdir -p "$ADIR"; for f in adapter_config.json adapter_model.safetensors; do
       kaggle datasets download "$(menv ADAPTER_DATASET)" -f "$f" -p "$ADIR" >/dev/null 2>&1 || true; done
     [ -f "$ADIR/adapter_model.safetensors" ] || { echo "LATEST=e4b: no $ADIR/adapter_model.safetensors and the kaggle download failed — fetch $(menv ADAPTER_DATASET) into $ADIR (or ADAPTER= for none)"; exit 1; }
   fi
-  if [ -n "$L_ADAPTER" ]; then
+  if [ -n "$L_ADAPTER" ] && [ "$L_ADAPTER" = "$(menv ADAPTER)" ]; then
     A_SHA=$(python3 -c "import hashlib,sys;print(hashlib.sha256(open(sys.argv[1],'rb').read()).hexdigest())" "$ADIR/adapter_model.safetensors")
     [ "$A_SHA" = "$(menv ADAPTER_SHA256)" ] || { echo "LATEST=e4b: $ADIR/adapter_model.safetensors sha256 $A_SHA ≠ model.env's $(menv ADAPTER_SHA256)"; exit 1; }
   fi
 fi
-echo "latest set: $LSET ($LDIR)$([ "$LSET" != 31b ] && [ "$LATEST" = 1 ] && echo " · model $MODEL_ALIAS · adapter ${L_ADAPTER:-none (ADAPTER=)}${L_ADAPTER:+ ← $ADIR, sha256 ${A_SHA:0:16} ✓}")"
+echo "latest set: $LSET ($LDIR)$([ "$LSET" != 31b ] && [ "$LATEST" = 1 ] && echo " · model $MODEL_ALIAS · adapter ${L_ADAPTER:-none (ADAPTER=)}${L_ADAPTER:+ ← $ADIR, sha256 ${A_SHA:0:16}}$([ -n "$L_ADAPTER" ] && [ "$L_ADAPTER" = "$(menv ADAPTER)" ] && echo " ✓ pinned")")"
 if [ "$LATEST" = 1 ]; then
   lval() { grep -oE "^ *$1: *[0-9.]+" "$LDIR/eval_config.yaml" | sed 's/.*: *//'; }
   L_MIN=$(lval max_time_minutes); L_CALLS=$(lval max_tool_calls); L_TO=$(lval timeout_seconds); L_FLAG_MIN=""

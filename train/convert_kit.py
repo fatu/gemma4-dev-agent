@@ -812,6 +812,19 @@ def convert(row, system, tools, stats, rewrite=True, prompt="latest"):
             "kit_id": row["id"], "kit_outcome_sha256": row.get("outcome_sha256"), "kit_seed": row.get("seed")}
 
 
+def tool_schemas(src):
+    """our 9 tool schemas as the harness sends them: from a record dir (*.json, `tools`) or a traj-log dir
+    (<run>/traj/*.jsonl, the first call's setup.tool_schemas — what the box has)"""
+    for f in sorted(glob.glob(os.path.join(src, "*.json"))):
+        return json.load(open(f))["tools"]
+    for f in sorted(glob.glob(os.path.join(src, "*.jsonl"))):
+        for line in open(f):
+            t = (json.loads(line).get("setup") or {}).get("tool_schemas")
+            if t:
+                return t
+    sys.exit(f"--tools-from {src}: no record (*.json) and no traj log (*.jsonl) with tool schemas")
+
+
 def reference(row):
     """the kit's server-rendered prompt per agent call, in render.py's --check format"""
     calls = []
@@ -827,7 +840,8 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--data", default="runs/ext/dmitrii_kit/lora_native_resolved.jsonl")
     ap.add_argument("--system", default="scripts/arms/latest/prompts/system.md")
-    ap.add_argument("--tools-from", default="runs/sft/e4b_w7", help="any traj-log record dir: our 9 tool schemas")
+    ap.add_argument("--tools-from", default="runs/sft/e4b_w7",
+                    help="our 9 tool schemas: any record dir, or any run's traj/ dir (TRAJ=1 logs)")
     ap.add_argument("--out", default="runs/sft/kit31b")
     ap.add_argument("--orig", default=None, help="also write the calls without the re-wrap here (A2 input)")
     ap.add_argument("--ref", default=None, help="also write the kit's rendered prompts here (render.py --check)")
@@ -843,7 +857,7 @@ def main():
     a = ap.parse_args()
     a.scratch = a.scratch or ("tmp" if a.prompt == "latest" else "rename")
     system = open(a.system).read().rstrip() + ADK_SUFFIX
-    tools = json.load(open(sorted(glob.glob(os.path.join(a.tools_from, "*.json")))[0]))["tools"]
+    tools = tool_schemas(a.tools_from)
     ours = {t["function"]["name"]: t for t in tools}
     if a.prompt == "latest":
         print(f"system prompt: latest {a.system} + ADK suffix = {len(system)} chars · budget lines → "
@@ -851,7 +865,8 @@ def main():
     else:
         print("prompt: the kit's own, as served (Budget-Fit 0.18 system prompt, task prompt with 8 minutes / 28 calls / "
               "80 turns) · trajectories that change the repo's test files dropped · protected config edits not targets", end="")
-    print(f" · tools: {len(tools)} schemas from {a.tools_from} · scratch files: {a.scratch} · tool-error masking: {a.mask_errors}")
+    print(f" · tools: {len(tools)} schemas from {a.tools_from} (sha256 "
+          f"{hashlib.sha256(json.dumps(tools, sort_keys=True).encode()).hexdigest()[:16]}; laptop 2026-11-03 ee6a6459335f412d) · scratch files: {a.scratch} · tool-error masking: {a.mask_errors}")
     drop, val = {}, set()
     if a.prompt == "kit":
         repo_tasks = {}

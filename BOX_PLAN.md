@@ -616,6 +616,107 @@ lenient than the scorer — fine for collecting solved trajectories, not for rea
 **Next (laptop decides after the photos):** train E4B on `runs/sft/rebench31b.rendered.jsonl` on the box
 (a `train_box.sh` stage) and test it against no adapter on all 129 tasks.
 
+## B-K · The kit line: the kit's 31B data under the kit's own prompt → an E4B LoRA, against no adapter ▶ data any time; GPU after B-3n's `gen` (~4 h wave 1 + training, ~4 h wave 2)
+
+**Why.** User decision (2026-11-03): train on the kit's data with the prompt it was generated under, and run the model
+with that same prompt. Two lines run side by side: this one, and B-3n (our own 31B data under our own prompt).
+
+**Done on the laptop (2026-11-03):**
+- **Data** (`train/convert_kit.py --prompt kit`): every message as the kit served it — the Budget-Fit 0.18 system prompt,
+  and task prompts saying 8 minutes / 28 calls / 80 turns. The tool schemas are ours (only whitespace differs). The data
+  is cleaned by the kit prompt's own rule against touching test files:
+  - 2 trajectories that edit the repository's tests are dropped;
+  - 24 test-named scratch files in 21 trajectories are renamed everywhere (`test_x.py` → `repro_x.py`), with the
+    patch numbers updated;
+  - 2 replies that write or delete `setup.cfg` are not targets.
+
+  Result: 101 trajectories on 54 tasks, held-out set 6 tasks (whole repositories).
+- **Setting `LATEST=kit`** (`scripts/arms/kit_e4b/`): our harness builds all 103 of the kit's task prompts character
+  for character.
+- No repository overlap with our 129 tasks (they are in 4 repositories; the kit's tasks are in 51 others).
+
+**Left out (user decision 2026-11-03):**
+- **No `ple_fix` merge.** vLLM serves one adapter per request, so the LoRA lanes run without the PLE fix. That is why the
+  comparison is LoRA vs **no adapter**; a `ple_fix` lane shows what the PLE fix alone gives under this prompt.
+- **No hyperparameter search.** The training uses train_box.sh's defaults: 2 epochs · lr 3e-5 (warmup 5 %) · 16
+  sequences per step · r 32 α 32 · clip 1.0. With 130 sequences that is 9 optimizer steps per epoch, 18 in all.
+  `EPOCHS LR ACCUM R ALPHA` override them (printed).
+
+### K-a · Data on the box (no GPU, internet; any time, also while B-3n runs, ~1 min + the 207 MB download)
+```bash
+cd gemma4-dev-agent && git pull
+bash train/train_box.sh kitdata     # 📷 from the 'kit data' line down
+```
+The stage downloads `lora_native_resolved.jsonl` from the public kit dataset, checks its sha256 against the laptop's
+file, takes our tool schemas from the first `runs/*/traj` (set `KIT_TOOLS=<run>/traj` otherwise), converts, renders
+with the E4B tokenizer and runs the parser check. Expected (printed under it):
+- tools sha256 `ee6a6459335f412d`;
+- TOTAL 101 trajectories;
+- train: 1,461 targets · 416,563 label tokens · 130 sequences;
+- held out: 155 targets · 33,387 label tokens · 14 sequences;
+- `RESULT PASS` twice and A5 0 excluded.
+
+### K-b · Wave 1, after B-3n's `gen` has ended: three E4B base lanes on GPUs 0–2, training on GPU 3
+```bash
+pkill -f "vllm serve"; sleep 5
+.venv-eval/bin/python -c "from huggingface_hub import snapshot_download as d; print(d('google/gemma-4-E4B-it-qat-w4a16-ct'))"   # once (lanes are offline)
+cat splits/dev33.txt splits/rest96.txt > runs/all129.txt && wc -l runs/all129.txt                     # 📷 129
+BUILD_ONLY=1 LATEST=kit SUBMISSION=runs/base_lb024 ARMS=base TAG=kchk bash scripts/eval_dev.sh \
+  | grep -E "latest set|time line|latest setting"                                                      # 📷 (also fetches ple_fix once)
+A=("" "" ple_fix)
+for g in 0 1 2; do GPU=$g TAG=kb$((g+1)) TIME_MIN=8 MAX_TURNS=80 LATEST=kit ADAPTER=${A[$g]} MODEL=google/gemma-4-E4B-it-qat-w4a16-ct \
+  SPLIT=runs/all129.txt SUBMISSION=runs/base_lb024 ARMS=base nohup bash scripts/lane.sh run > runs/lane$g.log 2>&1 & done
+head -3 runs/lane2.log                                                                                 # 📷 "server adapters … ple_fix"
+GPU=3 bash train/train_box.sh env && GPU=3 bash train/train_box.sh dequant                             # 📷 last lines (skips what exists)
+GPU=3 nohup bash train/train_box.sh kit > runs/train_kit.log 2>&1 &                                    # ~30–40 min
+```
+| lane | what | run dir |
+|---|---|---|
+| GPU 0 `kb1` | E4B, kit prompt, **no adapter** | `runs/dev33_base_kb1` |
+| GPU 1 `kb2` | the same again (noise: how far two identical passes differ) | `runs/dev33_base_kb2` |
+| GPU 2 `kb3` | E4B, kit prompt, `ple_fix` (the setting as written) | `runs/dev33_base_kb3` |
+| GPU 3 | training: `adapters/e4b_kit/epoch{1,2}` + `trainer_log.jsonl` + `train_summary.json` | `runs/train_kit.log` |
+
+- `TIME_MIN=8` → the run flag is 8 min, as B-3m: E4B decodes faster here than on an L4, so this is lenient, and equally
+  for every lane. The task prompt shows "8 minutes" either way (`prompt_shim`, printed as `task prompt time line`).
+- `lane.sh` mounts the lane's `ADAPTER` on its own server (`SERVE_ADAPTER`, printed as `server adapters`).
+
+When training ends:
+```bash
+grep -E "schedule|eval\[|== epoch" runs/train_kit.log | cut -c1-200                                 # 📷 held-out NLL at start, epoch 1, epoch 2
+bash train/train_box.sh kitsubs     # 📷 the epoch with the lower held-out NLL → runs/adapters/e4b_kit + the BUILD_ONLY check
+```
+
+### K-c · Wave 2, after wave 1's lanes have ended: the LoRA, two passes (+ an optional 31B reference)
+```bash
+for g in 0 1; do GPU=$g TAG=kl$((g+1)) TIME_MIN=8 MAX_TURNS=80 LATEST=kit ADAPTER=e4b_kit MODEL=google/gemma-4-E4B-it-qat-w4a16-ct \
+  SPLIT=runs/all129.txt SUBMISSION=runs/base_lb024 ARMS=base nohup bash scripts/lane.sh run > runs/lane$g.log 2>&1 & done
+head -3 runs/lane0.log                                                                                 # 📷 "server adapters … e4b_kit"
+# optional: 31B under the kit prompt, no adapter (TIME_MIN=5 = the L4-calibrated budget for 31B lanes, B-3d)
+GPU=2 TAG=k31 TIME_MIN=5 MAX_TURNS=80 LATEST=kit ADAPTER= MODEL_ALIAS=gemma-4-31b-it-qat-w4a16-ct MODEL=google/gemma-4-31B-it-qat-w4a16-ct \
+  SPLIT=runs/all129.txt SUBMISSION=runs/base_lb024 ARMS=base nohup bash scripts/lane.sh run > runs/lane2.log 2>&1 &
+```
+
+### K-d · Read it
+```bash
+R="runs/dev33_base_kb1 runs/dev33_base_kb2 runs/dev33_base_kb3 runs/dev33_base_kl1 runs/dev33_base_kl2"
+python3 scripts/compare_runs.py $R                                                                     # 📷
+python3 scripts/fail_atlas.py $R | grep -E "^==|outcomes|failures:"                                    # 📷
+for r in runs/dev33_base_kb1 runs/dev33_base_kl1; do echo "== $r"; python3 scripts/run_costs.py $r | head -12; done   # 📷
+```
+**Read it as:**
+- The LoRA counts only if **both** LoRA passes (`kl1`, `kl2`) beat **both** no-adapter passes (`kb1`, `kb2`) by more
+  than those two differ from each other (the B-3m rule).
+- The held-out NLL (start → epoch 1 → epoch 2) says whether the adapter learned the kit data at all. If it barely moves
+  and the scores tie, the adapter is close to a no-op (as boristown's v7: 0.3830 → 0.3829).
+- `kb3` vs `kb1`/`kb2` = what `ple_fix` alone gives under this prompt (context for the LoRA, which runs without it).
+- From the atlas and the costs: where the first edit comes, whether tests run, whether E4B now writes `repro_*.py`
+  scripts the way the 31B data does, and malformed or repeated calls (the kit warns that too large a scale gives loops).
+
+**Next (the laptop decides after the photos):** if the LoRA wins, the questions left out above (`ple_fix` merge,
+scale/epochs), then the same test with B-3n's data; if it ties or loses, the held-out NLL and the atlas say whether to
+change the training or to stop this line.
+
 ## B-4 · Repeat the best 2 configs (~2–3 h) ✖ dropped: nothing to repeat. New protocol: an arm = 3 passes pooled vs the 4 base passes
 
 ```bash
