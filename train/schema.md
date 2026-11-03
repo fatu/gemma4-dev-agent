@@ -13,7 +13,7 @@ message, which also drops earlier thoughts), a compaction summary or a history r
   "base_commit": "…",                    # from harness/tasks.jsonl when known, else null
   "pr": null,                            # PR number when known (mined tasks)
   "patch_sha": "…",                      # sha256 of the final agent patch, for dedup against eval tasks
-  "source": "e4b_onpolicy | 31b_teacher | opus | d1_qwen | mined",
+  "source": "e4b_onpolicy | 31b_teacher | opus | d1_qwen | mined | kit_31b",
   "resolved": true,                      # strict verification result of this run (null = unknown)
   "policy_model": "gemma-4-e4b-it-qat-w4a16-ct",
   "sampling": {"temperature": 0.2, "top_p": 0.95, "max_completion_tokens": 6144, "thinking_token_budget": 4096,
@@ -43,6 +43,9 @@ Conventions
   which reproduces vLLM's rendering byte for byte.
 - `target` is the model's reply as returned by the server (thinking in `reasoning`). A call with `err` or without a
   reply has `target: null` and is never a training target; its input still documents the trajectory.
+- `excluded` (optional, per call): why a reply that exists is not a target (`target: null`) — `schema_violation` (a
+  tool call the tool rejected: unknown key, missing required key) or `repro_write` (write_file of a scratch / repro /
+  test script into the workspace). `kit_31b` = dmitriigluzdov's LoRA kit, native tier (train/convert_kit.py).
 - `thought_source` is per call: `native` = produced by the policy itself; `qwen` = folded `think` calls from the
   SWE-rebench conversion; `synthetic_*` = written afterwards by another model given the context and the action;
   `none` = no thought (Opus traces).
