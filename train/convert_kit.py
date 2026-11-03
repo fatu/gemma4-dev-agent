@@ -330,6 +330,56 @@ def tool_result(rec, tid):
                  if m.get("role") == "tool" and m.get("tool_call_id") == tid), None)
 
 
+def cut(rec, cut_calls, acts):
+    """drop calls (by index) from the trajectory and their reply + tool results from every later history; renumber"""
+    gone = {tid for i, tid, _, _ in acts if i in cut_calls}
+    keep = []
+    for ci, c in enumerate(rec["calls"]):
+        if ci in cut_calls:
+            continue
+        c["input_messages"] = [m for m in c["input_messages"]
+                               if not (m.get("role") == "tool" and m.get("tool_call_id") in gone)
+                               and not (m.get("role") == "assistant" and m.get("tool_calls")
+                                        and all(tc.get("id") in gone for tc in m["tool_calls"]))]
+        keep.append(c)
+    rec["calls"] = keep
+    for n, c in enumerate(rec["calls"], 1):
+        c["call"] = n
+
+
+def cut_repeats(rec, stats):
+    """A call identical to the previous one (same tool, byte-identical arguments) after that one failed is cut, with
+    its error, from the trajectory and every later history: the first failure and its error stay, the next different
+    call follows it. Our prompt: "Never repeat an identical failed edit" (user decision 2026-11-03 on python-markdown
+    #713: one malformed edit_file — new_string closed with a backtick, old_string swallowed — sent 9 times)."""
+    acts = reply_actions(rec)
+    by_call = {}
+    for i, tid, name, a in acts:
+        by_call.setdefault(i, []).append((tid, name, json.dumps(a, sort_keys=True)))
+    drop, run = set(), 0
+    for i in range(1, len(rec["calls"])):
+        prev, cur = by_call.get(i - 1), by_call.get(i)
+        same = bool(prev) and bool(cur) and [x[1:] for x in prev] == [x[1:] for x in cur] \
+            and rec["calls"][i]["segment"] == rec["calls"][i - 1]["segment"] and not rec["calls"][i]["events_before"]
+        failed = same and all('"error"' in (tool_result(rec, tid) or "")[:60] for tid, _, _ in prev)
+        if failed:
+            drop.add(i)
+            by_call[i] = prev                    # compare the next one with the kept failure
+            run += 1
+        elif run:
+            stats["repeats: runs"] += 1
+            run = 0
+    if run:
+        stats["repeats: runs"] += 1
+    if drop:
+        kinds = Counter(rec["calls"][i]["excluded"] or "target" for i in drop)
+        for k, v in kinds.items():
+            stats[f"repeats: cut calls that were {k}"] += v
+        stats["repeats: trajectories"] += 1
+        cut(rec, drop, acts)
+    return rec
+
+
 def fix_patch_view(rec, stats, ops=None):
     """After the /tmp move, what the 31B saw of its patch no longer fits: a submit_patch made while a scratch file was
     still in the workspace counted it (files_changed, patch_size), and the 31B then reasoned about it, deleted it and
@@ -405,21 +455,9 @@ def fix_patch_view(rec, stats, ops=None):
             if m.get("role") == "tool" and m.get("tool_call_id") in fixed:
                 m["content"] = fixed[m["tool_call_id"]]
     if cut_calls:
-        gone = {tid for i, tid, _, _ in acts if i in cut_calls}
-        keep = []
-        for ci, c in enumerate(rec["calls"]):
-            if ci in cut_calls:
-                continue
-            c["input_messages"] = [m for m in c["input_messages"]
-                                   if not (m.get("role") == "tool" and m.get("tool_call_id") in gone)
-                                   and not (m.get("role") == "assistant" and m.get("tool_calls")
-                                            and all(tc.get("id") in gone for tc in m["tool_calls"]))]
-            keep.append(c)
+        cut(rec, cut_calls, acts)
         stats["patch view: clean-up calls cut"] += len(cut_calls)
         stats["patch view: trajectories cut"] += 1
-        rec["calls"] = keep
-        for n, c in enumerate(rec["calls"], 1):
-            c["call"] = n
     for c in rec["calls"]:
         t = c["target"]
         if not t:
@@ -554,6 +592,7 @@ def main():
         rec = convert(moved, system, tools, stats)
         rec["scratch_moved"] = moved.get("scratch_moved", {})
         fix_patch_view(rec, stats, moved.get("scratch_ops", {}))
+        cut_repeats(rec, stats)
         tasks.add(row["task_id"]); repos[row.get("repository")] += 1
         n_t = sum(1 for c in rec["calls"] if c["target"])
         ev = [e for c in rec["calls"] for e in c["events_before"]]
@@ -585,6 +624,8 @@ def main():
           + f" · thoughts saying a /tmp file is in the tree/patch, not targets {stats['scratch_patch_reasoning_excluded']}")
     for e in stats["patch claim examples"]:
         print("   e.g.", e)
+    print("repeated failed calls: " + " · ".join(f"{k[len('repeats: '):]} {v}" for k, v in sorted(stats.items())
+                                                  if k.startswith("repeats: ")))
     print(f"write_file targets left (workspace, not scratch) {stats['write_file_kept']}: {stats['kept_write_paths']}")
     keys = ("trajectories", "calls", "targets", "segments", "compaction", "reset", "summariser_calls",
             "non_canonical_targets", "budget_lines_rewritten")
