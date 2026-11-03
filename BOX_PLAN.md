@@ -567,6 +567,52 @@ Reference points:
 - E4B under boris v6's prompt, same 129 tasks: 15.
 - E2B under our prompt: 6.
 
+## B-3n · Our own native 31B training data on public SWE-rebench tasks ▶ next (~1 h setup + 3–5 h, 4 lanes)
+
+**Why.** The public LoRA kit (dmitriigluzdov, CC BY 4.0) trains on 103 trajectories of Gemma 4 31B on 81 public
+SWE-rebench tasks (none of them competition tasks), run under the Budget-Fit prompt. Converted to our format
+(`train/convert_kit.py`), 2/3 of them break a rule of our prompt (scratch files in the repo), so we had to rewrite
+them. Running the same tasks through **our latest setting** gives trajectories whose prompt, tools and budget are
+exactly what our agent sees: no re-wrap, no rewriting. It is the C4a data ("a closer teacher") with no overlap with
+our 129 tasks.
+
+**What is the kit's and what is ours:**
+| | the kit (2026-10-20) | B-3n |
+|---|---|---|
+| tasks | 81 = 61 nebius/SWE-rebench + 20 whitecircle/swe-rebench-v2 (`splits/rebench_kit81.txt`) | the same 81, rows from the same pinned revisions |
+| model / serving | 31B INT4, official vLLM | the same |
+| agent | Budget-Fit 0.18 prompt, 9 tools, 28 calls / 8 min | **our latest 31B setting** (`scripts/arms/latest/`), 9 tools, 28 calls / 7 min, scorer compaction |
+| sampling | temp 0.65, seeds 42 + 43 (2 passes) | arm `t07` (temp 0.7, the plan's), **4 passes** (one lane each) |
+| sandbox / grading | "local subprocess grader" | `--sandbox subprocess` + `REBENCH_SITE` per-task dependencies, gold-checked |
+| result | 103 resolved on 55 tasks | ? |
+
+How the kit installed each repo's dependencies is not published, so `scripts/rebench_build.py` does its own: the
+project + its `install_config.pip_packages` + `reqs_path` files via `uv pip install --target runs/rebench/site/<id>`
+for the eval venv's Python (3.12), put on the sandbox's `sys.path` right after the workspace (`REBENCH_SITE`, in
+`scripts/sandbox_shim.py`). Tasks written for old Pythons may not run on 3.12; the gold check drops them.
+
+```bash
+cd gemma4-dev-agent && git pull
+bash scripts/rebench_gen.sh build     # internet; rows (≈ 310 MB parquet, HF cache) + 81 snapshots + deps   📷 failures + TOTAL
+bash scripts/rebench_gen.sh gold      # no GPU; gold patch per task → runs/rebench/ok.txt                     📷 "== gold" + the NOT list
+bash scripts/rebench_gen.sh gen       # stops any host vLLM, 4 lanes (GPUs 0–3) × 1 pass each, offline        📷 the 4 "pass" lines
+tail -2 runs/rebench_lane*.log        # progress
+bash scripts/rebench_gen.sh data      # after all 4 lanes: resolved → records → render → parser → data_stats  📷 all of it
+```
+Knobs: `IDS_FILE` `OUT` `ARM` `PASSES` `GPUS` `TIME_MIN` `MODEL` `CONC_GOLD` `TOK` (the script prints them).
+`TIME_MIN=7` is our latest's literal number; the box decodes faster than an L4 (B-3d: 51 vs 34 tok/s), so this is more
+lenient than the scorer — fine for collecting solved trajectories, not for reading a score.
+
+**Read it as:**
+- `build`: rows found 81/81; snapshot or deps failures name the task. `deps partial` = the project itself would not
+  install (its imports still come from the workspace).
+- `gold`: how many of the 81 our sandbox can grade at all (the kit's subprocess grader resolved 55 with the model).
+- `data`: resolved trajectories and tasks (kit: 103 on 55), render `RESULT PASS`, A5 excluded ≈ 0, the data_stats
+  lines (identical-call rate, same-tool rate, thought length; the kit's numbers are in the private run log 2026-11-03).
+
+**Next (laptop decides after the photos):** train E4B on `runs/sft/rebench31b.rendered.jsonl` on the box
+(a `train_box.sh` stage) and test it against no adapter on all 129 tasks.
+
 ## B-4 · Repeat the best 2 configs (~2–3 h) ✖ dropped: nothing to repeat. New protocol: an arm = 3 passes pooled vs the 4 base passes
 
 ```bash

@@ -41,13 +41,15 @@ out = os.environ.get("OUT", "runs/goldcheck_lenient" if sandbox_shim.LENIENT els
 sub = os.environ.get("SUBMISSION", "runs/base_lb024")
 print(f"goldcheck: {len(ids)} tasks → {out} · sandbox mode {'LENIENT (analysis only)' if sandbox_shim.LENIENT else 'strict'}", flush=True)
 sandbox_shim.write_marker(out)
-rc = main(["eval", "--tasks", "harness/tasks.jsonl", "--snapshots-dir", "harness/snapshots", "--submission-dir", sub,
+tasks_file = os.environ.get("TASKS_FILE", "harness/tasks.jsonl"); snaps = os.environ.get("SNAPSHOTS_DIR", "harness/snapshots")
+print(f"goldcheck: tasks file {tasks_file} · snapshots {snaps}", flush=True)
+rc = main(["eval", "--tasks", tasks_file, "--snapshots-dir", snaps, "--submission-dir", sub,
            "--results-dir", out, "--sandbox", os.environ.get("SANDBOX", "subprocess"), "--task-ids", *ids,
            "--concurrency", os.environ.get("CONC", "3"), "--display", "quiet", "--skip-agent-patch",
            "--verification-timeout-seconds", os.environ.get("VERIFY_TIMEOUT", "900")])
 import json   # noqa: E402
 for line in pathlib.Path(out, "task_results.jsonl").read_text().splitlines():
     r = json.loads(line)
-    print(f"{r['instance_id']:16} gold patch → {'RESOLVED' if r['resolved'] else 'NOT resolved'} · {r.get('duration_seconds', 0):.0f} s"
+    print(f"{r['instance_id']:<16} gold patch → {'RESOLVED' if r['resolved'] else 'NOT resolved'} · {r.get('duration_seconds', 0):.0f} s"
           f" · {(r.get('error') or '')[:80]}")
 sys.exit(rc or 0)

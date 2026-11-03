@@ -44,6 +44,9 @@ for _part in filter(None, os.environ.get("LENIENT_PINS", "").split(";")):
 
 _REPO = pathlib.Path(__file__).resolve().parent.parent
 WHEEL_DIRS = [_REPO / "harness" / "wheels", _REPO / "runs" / "lenient_wheels"]
+# REBENCH_SITE=<dir>: SWE-rebench tasks (scripts/rebench_build.py) — <dir>/<task>/ holds that task's dependencies
+# (uv pip install --target); it goes on the sandbox's sys.path right after the workspace, before every site-packages
+REBENCH_SITE = pathlib.Path(os.environ["REBENCH_SITE"]).resolve() if os.environ.get("REBENCH_SITE") else None
 _task = contextvars.ContextVar("swegemma_task", default=None)
 _state = {"announced": False, "count": 0}
 
@@ -65,6 +68,14 @@ def _write_pth(manager, sid):
     if not ws or not venv:
         return
     paths_ = [str(ws), str(ws / "src")]
+    task = _task.get()
+    if REBENCH_SITE and task:
+        site = REBENCH_SITE / task
+        if site.is_dir():
+            paths_.append(str(site))
+            print(f"rebench: {task} → sys.path + {site}", flush=True)
+        else:
+            print(f"rebench: {task} has no {site} — runs on the host packages only", flush=True)
     # an `import` line runs at startup and puts the workspace FIRST: a plain path list would be appended after the
     # harness's `_host_env.pth` (host site-packages — where the venv's own requests lives), which is the whole problem
     line = f"import sys; sys.path[:0] = [p for p in {paths_!r} if p not in sys.path]\n"
@@ -154,6 +165,10 @@ def install():
     if LENIENT:
         task_context()
         print(f"sandbox mode: LENIENT — analysis only, not the reference; pins: {pins_text()}", flush=True)
+    if REBENCH_SITE:
+        task_context()
+        n = sum(1 for d in REBENCH_SITE.iterdir() if d.is_dir()) if REBENCH_SITE.is_dir() else 0
+        print(f"sandbox mode: REBENCH_SITE={REBENCH_SITE} ({n} task dependency dirs; after the workspace on sys.path)", flush=True)
     return True
 
 

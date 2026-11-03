@@ -270,7 +270,10 @@ TDPY=python3; [ -x .venv-eval/bin/python ] && TDPY=.venv-eval/bin/python   # the
 [ -f "$LOG" ] || echo "warning: no $LOG — ctx_overflow will be '?' (set VLLM_LOG=… to the server's log)"
 SPLIT="${SPLIT:-splits/dev33.txt}"                    # SPLIT=<file>: a task subset (one id per line), e.g. pass@k on the misses
 IDS=($(cat "$SPLIT"))                                 # no mapfile: macOS bash 3.2
-echo "tasks: ${#IDS[@]} from $SPLIT"
+# TASKS_FILE / SNAPSHOTS_DIR: another task set in swegemma's format (scripts/rebench_build.py → runs/rebench/), with
+# REBENCH_SITE=runs/rebench/site for its per-task dependencies (scripts/sandbox_shim.py)
+TASKS_FILE="${TASKS_FILE:-harness/tasks.jsonl}"; SNAPSHOTS_DIR="${SNAPSHOTS_DIR:-harness/snapshots}"
+echo "tasks: ${#IDS[@]} from $SPLIT · tasks file $TASKS_FILE · snapshots $SNAPSHOTS_DIR${REBENCH_SITE:+ · REBENCH_SITE $REBENCH_SITE}"
 echo "dev split: ${#IDS[@]} tasks · arms: $ARMS · budget: ${BUDGET_FLAGS[*]:-none} · concurrency ${CONC:-1}"
 for arm in $ARMS; do                                  # check every arm up front, not 2 h into the first one
   for part in ${arm//+/ }; do
@@ -369,8 +372,8 @@ PY
   [ "${BUILD_ONLY:-0}" = 1 ] && { echo "   built $SUB (BUILD_ONLY: no eval)"; continue; }
   before=$(overflows)
   TRAJ_DIR=$([ "${TRAJ:-1}" = 1 ] && echo "$PWD/$RUN/traj") swegemma eval \
-    --tasks harness/tasks.jsonl \
-    --snapshots-dir harness/snapshots \
+    --tasks "$TASKS_FILE" \
+    --snapshots-dir "$SNAPSHOTS_DIR" \
     --submission-dir "$SUB" \
     --results-dir "$RUN" \
     --sandbox "${SANDBOX:-subprocess}" \
