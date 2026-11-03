@@ -35,7 +35,9 @@ trajectories as they are.
 `<task>.<id8>` as instance_id (several trajectories per task). Every number here is the record.
 """
 import argparse
+import ast
 import glob
+import hashlib
 import json
 import os
 import re
@@ -175,7 +177,7 @@ class Scratch:
     """moves one trajectory's workspace scratch files to /tmp in every message (module docstring)"""
 
     def __init__(self, mp, stats):
-        self.mp, self.stats, self.conv, self.cache = mp, stats, {}, {}
+        self.mp, self.stats, self.conv, self.cache, self.ops = mp, stats, {}, {}, {}
 
     def call(self, tc, count):
         fn = tc.get("function") or {}
@@ -190,6 +192,8 @@ class Scratch:
             cmd = (heredoc(new, a.get("content", ""), f"cat > {new}") if name == "write_file" else
                    py_edit(new, a.get("old_string", ""), a.get("new_string", "")) if name == "edit_file" else f"cat {new}")
             self.conv[tc.get("id")] = name
+            self.ops[tc.get("id")] = ("write", p, a.get("content", "")) if name == "write_file" else \
+                ("edit", p, a.get("old_string", ""), a.get("new_string", "")) if name == "edit_file" else ("read", p)
             if count:
                 self.stats[f"scratch {name} → run_command"] += 1
             return {**tc, "function": {"name": "run_command", "arguments": json.dumps({"command": cmd}, ensure_ascii=False)}}
@@ -283,12 +287,50 @@ def reply_actions(rec):
     return out
 
 
+RE_HEREDOC = re.compile(r"<<-?\s*['\"]?(\w+)['\"]?")
+
+
+def heredoc_writes(cmd, moved):
+    """{/tmp path: content} written by shell heredocs in one command (`cat > P << 'D'` / `cat <<D > P`)"""
+    out = {}
+    first, _, rest = cmd.partition("\n")
+    m, t = RE_HEREDOC.search(first), re.search(r">\s*(\S+)", first)
+    if m and t and t.group(1) in moved:
+        lines = rest.split("\n")
+        if m.group(1) in lines:
+            out[t.group(1)] = "\n".join(lines[:lines.index(m.group(1))]) + "\n"
+    return out
+
+
+def py_edit_apply(cmd, content):
+    """our py_edit heredoc → the edited content (None when it would not apply: count ≠ 1)"""
+    try:
+        old = ast.literal_eval(re.search(r"^old = (.*)$", cmd, re.M).group(1))
+        new = ast.literal_eval(re.search(r"^new = (.*)$", cmd, re.M).group(1))
+    except Exception:
+        return None
+    return content.replace(old, new) if content is not None and content.count(old) == 1 else None
+
+
+def newfile_diff(path, content):
+    """the `git diff` text of an untracked file after `git add -N .` (its length matched the kit's patch_size delta)"""
+    data = content.encode()
+    h = hashlib.sha1(b"blob %d\0" % len(data) + data).hexdigest()[:7]
+    lines = content.split("\n")
+    end_nl = content.endswith("\n")
+    if end_nl:
+        lines = lines[:-1]
+    body = "".join("+" + ln + "\n" for ln in lines) + ("" if end_nl or not lines else "\\ No newline at end of file\n")
+    rng = "" if len(lines) == 1 else f",{len(lines)}"
+    return f"diff --git a/{path} b/{path}\nnew file mode 100644\nindex 0000000..{h}\n--- /dev/null\n+++ b/{path}\n@@ -0,0 +1{rng} @@\n" + body
+
+
 def tool_result(rec, tid):
     return next((m.get("content") or "" for c in rec["calls"] for m in c["input_messages"]
                  if m.get("role") == "tool" and m.get("tool_call_id") == tid), None)
 
 
-def fix_patch_view(rec, stats):
+def fix_patch_view(rec, stats, ops=None):
     """After the /tmp move, what the 31B saw of its patch no longer fits: a submit_patch made while a scratch file was
     still in the workspace counted it (files_changed, patch_size), and the 31B then reasoned about it, deleted it and
     submitted again. Here such a submit returns what the later clean submit returned, the clean-up calls in between
@@ -300,14 +342,32 @@ def fix_patch_view(rec, stats):
     if not moved:
         return rec
     acts = reply_actions(rec)
-    present, at = set(), []
+    rel = {v: k for k, v in (rec.get("scratch_moved") or {}).items()}
+    ops = ops or {}
+    present, at, content, diff_at = set(), [], {}, []
     for i, tid, name, a in acts:
         if name == "run_command":
             cmd = a.get("command", "")
+            op = ops.get(tid)
+            if op and op[0] == "write":
+                content[rec["scratch_moved"][op[1]]] = op[2]
+            elif op and op[0] == "edit":
+                tp = rec["scratch_moved"][op[1]]
+                res = tool_result(rec, tid) or ""
+                if '"status": "ok"' in res[:40] and content.get(tp) is not None and content[tp].count(op[2]) == 1:
+                    content[tp] = content[tp].replace(op[2], op[3])
+            else:
+                content.update(heredoc_writes(cmd, moved))
             present |= {m.group(1) for m in RE_SHELL_OUT.finditer(cmd) if m.group(1) in moved}
             if re.search(r"\brm\b", cmd):
-                present -= {p for p in moved if p in cmd}
+                gone_now = {p for p in moved if p in cmd}
+                present -= gone_now
+                for p in gone_now:
+                    content.pop(p, None)
         at.append(set(present))
+        # what the scratch files added to a patch at this moment (None when a content is unknown)
+        sizes = [len(newfile_diff(rel[p], content[p])) if content.get(p) is not None else None for p in present]
+        diff_at.append(None if None in sizes else sum(sizes))
     cut_calls, fixed = set(), {}
     for k, (i, tid, name, a) in enumerate(acts):
         if name != "submit_patch" or not at[k] or tid in fixed or i in cut_calls:
@@ -320,16 +380,26 @@ def fix_patch_view(rec, stats):
             all(any(x[0] == ci for x in acts[k + 1:k2 + 1]) and not rec["calls"][ci]["events_before"] for ci in window) and \
             acts[k][0] not in window
         clean = tool_result(rec, acts[k2][1]) if ok else None
+        r = tool_result(rec, tid) or ""
+        ps = re.search(r'"patch_size": (\d+)', r)
         if ok and clean and '"status": "ok"' in clean:
             fixed[tid] = clean
             cut_calls |= window
             stats["patch view: submits given the clean result"] += 1
+            cs = re.search(r'"patch_size": (\d+)', clean)
+            if ps and cs and diff_at[k] is not None:     # check of the size formula where no source edit came between
+                d = int(ps.group(1)) - diff_at[k] - int(cs.group(1))
+                stats["patch view: size formula = clean result" if d == 0 else "patch view: size formula ≠ clean result"] += 1
         else:
-            r = tool_result(rec, tid) or ""
             m = re.search(r'"files_changed": (\d+)', r)
             if m:
-                fixed[tid] = r.replace(m.group(0), f'"files_changed": {max(1, int(m.group(1)) - len(at[k]))}')
-            stats["patch view: submits with files_changed lowered only (approximate)"] += 1
+                r = r.replace(m.group(0), f'"files_changed": {max(1, int(m.group(1)) - len(at[k]))}')
+            if ps and diff_at[k] is not None:
+                r = r.replace(ps.group(0), f'"patch_size": {int(ps.group(1)) - diff_at[k]}')
+                stats["patch view: submits recomputed (files_changed and patch_size)"] += 1
+            else:
+                stats["patch view: submits with files_changed lowered only (content unknown)"] += 1
+            fixed[tid] = r
     for c in rec["calls"]:
         for m in c["input_messages"]:
             if m.get("role") == "tool" and m.get("tool_call_id") in fixed:
@@ -386,6 +456,7 @@ def scratch_to_tmp(row, stats):
     out = dict(row)
     out["sft_examples"] = steps
     out["scratch_moved"] = mp
+    out["scratch_ops"] = X.ops          # the original write/edit of each converted call (exact patch sizes)
     return out
 
 
@@ -482,7 +553,7 @@ def main():
         moved_names.update(os.path.basename(p) for p in moved.get("scratch_moved", {}))
         rec = convert(moved, system, tools, stats)
         rec["scratch_moved"] = moved.get("scratch_moved", {})
-        fix_patch_view(rec, stats)
+        fix_patch_view(rec, stats, moved.get("scratch_ops", {}))
         tasks.add(row["task_id"]); repos[row.get("repository")] += 1
         n_t = sum(1 for c in rec["calls"] if c["target"])
         ev = [e for c in rec["calls"] for e in c["events_before"]]
