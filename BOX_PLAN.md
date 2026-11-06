@@ -378,6 +378,21 @@ needs orjson + ujson (then 9/9), in no wheel set. (4) 2 fastapi: the failing tes
 and the harness runs `-p no:anyio` → "async def functions are not natively supported" in every environment; unwinnable.
 So dev33 ≤ 31 valid anywhere, 28 if the scorer's pygments is 2.21. B-3h's box goldcheck is still wanted (same nine expected).
 
+### B-3h-2 · All 129 tasks, gold AND empty patch → the A/B split `splits/disc_e4b.txt` (no GPU, ~15 min) ▶ next, any time no lane runs
+A task can separate two arms only if the gold patch passes **and** the empty patch fails (forum 756400 found 5 of 129 that
+pass with no patch). The laptop has the gold half for all 129 (112 pass) and the empty half for dev33 only (0 of 32 pass;
+two rest96 tasks are already known to pass empty from agent runs). `scripts/disc_tasks.py` (laptop) combines that with every
+local run and keeps the 51 tasks some arm can still move: E4B solved some of the time (19), 31B solved but E4B never (24),
+E4B always (8, regression guard). They take ~1/3 of an all-129 E4B run, so **an E4B A/B from now on = `SPLIT=splits/disc_e4b.txt`,
+3 seeds per arm** (the time of one all-129 run per arm); never-solved and invalid tasks only cost time.
+```bash
+cd gemma4-dev-agent && git pull
+bash scripts/validcheck.sh            # 📷 the two == lines + the two lists (CONC 8; lanes running → CONC=4, slower tests)
+```
+**Read:** the laptop puts the box's `gold NOT` and `empty RESOLVED` ids into `disc_tasks.py` (BOX_GOLD_FAIL / BOX_EMPTY_PASS)
+and rewrites the split if anything moves; expected: the gold list ≈ the laptop's 17 (a task that fails only here is dropped here too), the empty list = the 2
+known + 0–3 new.
+
 ## B-3i · Make the subprocess sandbox faithful, re-verify saved patches — laptop ✅ 2026-10-22 · box ▶ next (no GPU, ~10 min)
 
 **Laptop result:** shim + orjson/ujson in; goldcheck on the nine → 2 flip to RESOLVED (the orjson task, the src-layout requests task); 2 requests tasks need werkzeug 2.3.8 (the older public wheel; 3.1.x raises on port −1 inside the test server — drift, like pygments), 3 rich + 2 async fastapi unchanged. `reverify.py` on the Opus ceiling run: **20 → 21/33** — 2 gains, and **1 loss: the one requests task every Gemma run has ever "solved" was the harness venv's own newer requests passing the hidden tests; Opus's patch is wrong there** (off-by-one), so expect the box's requests column to drop to 0/4 on re-verification. Real Opus ceiling: 21 of the 26 tasks valid here; 5 genuine misses.
