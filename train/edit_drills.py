@@ -25,6 +25,17 @@ Families (record field `family`):
   recover  copy + one failed edit_file whose old_string has an E4B-style corruption (the study's mix: token change,
            quote wrap, dropped line, re-wrapped block, JSON wrapper, trailing backslash, too-short anchor) and the
            harness's real error → target 1 reads the lines again, target 2 is the correct edit
+Task text (record field `mutation`): the instruction names the site by its def/class scope and the first occurrence of
+a token in that scope, never by quoting a line, so old_string has to be copied from the read_file output:
+  one line   rename / constant / number / string: "in `Cls.meth`, change the first `True` to `False`" · insert_after:
+             "add the line `logger.debug(...)` right after the line that holds the first `name`"
+  multi-line (--multi of copy/recover, the two kinds 50/50) rename_local: "in `func`, rename the local variable `v` to
+             `v_new` everywhere in that function" (every use an ast.Name, 2-6 lines, not in a docstring/comment/string) ·
+             call_arg: "in the first call to `f(…)`, change the argument `k=1` to `k=2`" (the answer is the whole 2-6-line
+             call)
+Rejected and counted by reason: no_site · leak (a whole old line ≥ 6 chars in the task text) · syntax (the intended file
+must ast.parse; no `return_new x`) · window (the view must show the old lines and the scope's def/class line, ≤ 150
+lines, not truncated) · corrupt · apply. Scope names must be unique in the file.
 Checks: every answer is applied with the harness's edit_file on a copy and must give the intended file (strategy
 exact, one occurrence); every corruption must fail under all matcher tiers, so the error in context is the one the
 harness returns. Source files: <site-packages>/<lib>/**.py of the eval venv; eval repos (fastapi, rich, requests, httpx)
@@ -37,10 +48,12 @@ is context — E4B's own after `think`, else empty — so the drills do not teac
 Every knob prints its effective value.
 """
 import argparse
+import ast
 import asyncio
 import hashlib
 import io
 import json
+import keyword
 import os
 import random
 import re
@@ -126,9 +139,9 @@ def n_matches(content, old):
         return 0
 
 
-def minimal_unique(lines, i, content, cap=8):
-    """the smallest window [a, b) around line i that matches exactly once under every matcher tier"""
-    a, b = i, i + 1
+def minimal_unique(lines, l0, l1, content, cap=8):
+    """the smallest window [a, b) around the changed lines [l0, l1) that matches exactly once under every matcher tier"""
+    a, b = l0, l1
     score = lambda s: -1 if s is None else len(re.findall(r"[A-Za-z_]\w{2,}", s))
     for _ in range(cap):
         old = "\n".join(lines[a:b])
@@ -159,30 +172,160 @@ def code_lines(content):
             if i not in skip and l.strip() and not l.strip().startswith("#") and len(l) < 160]
 
 
-def mutate_line(line, rng):
-    """a small, describable change to one code line → (new text, kind) or None"""
-    s = line.rstrip("\n")
-    ind, body = s[:len(s) - len(s.lstrip())], s.strip()
-    if not body or body.startswith(("#", '"""', "'''", "@")):
-        return None
-    opts = []
-    m = re.search(r"\b(True|False|None)\b", body)
-    if m:
-        opts.append((ind + body[:m.start()] + {"True": "False", "False": "True", "None": "0"}[m.group(1)] + body[m.end():],
-                     "constant"))
-    m = re.search(r"\b(\d+)\b", body)
-    if m:
-        opts.append((ind + body[:m.start()] + str(int(m.group(1)) + 1) + body[m.end():], "number"))
-    m = re.search(r"(['\"])([A-Za-z][^'\"]{2,40})\1", body)
-    if m:
-        opts.append((ind + body[:m.start(2)] + m.group(2) + "_v2" + body[m.end(2):], "string"))
-    ids = re.findall(r"\b([a-z_][a-z0-9_]{3,})\b", body)
-    if ids:
-        v = rng.choice(ids)
-        opts.append((ind + re.sub(rf"\b{v}\b", v + "_new", body, count=1), "rename"))
-    if not body.endswith((":", "(", "[", "{", ",", "\\")):
-        opts.append((s + "\n" + ind + 'logger.debug("checkpoint")', "insert_after"))
-    return rng.choice(opts) if opts else None
+IDENT = re.compile(r"[a-z_][a-z0-9_]*")
+CONST_SWAP = {"True": "False", "False": "True", "None": "0"}
+INSERT = 'logger.debug("checkpoint")'
+
+
+def plain_name(s, min_len):
+    return len(s) >= min_len and IDENT.fullmatch(s) and not keyword.iskeyword(s) and not keyword.issoftkeyword(s)
+
+
+def bcol(line, col):
+    """ast's UTF-8 byte column → str index"""
+    return len(line.encode()[:col].decode(errors="ignore"))
+
+
+class Src:
+    """one library file: tokens, def/class scopes, simple one-line statements and the multi-line sites. The instruction
+    names a site by its scope and by the first occurrence of a token in that scope, never by quoting a whole line, so
+    the old_string has to come from the read_file output"""
+    def __init__(self, content):
+        self.content, self.lines = content, content.split("\n")
+        self.tree = ast.parse(content)
+        self.toks = [t for t in tokenize.generate_tokens(io.StringIO(content).readline)
+                     if t.type in (tokenize.NAME, tokenize.NUMBER, tokenize.STRING)]
+        self.scopes = []                        # (qualname, first line, last line, node), 1-based, outer before inner
+
+        def walk(node, prefix):
+            for ch in ast.iter_child_nodes(node):
+                if isinstance(ch, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                    q = f"{prefix}.{ch.name}" if prefix else ch.name
+                    self.scopes.append((q, ch.lineno, ch.end_lineno, ch))
+                    walk(ch, q)
+                else:
+                    walk(ch, prefix)
+        walk(self.tree, "")
+        self.qcount = Counter(s[0] for s in self.scopes)
+        self.simple = {n.lineno for n in ast.walk(self.tree)
+                       if isinstance(n, (ast.Expr, ast.Assign, ast.AugAssign, ast.AnnAssign)) and n.lineno == n.end_lineno}
+        self.multi = [x for x in (self._rename_local(), self._call_arg()) if x]   # one list per kind, picked 50/50
+
+    def scope(self, ln):
+        """(qualname, first line, last line) of the innermost def/class holding line ln; module = (None, 1, n)"""
+        best = None
+        for s in self.scopes:
+            if s[1] <= ln <= s[2] and (best is None or s[1] >= best[1]):
+                best = s
+        return (best[0], best[1], best[2]) if best else (None, 1, len(self.lines))
+
+    def first(self, t, lo, hi):
+        """is token t the first token with its type and text in lines lo..hi?"""
+        return next(x for x in self.toks if lo <= x.start[0] <= hi and x.type == t.type and x.string == t.string) is t
+
+    def where(self, q):
+        return f"in `{q}`" if q else "at module level"
+
+    def line_site(self, i, rng):
+        """a one-line change at 0-based line i, described by scope + first token"""
+        li, line = i + 1, self.lines[i]
+        q, lo, hi = self.scope(li)
+        if q and self.qcount[q] != 1:
+            return None
+        toks = [t for t in self.toks if t.start[0] == li == t.end[0] and self.first(t, lo, hi)]
+        opts = []
+        for t in toks:
+            if t.type == tokenize.NAME and t.string in CONST_SWAP:
+                opts.append(("constant", t, CONST_SWAP[t.string]))
+            elif t.type == tokenize.NAME and plain_name(t.string, 4):
+                opts.append(("rename", t, t.string + "_new"))
+            elif t.type == tokenize.NUMBER and t.string.isdigit():
+                opts.append(("number", t, str(int(t.string) + 1)))
+            elif t.type == tokenize.STRING and re.fullmatch(r"(['\"])[A-Za-z][^'\"\\]{2,40}\1", t.string):
+                opts.append(("string", t, t.string[:-1] + "_v2" + t.string[-1]))
+        anchors = [t for t in toks if t.type == tokenize.NAME and plain_name(t.string, 4)] if li in self.simple else []
+        if anchors:
+            opts.append(("insert_after", rng.choice(anchors), None))
+        if not opts:
+            return None
+        kind, t, nt = rng.choice(opts)
+        site = {"kind": kind, "l0": i, "l1": i + 1, "scope": q, "scope_line": lo if q else None}
+        if kind == "insert_after":
+            ind = line[:len(line) - len(line.lstrip())]
+            return dict(site, new_lines=[line, ind + INSERT],
+                        desc=f"{self.where(q)}, add the line `{INSERT}` right after the line that holds the first `{t.string}`")
+        verb = "rename" if kind == "rename" else "change"
+        return dict(site, new_lines=[line[:t.start[1]] + nt + line[t.end[1]:]],
+                    desc=f"{self.where(q)}, {verb} the first `{t.string}` to `{nt}`")
+
+    def _rename_local(self):
+        """a local variable of a function whose every use (2-6 lines apart) is an ast.Name → rename all of them"""
+        out = []
+        for q, s, e, node in self.scopes:
+            if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) or self.qcount[q] != 1:
+                continue
+            args = {x.arg for x in ast.walk(node.args) if isinstance(x, ast.arg)}
+            stores = {n.id for n in ast.walk(node) if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Store)}
+            for v in sorted(stores - args):
+                if not plain_name(v, 3):
+                    continue
+                names = [n for n in ast.walk(node) if isinstance(n, ast.Name) and n.id == v]
+                toks = [t for t in self.toks if t.type == tokenize.NAME and t.string == v and s <= t.start[0] <= e]
+                if len(toks) < 2 or len(toks) != len(names):        # an attribute / keyword / global of the same name
+                    continue
+                body = "\n".join(self.lines[s - 1:e])
+                if len(re.findall(rf"\b{v}\b", body)) != len(toks):  # also in a docstring / comment / string:
+                    continue                                         # "everywhere" would be ambiguous
+                l0, l1 = min(t.start[0] for t in toks) - 1, max(t.start[0] for t in toks)
+                if not 2 <= l1 - l0 <= 6:
+                    continue
+                new = self.lines[l0:l1]
+                for t in sorted(toks, key=lambda t: t.start, reverse=True):
+                    k = t.start[0] - 1 - l0
+                    new[k] = new[k][:t.start[1]] + v + "_new" + new[k][t.end[1]:]
+                out.append({"kind": "rename_local", "l0": l0, "l1": l1, "new_lines": new, "scope": q, "scope_line": s,
+                            "desc": f"in `{q}`, rename the local variable `{v}` to `{v}_new` everywhere in that function"})
+        return out
+
+    def _call_arg(self):
+        """the first call to a callee in its scope, spanning 2-6 lines, with a constant keyword argument → change it;
+        the answer covers the whole call"""
+        out, calls = [], [n for n in ast.walk(self.tree) if isinstance(n, ast.Call)]
+        seg = lambda n: ast.get_source_segment(self.content, n)
+        for c in calls:
+            if not 1 <= c.end_lineno - c.lineno <= 5:
+                continue
+            callee = seg(c.func)
+            if not callee or "\n" in callee or len(callee) > 40:
+                continue
+            q, lo, hi = self.scope(c.lineno)
+            if q and self.qcount[q] != 1:
+                continue
+            same = [x for x in calls if lo <= x.lineno <= hi and seg(x.func) == callee]
+            if min(same, key=lambda x: (x.lineno, x.col_offset)) is not c:
+                continue
+            for kw in c.keywords:
+                val = kw.value
+                if not kw.arg or not isinstance(val, ast.Constant) or val.lineno != val.end_lineno:
+                    continue
+                old = seg(val)
+                if isinstance(val.value, bool) or val.value is None:
+                    new = CONST_SWAP[old]
+                elif isinstance(val.value, int) and old.isdigit():
+                    new = str(val.value + 1)
+                elif isinstance(val.value, str) and re.fullmatch(r"(['\"])[A-Za-z][^'\"\\]{2,40}\1", old):
+                    new = old[:-1] + "_v2" + old[-1]
+                else:
+                    continue
+                l0, l1 = c.lineno - 1, c.end_lineno
+                new_lines = self.lines[l0:l1]
+                k, line = val.lineno - 1 - l0, self.lines[val.lineno - 1]
+                new_lines[k] = line[:bcol(line, val.col_offset)] + new + line[bcol(line, val.end_col_offset):]
+                out.append({"kind": "call_arg", "l0": l0, "l1": l1, "new_lines": new_lines, "scope": q,
+                            "scope_line": lo if q else None,
+                            "desc": f"{self.where(q)}, in the first call to `{callee}(…)`, change the argument "
+                                    f"`{kw.arg}={old}` to `{kw.arg}={new}`"})
+        return out
 
 
 def corrupt(old, content, lines, a, b, rng):
@@ -227,6 +370,7 @@ def corrupt(old, content, lines, a, b, rng):
 class Builder:
     def __init__(self, a):
         self.a, self.rng, self.n = a, random.Random(a.seed), 0
+        self.src, self.why = {}, None          # per-file analysis cache · why the last exercise was rejected
         setup = json.loads(open(a.tools_from).readline())["setup"]
         drop = set(filter(None, a.drop_tools.split(",")))
         self.tools = [t for t in setup["tool_schemas"] if t["function"]["name"] not in drop]
@@ -262,23 +406,30 @@ class Builder:
         from swegemma.edit import apply_replacement
         from swegemma.tools import workspace as ws
         rng, lines = self.rng, content.split("\n")
-        cand = code_lines(content)
-        if not cand:
+        self.why = "no_site"
+        if rel not in self.src:
+            try:
+                self.src[rel] = Src(content)
+            except (SyntaxError, tokenize.TokenError, IndentationError, ValueError):
+                self.src[rel] = None
+        src, cand = self.src[rel], code_lines(content)
+        if not src or not cand:
             return None
+        multi = family != "anchor" and src.multi and rng.random() < self.a.multi
         for _ in range(30):
-            i = rng.choice(cand)
-            mut = mutate_line(lines[i], rng)
-            if not mut:
+            site = rng.choice(rng.choice(src.multi)) if multi else src.line_site(rng.choice(cand), rng)
+            if not site:
                 continue
-            single = n_matches(content, lines[i]) == 1 and content.count(lines[i]) == 1
+            core = "\n".join(lines[site["l0"]:site["l1"]])
+            single = n_matches(content, core) == 1 and content.count(core) == 1
             if (family == "anchor" and single) or (family != "anchor" and not single and rng.random() < 0.7):
                 continue
-            w = minimal_unique(lines, i, content)
+            w = minimal_unique(lines, site["l0"], site["l1"], content)
             if not w:
                 continue
             a, b = w
             old = "\n".join(lines[a:b])
-            new_lines = lines[a:i] + mut[0].split("\n") + lines[i + 1:b]
+            new_lines = lines[a:site["l0"]] + site["new_lines"] + lines[site["l1"]:b]
             new = "\n".join(new_lines)
             intended = "\n".join(lines[:a] + new_lines + lines[b:])
             r = apply_replacement(content, old, new)
@@ -286,13 +437,31 @@ class Builder:
                 break
         else:
             return None
+        i = site["l0"]
+        try:                                      # the answer must leave valid Python (no `return_new x`)
+            ast.parse(intended)
+        except SyntaxError:
+            self.why = "syntax"
+            return None
+        instr = f"In `{rel}`, {site['desc']}."
+        if any(len(x.strip()) >= 6 and x.strip() in instr for x in old.split("\n")):
+            self.why = "leak"                     # a whole old line quoted in the task: copyable without reading
+            return None
         ctx = _Ctx(root)
         s0 = max(1, i + 1 - rng.randint(5, 40))
         e0 = min(len(lines), s0 + rng.randint(30, 120))
-        if not (s0 <= a + 1 and b <= e0):
-            s0, e0 = max(1, a + 1 - 10), min(len(lines), b + 10)
-        instr = (f"In `{rel}`, change the line `{lines[i].strip()}` to `{mut[0].strip()}`." if mut[1] != "insert_after" else
-                 f"In `{rel}`, add the line `{mut[0].split(chr(10))[-1].strip()}` right after `{lines[i].strip()}`.")
+        s0 = min(s0, a + 1, site["scope_line"] or s0)     # the view shows the def/class line that names the scope
+        e0 = max(e0, b)
+        if e0 - s0 + 1 > 150:                     # harness view limit
+            e0 = b + min(10, len(lines) - b)
+            if e0 - s0 + 1 > 150:
+                self.why = "window"
+                return None
+        view = json.loads(ws.read_file(ctx, rel, s0, e0))
+        shown = view.get("content") or ""
+        if view.get("is_truncated") or old not in shown or (site["scope_line"] and lines[site["scope_line"] - 1] not in shown):
+            self.why = "window"
+            return None
         system = self.system.replace("{problem_description}", instr)
         msgs = [{"role": "system", "content": system}, {"role": "user", "content": self.user(lib, instr, root)}]
         cid, am = self.call("read_file", {"filepath": rel, "start_line": s0, "end_line": e0})
@@ -311,16 +480,18 @@ class Builder:
         rec = {"instance_id": f"drill_{lib}_{self.a.seed}_{self.n:06d}", "repo": lib, "base_commit": None, "pr": None,
                "patch_sha": None, "source": "edit_drill", "resolved": None, "policy_model": self.model,
                "sampling": dict(self.sampling, max_tool_calls=28, max_time_minutes=7), "env_fingerprint": None,
-               "family": family, "distance": len(others), "site_line": i + 1, "old_lines": b - a, "mutation": mut[1],
+               "family": family, "distance": len(others), "site_line": i + 1, "old_lines": b - a, "mutation": site["kind"], "scope": site["scope"],
                "verify": {"lib": lib, "path": rel, "file_sha256": sha(content), "intended_sha256": sha(intended)},
                "tools": self.tools}
         if family == "recover":
             bad, kind = corrupt(old, content, lines, a, b, rng)
             if not bad:
+                self.why = "corrupt"
                 return None
             cid, am = self.call("edit_file", {"filepath": rel, "new_string": new, "old_string": bad})
             err = ws.edit_file(ctx, rel, bad, new)
             if json.loads(err).get("status") != "error":
+                self.why = "corrupt"
                 return None
             msgs += [am, {"role": "tool", "tool_call_id": cid, "content": tool_msg(err)}]
             rs, re_ = max(1, a + 1 - 4), min(len(lines), b + 4)
@@ -335,6 +506,7 @@ class Builder:
         out = json.loads(ws.edit_file(_Ctx(root), rel, old, new))
         ok = out.get("status") == "ok" and out.get("strategy", "exact") == "exact" and (Path(root) / rel).read_text() == intended
         (Path(root) / rel).write_text(content)
+        self.why = None if ok else "apply"
         return rec if ok else None
 
 
@@ -362,7 +534,8 @@ def build(a):
     sp = site_packages()
     print(f"edit_drills build · libs {libs} from {sp} · n {a.n} · seed {a.seed} · families {dict(zip(*FAMILIES))} · "
           f"distances {dict(zip(*DISTANCES))} · libraries equally often, files ∝ √size, code lines only · system {a.system} ({len(Path(a.system).read_text())} chars) · "
-          f"tools from {a.tools_from} minus [{a.drop_tools}] · min file lines {a.min_lines} · out {a.out}")
+          f"tools from {a.tools_from} minus [{a.drop_tools}] · min file lines {a.min_lines} · multi-line share (copy/recover) {a.multi} · "
+          f"instructions name scope + first token, never a whole line · out {a.out}")
     b = Builder(a)
     print(f"  tools {b.tool_names} · sampling {b.sampling} · policy model {b.model}")
     files = {lib: lib_files(lib, a.min_lines) for lib in libs}
@@ -392,15 +565,19 @@ def build(a):
             st["tried"] += 1
             rec = b.exercise(lib, rel, c, roots[lib], dis, fam)
             if rec is None:
-                st[f"rejected_{fam}"] += 1
+                st[f"rejected_{fam}:{b.why}"] += 1
                 continue
             st[f"ok_{fam}"] += 1
+            st[f"kind_{rec['mutation']}"] += 1
             st[f"lib_{lib}"] += 1
             span[min(rec["old_lines"], 6)] += 1
             if fam == "recover":
                 st[f"corrupt_{rec['corruption']}"] += 1
             json.dump(rec, open(out / f"{rec['instance_id']}.json", "w"), ensure_ascii=False)
     print(json.dumps({**dict(sorted(st.items())), "old_lines (shortest unique span; 6 = 6+)": dict(sorted(span.items()))}))
+    ok_n = sum(v for k, v in st.items() if k.startswith("ok_")) or 1
+    print(f"  multi-line old_string {sum(v for k, v in span.items() if k >= 2)} / {ok_n} · rejected: "
+          + " · ".join(f"{k} {v}" for k, v in sorted(Counter(k.split(':')[1] for k in st.elements() if k.startswith('rejected_')).items())))
     print(f"== drills: {sum(v for k, v in st.items() if k.startswith('ok_'))} records in {out} "
           f"({st['tried']} tried; every answer applied by edit_file, every corruption failing every matcher tier)")
 
@@ -594,6 +771,7 @@ def main():
     b.add_argument("--drop-tools", default="", help="comma list, e.g. the 3 graph tools for a tools6 arm")
     b.add_argument("--system", default="scripts/arms/latest_e4b/prompts/system.md")
     b.add_argument("--min-lines", type=int, default=60)
+    b.add_argument("--multi", type=float, default=0.45, help="share of copy/recover drills drawn from multi-line sites")
     b.add_argument("--out", required=True)
     d = sub.add_parser("decode")
     d.add_argument("records")

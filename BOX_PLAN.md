@@ -691,7 +691,7 @@ matches ≤ 3 %, every call parsed. `train/drills_box.sh` runs it in stages; eve
 
 ```bash
 cd gemma4-dev-agent && git pull
-bash train/drills_box.sh build                 # 📷 two '== drills' lines (1500 + 300) + the tools/sampling line (CPU, ~1 min)
+bash train/drills_box.sh build                 # 📷 two '== drills' lines (1500 + 300) + the two 'multi-line … rejected' lines + the tools/sampling line (CPU, ~5–8 min)
 GPU=0 bash train/drills_box.sh gate0           # 📷 E4B without adapter on the held-out drills (~10 min; stops every vllm serve)
 GPU=0 bash train/drills_box.sh think           # 📷 E4B's own thoughts for the training drills (temperature 0.7, ~30–60 min)
 ```
