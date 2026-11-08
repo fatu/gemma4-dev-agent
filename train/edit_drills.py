@@ -18,13 +18,19 @@ drills teach only where old_string comes from.
   $PY train/edit_drills.py score runs/sft/drills_heldout runs/drills/base_t0.jsonl                    # 📷 gate line
   $PY train/edit_drills.py think runs/sft/drills runs/drills/think_t07.jsonl --out runs/sft/drills_native
 
-Families (record field `family`):
-  copy     a read_file view of the site, then 0-5 read_file outputs of other files → the edit with the shortest exact
-           old_string that occurs once (distance = tool outputs between the view and the edit)
+Families (record field `family`, weights FAMILIES):
+  copy     a read_file view of the site, then 0-9 other tool outputs (distance; DISTANCES) → the edit with the shortest
+           exact old_string that occurs once. The outputs between are `grep -rn <name>` results through the harness's
+           own run_command on the drill workspace (GREP_FILLER) or read_file windows of other files (field `fillers`)
   anchor   the changed line occurs more than once in the file → the answer must carry the distinguishing lines
-  recover  copy + one failed edit_file whose old_string has an E4B-style corruption (the study's mix: token change,
-           quote wrap, dropped line, re-wrapped block, JSON wrapper, trailing backslash, too-short anchor) and the
-           harness's real error → target 1 reads the lines again, target 2 is the correct edit
+  recover  copy + one failed edit_file and the harness's real error → target 1 reads the lines again, target 2 is the
+           correct edit. Corruptions by CORRUPTIONS weight, after E4B's own failed edits (study E): too short an
+           anchor (short_nonunique: the changed lines alone, which occur several times → "occurs N times") ≈ 40 %,
+           copied wrong (token change, dropped line, re-wrapped block) ≈ 45 %, JSON wrapper / quotes / backslash ≈ 15 %
+  stale    the task asks for two changes; the first is already done in the context (edit_file ok, with its diff) and
+           changed a line within 3 lines of the second site; the answer window covers that line, so copying the first
+           view fails (checked) and the old_string has to come from the edit's own output (verify.pre_edit: score
+           applies it before the answer)
 Task text (record field `mutation`): the instruction names the site by its def/class scope and the first occurrence of
 a token (or a parameter / callee / variable name) in that scope, never by quoting a line, so old_string has to be
 copied from the read_file output. Every change is a small, bug-fix-like edit that keeps the file valid Python:
@@ -74,10 +80,14 @@ from pathlib import Path
 REFUSED_LIBS = {"fastapi", "rich", "requests", "httpx", "pydantic", "pydantic_core"}   # eval repos + fastapi's core dep
 DEFAULT_SAMPLING = {"temperature": 0.2, "top_p": 0.95, "max_completion_tokens": 6144,
                     "enable_thinking": True, "thinking_token_budget": 4096}             # latest_e4b sampling.yaml
-FAMILIES = (["copy", "anchor", "recover"], [0.5, 0.2, 0.3])
-DISTANCES = ([0, 1, 2, 3, 4, 5], [0.4, 0.2, 0.2, 0.1, 0.05, 0.05])
-CORRUPTIONS = ["token_change"] * 55 + ["quote_wrap"] * 12 + ["dropped_line"] * 12 + ["reformat"] * 8 + \
-              ["trailing_backslash"] * 3 + ["json_wrapper"] * 4 + ["short_nonunique"] * 6   # E4B's own mix (study E)
+FAMILIES = (["copy", "anchor", "recover", "stale"], [0.4, 0.15, 0.3, 0.15])
+# tool outputs between the view and the edit: E4B's not-found rate is 13 % at 0, 38 % at 2-3, 45 % at 4+ (study E)
+DISTANCES = ([0, 1, 2, 3, 4, 5, 6, 7, 8, 9], [0.08, 0.1, 0.1, 0.12, 0.12, 0.12, 0.1, 0.1, 0.08, 0.08])  # p50 ≈ real 8K+
+GREP_FILLER = 0.5          # share of those outputs that are `grep -rn` results (the rest: read_file of another file)
+# E4B's failed edits (study E, 170): copied wrong 36 % · several matches 32 % · stale 13 % (own family) · call
+# syntax / JSON wrapper 11 % → the recover corruptions, drawn by weight before the site is chosen
+CORRUPTIONS = (["token_change", "dropped_line", "reformat", "short_nonunique", "json_wrapper", "quote_wrap",
+                "trailing_backslash"], [30, 8, 7, 40, 6, 6, 3])
 
 
 def sha(s):
@@ -95,9 +105,10 @@ class _Res:
 
 
 class _LocalDocker:
-    """the subset of swegemma's container API that read_file / edit_file use, on a local directory"""
-    def __init__(self, root):
-        self.root = Path(root)
+    """the subset of swegemma's container API that read_file / edit_file / run_command use, on a local directory.
+    exec runs a command only when run=True (the grep fillers); otherwise it is a no-op as before"""
+    def __init__(self, root, run=False):
+        self.root, self.run = Path(root), run
 
     def _local(self, p):
         p = str(p)
@@ -114,15 +125,19 @@ class _LocalDocker:
         shutil.copyfile(local, d / Path(local).name)
 
     def exec(self, cid, cmd, timeout=None):
-        return _Res()
+        if not self.run:
+            return _Res()
+        p = subprocess.run(["bash", "-c", cmd], cwd=self.root, capture_output=True, text=True, timeout=timeout or 60)
+        return _Res(p.returncode, p.stdout, p.stderr)
 
 
 class _Ctx:
-    def __init__(self, root, used=5):
+    def __init__(self, root, used=5, run=False):
         from swegemma.budget import EvaluationBudget, HarnessLimits
-        self.docker, self.container_id = _LocalDocker(root), "drill"
-        self.harness, self.budget = HarnessLimits(), EvaluationBudget(time_minutes=7, tool_calls=28)
-        self.tool_calls_used, self.tool_lock = used, None
+        self.docker, self.container_id = _LocalDocker(root, run), "drill"
+        self.harness = HarnessLimits(command_timeout_seconds=240)
+        self.budget = EvaluationBudget(time_minutes=7, tool_calls=28)
+        self.tool_calls_used, self.tool_lock, self.remaining_time_seconds = used, None, 300
 
     def check_budget(self, count_tool_call=True):
         self.tool_calls_used += bool(count_tool_call)
@@ -249,11 +264,22 @@ class Src:
                     walk(ch, prefix)
         walk(self.tree, "")
         self.qcount = Counter(s[0] for s in self.scopes)
+        # def/class header lines (signature, annotations): value kinds never edit them (`-> None` → `-> 0`)
+        self.header = {ln for _, _, _, n in self.scopes for ln in range(n.lineno, n.body[0].lineno)}
         self.assign1 = {n.lineno: n.targets[0].id for n in ast.walk(self.tree)
                         if isinstance(n, ast.Assign) and len(n.targets) == 1 and isinstance(n.targets[0], ast.Name)
                         and n.lineno == n.end_lineno}
         self.calls = [n for n in ast.walk(self.tree) if isinstance(n, ast.Call)]
         self.lists = {"default": self._default(), "swap_args": self._swap_args()}
+        # 0-based lines that hold a candidate token per one-line kind, so a kind is not starved by random lines
+        has = lambda f: sorted({t.start[0] - 1 for t in self.toks if t.start[0] == t.end[0] and f(t)})
+        self.kind_lines = {
+            "operator": has(lambda t: t.type == tokenize.OP),
+            "logic": has(lambda t: t.type == tokenize.NAME and t.string in ("and", "or", "not", "is")),
+            "constant": has(lambda t: t.type == tokenize.NAME and t.string in CONST_SWAP),
+            "number": has(lambda t: t.type == tokenize.NUMBER and t.string.isdigit()),
+            "string": has(lambda t: t.type == tokenize.STRING),
+            "insert_guard": sorted(ln - 1 for ln in self.assign1)}
         self.multi = [x for x in (self._rename_local(), self._call_arg()) if x]   # one list per kind, picked 50/50
 
     def seg(self, n):
@@ -270,6 +296,17 @@ class Src:
     def first(self, t, lo, hi):
         """is token t the first token with its type and text in lines lo..hi?"""
         return next(x for x in self.toks if lo <= x.start[0] <= hi and x.type == t.type and x.string == t.string) is t
+
+    def text_first(self, t, lo):
+        """does t's text not occur in the scope's text before t (docstrings, comments and strings included)? A reader
+        looking for "the first `or`" must not meet an earlier "or" in prose, nor `<` inside an earlier `<=`"""
+        li = t.start[0]
+        before = "\n".join(self.lines[lo - 1:li - 1] + [self.lines[li - 1][:t.start[1]]])
+        if t.type == tokenize.NAME:
+            pat = rf"\b{re.escape(t.string)}\b"
+        else:                                     # numbers too: "the first `1`" must not meet an earlier `10`
+            pat = re.escape(t.string)
+        return not re.search(pat, before)
 
     def where(self, q):
         return f"in `{q}`" if q else "at module level"
@@ -292,7 +329,9 @@ class Src:
         q, lo, hi, node = self.scope(li)
         if q and self.qcount[q] != 1:
             return None
-        toks = [t for t in self.toks if t.start[0] == li == t.end[0] and self.first(t, lo, hi)]
+        toks = [t for t in self.toks if t.start[0] == li == t.end[0] and self.first(t, lo, hi) and self.text_first(t, lo)]
+        if kind != "insert_guard" and li in self.header:
+            return None
         w = self.where(q)
         if kind == "insert_guard":
             x = self.assign1.get(li)
@@ -446,15 +485,19 @@ class Src:
         return out
 
 
-def corrupt(old, content, lines, a, b, rng):
-    """one E4B-style corruption → (bad, kind); kept only if the full matcher really fails on it (or, for
-    short_nonunique, really reports several matches). The corrupted text spans 1-5 lines around the site, like E4B's
-    own attempts (median 4 lines), while the answer stays the shortest unique span."""
+def corrupt(kind, old, new, core, core_new, content, lines, a, b, rng):
+    """one E4B-style failed edit of the given kind → (bad old_string, its new_string) or None. Kept only if the full
+    matcher really fails on it (not found), or for short_nonunique really reports several matches. short_nonunique
+    is the changed lines alone (`core`, which then must occur more than once) with their own new text, the way E4B
+    anchors too short; the others corrupt a 1-5-line span around the site (E4B's own attempts: median 4 lines) and keep
+    the full new_string."""
+    if kind == "short_nonunique":
+        return (core, core_new) if core.strip() and n_matches(content, core) > 1 else None
     a, b = max(0, a - rng.randint(0, 2)), min(len(lines), b + rng.randint(0, 2))
     old = "\n".join(lines[a:b])
     for _ in range(12):
-        k, ol, bad = rng.choice(CORRUPTIONS), old.split("\n"), None
-        if k == "token_change":
+        ol, bad = old.split("\n"), None
+        if kind == "token_change":
             j = rng.randrange(len(ol))
             toks = list(re.finditer(r"[A-Za-z_]\w+|\d+|[\[\]():]", ol[j]))
             if toks:
@@ -463,25 +506,20 @@ def corrupt(old, content, lines, a, b, rng):
                 rep = {"(": "[", ")": "]", "[": "(", "]": ")", ":": ""}.get(g, g[:-1] + ("s" if not g.endswith("s") else ""))
                 ol[j] = ol[j][:t.start()] + rep + ol[j][t.end():]
                 bad = "\n".join(ol)
-        elif k == "quote_wrap":
+        elif kind == "quote_wrap":
             bad = '"' + old + '"'
-        elif k == "dropped_line" and len(ol) >= 3:
+        elif kind == "dropped_line" and len(ol) >= 3:
             j = rng.randrange(1, len(ol) - 1)
             bad = "\n".join(ol[:j] + ol[j + 1:])
-        elif k == "reformat" and len(ol) >= 2:
+        elif kind == "reformat" and len(ol) >= 2:
             bad = ol[0].rstrip() + " " + " ".join(x.strip() for x in ol[1:])
-        elif k == "trailing_backslash":
+        elif kind == "trailing_backslash":
             bad = old.rstrip("\n") + "\\"
-        elif k == "json_wrapper":
+        elif kind == "json_wrapper":
             bad = old + '", "start_line": %d, "end_line": %d, "total_lines": %d, "is_truncated": false}' % (a + 1, b, len(lines))
-        elif k == "short_nonunique":
-            cand = [x for x in ol if x.strip() and content.count(x) > 1]
-            if cand and n_matches(content, cand[0]) > 1:
-                return cand[0], k
-            continue
         if bad and bad != old and n_matches(content, bad) == 0:
-            return bad, k
-    return None, None
+            return bad, new
+    return None
 
 
 # ------------------------------------------------- building
@@ -520,103 +558,184 @@ class Builder:
         return cid, {"role": "assistant", "content": None, "tool_calls": [
             {"type": "function", "id": cid, "function": {"name": name, "arguments": json.dumps(args, ensure_ascii=False)}}]}
 
-    def exercise(self, lib, rel, content, root, others, family):
-        from swegemma.edit import apply_replacement
-        from swegemma.tools import workspace as ws
-        rng, lines = self.rng, content.split("\n")
-        self.why = "no_site"
+    def analyse(self, rel, content):
         if rel not in self.src:
             try:
                 self.src[rel] = Src(content)
             except (SyntaxError, tokenize.TokenError, IndentationError, ValueError):
                 self.src[rel] = None
-        src, cand = self.src[rel], code_lines(content)
-        if not src or not cand:
-            return None
-        multi = family != "anchor" and src.multi and rng.random() < self.a.multi
-        kind = None if multi else rng.choices(*LINE_KINDS)[0]
+        return self.src[rel]
+
+    def pick(self, src, content, lines, cand, multi, kind, repeat, near=None):
+        """a site and its answer window → (site, a, b, old, new, intended) or None. repeat: the changed lines must
+        occur more than once (anchor drills, short_nonunique recover drills); near: a 0-based line the answer window
+        must also cover, sites only within ±3 lines of it (stale drills: the line the earlier edit changed)"""
+        from swegemma.edit import apply_replacement
+        rng = self.rng
         for _ in range(30):
-            if family == "anchor":                # a repeated line is rare for any one kind: redraw the kind per try
+            if repeat or near is not None:        # few sites fit for any one kind: redraw the kind per try
                 kind = rng.choices(*LINE_KINDS)[0]
             if multi:
                 site = rng.choice(rng.choice(src.multi))
             elif kind in src.lists:
-                site = rng.choice(src.lists[kind]) if src.lists[kind] else None
+                pool = [x for x in src.lists[kind] if near is None or 0 < abs(x["l0"] - near) <= 3]
+                site = rng.choice(pool) if pool else None
             else:
-                site = src.line_site(rng.choice(cand), rng, kind)
+                ok = set(cand) & set(src.kind_lines.get(kind, cand))
+                pool = sorted(i for i in ok if near is None or 0 < abs(i - near) <= 3)
+                site = src.line_site(rng.choice(pool), rng, kind) if pool else None
             if not site:
                 continue
             core = "\n".join(lines[site["l0"]:site["l1"]])
             single = n_matches(content, core) == 1 and content.count(core) == 1
-            if (family == "anchor" and single) or (family != "anchor" and not single and rng.random() < 0.7):
+            if repeat and single:
                 continue
-            w = minimal_unique(lines, site["l0"], site["l1"], content)
+            if not repeat and near is None and not single and rng.random() < 0.7:
+                continue
+            l0, l1 = site["l0"], site["l1"]
+            if near is not None:
+                l0, l1 = min(l0, near), max(l1, near + 1)
+            w = minimal_unique(lines, l0, l1, content)
             if not w:
                 continue
             a, b = w
-            old = "\n".join(lines[a:b])
             new_lines = lines[a:site["l0"]] + site["new_lines"] + lines[site["l1"]:b]
-            new = "\n".join(new_lines)
+            old, new = "\n".join(lines[a:b]), "\n".join(new_lines)
             intended = "\n".join(lines[:a] + new_lines + lines[b:])
             r = apply_replacement(content, old, new)
             if r.strategy == "exact" and r.occurrences == 1 and r.new_content == intended:
-                break
-        else:
+                return site, a, b, old, new, intended
+        return None
+
+    def fillers(self, msgs, root, others):
+        """the tool outputs between the view and the edit: `grep -rn <name>` through the harness's run_command on the
+        drill workspace (GREP_FILLER of them) or a read_file window of another file → counts by kind"""
+        from swegemma.tools import workspace as ws
+        from swegemma.tools.execution import run_command
+        rng, got = self.rng, Counter()
+        for orel, oc in others:
+            if rng.random() < GREP_FILLER:
+                names = sorted({t for t in re.findall(r"\b[a-z_][a-z0-9_]{4,}\b", oc) if not keyword.iskeyword(t)})
+                if names:
+                    cmd = f'grep -rn "{rng.choice(names)}" {orel.split("/")[0]}/ --include="*.py"'
+                    res = run_command(_Ctx(root, run=True), cmd)
+                    if json.loads(res).get("status") == "ok":
+                        cid, am = self.call("run_command", {"command": cmd})
+                        msgs += [am, {"role": "tool", "tool_call_id": cid, "content": tool_msg(res)}]
+                        got["grep"] += 1
+                        continue
+            ol = oc.split("\n")
+            ds = rng.randint(1, max(1, len(ol) - 60))
+            de = ds + rng.randint(30, 100)
+            cid, am = self.call("read_file", {"filepath": orel, "start_line": ds, "end_line": de})
+            msgs += [am, {"role": "tool", "tool_call_id": cid, "content": tool_msg(ws.read_file(_Ctx(root), orel, ds, de))}]
+            got["read"] += 1
+        return got
+
+    def exercise(self, lib, rel, content, root, others, family):
+        from swegemma.tools import workspace as ws
+        rng, lines = self.rng, content.split("\n")
+        self.why = "no_site"
+        src, cand = self.analyse(rel, content), code_lines(content)
+        if not src or not cand:
             return None
+        ckind = rng.choices(*CORRUPTIONS)[0] if family == "recover" else None
+        repeat = family == "anchor" or ckind == "short_nonunique"
+        pre = None                                # stale: (old, new, site) of the earlier edit, applied first
+        if family == "stale":
+            k1 = rng.choice(["operator", "logic", "constant", "number", "string"])
+            p1 = self.pick(src, content, lines, cand, False, k1, False)
+            if not p1 or p1[0]["l1"] - p1[0]["l0"] != 1 or len(p1[0]["new_lines"]) != 1:
+                return None
+            s1, _, _, old1, new1, content1 = p1
+            try:
+                src1 = Src(content1)
+            except (SyntaxError, tokenize.TokenError, IndentationError, ValueError):
+                return None
+            lines1 = content1.split("\n")
+            p2 = self.pick(src1, content1, lines1, code_lines(content1), False, None, False, near=s1["l0"])
+            if not p2:
+                return None
+            site, a, b, old, new, intended = p2
+            if n_matches(content1, "\n".join(lines[a:b])):
+                self.why = "stale_match"          # copying the first view's text must fail
+                return None
+            pre = (old1, new1, s1)
+            instr = f"In `{rel}`, make two changes: first, {s1['desc']}; then, {site['desc']}."
+        else:
+            multi = family != "anchor" and not repeat and src.multi and rng.random() < self.a.multi
+            kind = None if multi else rng.choices(*LINE_KINDS)[0]
+            p = self.pick(src, content, lines, cand, multi, kind, repeat)
+            if not p:
+                return None
+            site, a, b, old, new, intended = p
+            instr = f"In `{rel}`, {site['desc']}."
         i = site["l0"]
         try:                                      # the answer must leave valid Python (no `return_new x`)
             ast.parse(intended)
         except SyntaxError:
             self.why = "syntax"
             return None
-        instr = f"In `{rel}`, {site['desc']}."
-        if any(len(x.strip()) >= 6 and x.strip() in instr for x in old.split("\n")):
+        olds = [old] + ([pre[0]] if pre else [])
+        if any(len(x.strip()) >= 6 and x.strip() in instr for o in olds for x in o.split("\n")):
             self.why = "leak"                     # a whole old line quoted in the task: copyable without reading
             return None
         ctx = _Ctx(root)
+        need_a, need_b = (min(a, pre[2]["l0"]), max(b, pre[2]["l1"])) if pre else (a, b)
+        scope_lines = [x for x in (site["scope_line"], pre[2]["scope_line"] if pre else None) if x]
         s0 = max(1, i + 1 - rng.randint(5, 40))
         e0 = min(len(lines), s0 + rng.randint(30, 120))
-        s0 = min(s0, a + 1, site["scope_line"] or s0)     # the view shows the def/class line that names the scope
-        e0 = max(e0, b)
+        s0 = min([s0, need_a + 1] + scope_lines)  # the view shows the def/class lines that name the scopes
+        e0 = max(e0, need_b)
         if e0 - s0 + 1 > 150:                     # harness view limit
-            e0 = b + min(10, len(lines) - b)
+            e0 = need_b + min(10, len(lines) - need_b)
             if e0 - s0 + 1 > 150:
                 self.why = "window"
                 return None
         view = json.loads(ws.read_file(ctx, rel, s0, e0))
         shown = view.get("content") or ""
-        if view.get("is_truncated") or old not in shown or (site["scope_line"] and lines[site["scope_line"] - 1] not in shown):
+        if view.get("is_truncated") or "\n".join(lines[a:b]) not in shown or any(lines[x - 1] not in shown for x in scope_lines):
             self.why = "window"
             return None
         system = self.system.replace("{problem_description}", instr)
         msgs = [{"role": "system", "content": system}, {"role": "user", "content": self.user(lib, instr, root)}]
         cid, am = self.call("read_file", {"filepath": rel, "start_line": s0, "end_line": e0})
         msgs += [am, {"role": "tool", "tool_call_id": cid, "content": tool_msg(ws.read_file(ctx, rel, s0, e0))}]
-        for orel, oc in others:
-            ol = oc.split("\n")
-            ds = rng.randint(1, max(1, len(ol) - 60))
-            de = ds + rng.randint(30, 100)
-            cid, am = self.call("read_file", {"filepath": orel, "start_line": ds, "end_line": de})
-            msgs += [am, {"role": "tool", "tool_call_id": cid, "content": tool_msg(ws.read_file(ctx, orel, ds, de))}]
+        if pre:                                   # the first change, done: its diff is the only view of the new text
+            cid, am = self.call("edit_file", {"filepath": rel, "new_string": pre[1], "old_string": pre[0]})
+            res = ws.edit_file(ctx, rel, pre[0], pre[1])
+            if json.loads(res).get("status") != "ok":
+                (Path(root) / rel).write_text(content)
+                self.why = "apply"
+                return None
+            msgs += [am, {"role": "tool", "tool_call_id": cid, "content": tool_msg(res)}]
+        got = self.fillers(msgs, root, others)
         edit = {"id": None, "name": "edit_file",
                 "args": json.dumps({"filepath": rel, "new_string": new, "old_string": old}, ensure_ascii=False)}
         tgt = lambda tc: {"reasoning": None, "content": "", "tool_calls": [tc], "finish_reason": "tool_calls"}
         one = lambda k, m, tc: {"call": k, "segment": 0, "events_before": [], "input_messages": m, "target": tgt(tc),
                                 "thought_source": "none", "label_scope": "tool_call", "usage_prompt_tokens": None}
+        verify = {"lib": lib, "path": rel, "file_sha256": sha(content), "intended_sha256": sha(intended)}
+        if pre:
+            verify["pre_edit"] = {"old": pre[0], "new": pre[1]}
         rec = {"instance_id": f"drill_{lib}_{self.a.seed}_{self.n:06d}", "repo": lib, "base_commit": None, "pr": None,
                "patch_sha": None, "source": "edit_drill", "resolved": None, "policy_model": self.model,
                "sampling": dict(self.sampling, max_tool_calls=28, max_time_minutes=7), "env_fingerprint": None,
-               "family": family, "distance": len(others), "site_line": i + 1, "old_lines": b - a, "mutation": site["kind"], "scope": site["scope"],
-               "verify": {"lib": lib, "path": rel, "file_sha256": sha(content), "intended_sha256": sha(intended)},
-               "tools": self.tools}
+               "family": family, "distance": len(others), "fillers": dict(got), "site_line": i + 1, "old_lines": b - a,
+               "mutation": site["kind"], "scope": site["scope"], "verify": verify, "tools": self.tools}
+        if pre:
+            rec["pre_kind"] = pre[2]["kind"]
         if family == "recover":
-            bad, kind = corrupt(old, content, lines, a, b, rng)
-            if not bad:
+            core = "\n".join(lines[site["l0"]:site["l1"]])
+            c = corrupt(ckind, old, new, core, "\n".join(site["new_lines"]), content, lines, a, b, rng)
+            if not c:
                 self.why = "corrupt"
                 return None
-            cid, am = self.call("edit_file", {"filepath": rel, "new_string": new, "old_string": bad})
-            err = ws.edit_file(ctx, rel, bad, new)
+            bad, bad_new = c
+            cid, am = self.call("edit_file", {"filepath": rel, "new_string": bad_new, "old_string": bad})
+            err = ws.edit_file(ctx, rel, bad, bad_new)
             if json.loads(err).get("status") != "error":
+                (Path(root) / rel).write_text(content)
                 self.why = "corrupt"
                 return None
             msgs += [am, {"role": "tool", "tool_call_id": cid, "content": tool_msg(err)}]
@@ -624,11 +743,12 @@ class Builder:
             reread = {"id": None, "name": "read_file", "args": json.dumps({"filepath": rel, "start_line": rs, "end_line": re_})}
             cid, am = self.call("read_file", {"filepath": rel, "start_line": rs, "end_line": re_})
             msgs2 = msgs + [am, {"role": "tool", "tool_call_id": cid, "content": tool_msg(ws.read_file(ctx, rel, rs, re_))}]
-            rec["corruption"] = kind
+            rec["corruption"] = ckind
             rec["calls"] = [one(1, msgs, reread), one(2, msgs2, edit)]
         else:
             rec["calls"] = [one(1, msgs, edit)]
-        # the answer through the REAL edit_file on the workspace copy must give the intended file
+        # the answer through the REAL edit_file on the workspace copy (stale: after the first change) must give the
+        # intended file
         out = json.loads(ws.edit_file(_Ctx(root), rel, old, new))
         ok = out.get("status") == "ok" and out.get("strategy", "exact") == "exact" and (Path(root) / rel).read_text() == intended
         (Path(root) / rel).write_text(content)
@@ -662,7 +782,9 @@ def build(a):
           f"distances {dict(zip(*DISTANCES))} · libraries equally often, files ∝ √size, code lines only · system {a.system} ({len(Path(a.system).read_text())} chars) · "
           f"tools from {a.tools_from} minus [{a.drop_tools}] · min file lines {a.min_lines} · multi-line share (copy/recover) {a.multi} · "
           f"instructions name scope + first token, never a whole line · one-line kinds by weight {dict(zip(*LINE_KINDS))} · "
-          f"renames to an unused name from a {len(VOCAB)}-word list · out {a.out}")
+          f"renames to an unused name from a {len(VOCAB)}-word list · recover corruptions by weight {dict(zip(*CORRUPTIONS))} · "
+          f"fillers: grep -rn share {GREP_FILLER}, else read_file · stale = an earlier edit in context changes a line the answer must cover · "
+          f"duplicate sites (file, line, kind) rejected · out {a.out}")
     b = Builder(a)
     print(f"  tools {b.tool_names} · sampling {b.sampling} · policy model {b.model}")
     files = {lib: lib_files(lib, a.min_lines) for lib in libs}
@@ -672,7 +794,7 @@ def build(a):
     if out.exists():
         shutil.rmtree(out)
     out.mkdir(parents=True)
-    st, span = Counter(), Counter()
+    st, span, seen = Counter(), Counter(), set()
     with tempfile.TemporaryDirectory(prefix="drills_") as tmp:
         roots = {}
         for lib, fs in files.items():
@@ -694,6 +816,13 @@ def build(a):
             if rec is None:
                 st[f"rejected_{fam}:{b.why}"] += 1
                 continue
+            key = (rec["verify"]["path"], rec["site_line"], rec["mutation"])
+            if key in seen:
+                st[f"rejected_{fam}:dup"] += 1
+                continue
+            seen.add(key)
+            for k, v in rec["fillers"].items():
+                st[f"filler_{k}"] += v
             st[f"ok_{fam}"] += 1
             st[f"kind_{rec['mutation']}"] += 1
             st[f"lib_{lib}"] += 1
@@ -787,6 +916,8 @@ def score(a):
                 sys.exit(f"{v['path']}: file differs from the one the drills were built from (sha256) — another venv?")
             files[v["path"]] = content
         content = files[v["path"]]
+        if v.get("pre_edit"):                     # stale drills: the earlier edit in the context is applied first
+            content = apply_replacement(content, v["pre_edit"]["old"], v["pre_edit"]["new"]).new_content
         row = {"family": rec["family"], "distance": rec["distance"], "call": m["call"], "target": tgt["name"],
                "outcome": None}
         got = (m.get("tool_calls") or [None])[0]
