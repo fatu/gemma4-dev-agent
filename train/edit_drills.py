@@ -86,6 +86,9 @@ FAMILIES = (["copy", "anchor", "recover", "stale"], [0.4, 0.15, 0.3, 0.15])
 DISTANCES = (list(range(12)), [0.05, 0.07, 0.08, 0.09, 0.1, 0.1, 0.1, 0.1, 0.09, 0.08, 0.07, 0.07])   # tokens p50 ≈ 8K
 GREP_FILLER = 0.5          # share of those outputs that are `grep -rn` results (the rest: read_file of another file)
 EMPTY_GREP = 0.18          # share of the greps that find nothing (a one-letter typo; harness CommandError, exit 1), as E4B's
+# answer old_string length in lines: the 31B's successful edits (all-129: 1 line 33 %, 3-5 lines 33 %, 9+ 22 % folded
+# into 6-8 here). The answer is the shortest unique span grown to whole statements, then to this length
+ANCHOR_LINES = (list(range(1, 9)), [60, 1, 6, 10, 9, 9, 9, 12])   # 1 = keep the shortest span (only ~half are 1 line)
 RARE_NAME = 6              # grep a name the library uses at most this often (E4B's greps: median 130 chars of output) …
 RARE_SHARE = 0.7           # … this share of the time; else any name (E4B's long tail: p90 3.2K chars, 8 % at the cap)
 # E4B's failed edits (study E, 170): copied wrong 36 % · several matches 32 % · stale 13 % (own family) · call
@@ -270,6 +273,13 @@ class Src:
         self.qcount = Counter(s[0] for s in self.scopes)
         # def/class header lines (signature, annotations): value kinds never edit them (`-> None` → `-> 0`)
         self.header = {ln for _, _, _, n in self.scopes for ln in range(n.lineno, n.body[0].lineno)}
+        self.stmts = []                         # (first, last) line of each statement, compound ones by header only
+        for n in ast.walk(self.tree):
+            if isinstance(n, ast.stmt):
+                body = getattr(n, "body", None)
+                hi = body[0].lineno - 1 if isinstance(body, list) and body and body[0].lineno > n.lineno else n.end_lineno
+                if hi - n.lineno <= 7:
+                    self.stmts.append((n.lineno, hi))
         self.assign1 = {n.lineno: n.targets[0].id for n in ast.walk(self.tree)
                         if isinstance(n, ast.Assign) and len(n.targets) == 1 and isinstance(n.targets[0], ast.Name)
                         and n.lineno == n.end_lineno}
@@ -285,6 +295,14 @@ class Src:
             "string": has(lambda t: t.type == tokenize.STRING),
             "insert_guard": sorted(ln - 1 for ln in self.assign1)}
         self.multi = [x for x in (self._rename_local(), self._call_arg()) if x]   # one list per kind, picked 50/50
+
+    def stmt_span(self, ln):
+        """(first, last) 1-based lines of the smallest statement (or compound header) holding line ln"""
+        best = None
+        for lo, hi in self.stmts:
+            if lo <= ln <= hi and (best is None or hi - lo < best[1] - best[0]):
+                best = (lo, hi)
+        return best or (ln, ln)
 
     def seg(self, n):
         return ast.get_source_segment(self.content, n)
@@ -603,7 +621,7 @@ class Builder:
             w = minimal_unique(lines, l0, l1, content)
             if not w:
                 continue
-            a, b = w
+            a, b = self.grow(src, lines, w, l0, l1)
             new_lines = lines[a:site["l0"]] + site["new_lines"] + lines[site["l1"]:b]
             old, new = "\n".join(lines[a:b]), "\n".join(new_lines)
             intended = "\n".join(lines[:a] + new_lines + lines[b:])
@@ -611,6 +629,28 @@ class Builder:
             if r.strategy == "exact" and r.occurrences == 1 and r.new_content == intended:
                 return site, a, b, old, new, intended
         return None
+
+    def grow(self, src, lines, w, l0, l1):
+        """the unique span w grown to whole statements, then up and down to a length drawn from ANCHOR_LINES (any
+        span containing a unique span is unique); blank lines at the grown ends are dropped"""
+        a0, b0 = w
+        want = self.rng.choices(*ANCHOR_LINES)[0]
+        if want == 1:                             # the shortest unique span as it is
+            return a0, b0
+        s0, s1 = src.stmt_span(l0 + 1), src.stmt_span(l1)
+        a, b = min(a0, s0[0] - 1), max(b0, s1[1])
+        down = self.rng.random() < 0.5
+        while b - a < want and (a > 0 or b < len(lines)):
+            if (down and b < len(lines)) or a == 0:
+                b += 1
+            else:
+                a -= 1
+            down = not down
+        while b - 1 >= b0 and b - a > 1 and not lines[b - 1].strip():
+            b -= 1
+        while a < a0 and b - a > 1 and not lines[a].strip():
+            a += 1
+        return a, b
 
     def fillers(self, msgs, root, others, lib):
         """the tool outputs between the view and the edit: `grep -rn <name>` through the harness's run_command on the
@@ -802,6 +842,7 @@ def build(a):
           f"instructions name scope + first token, never a whole line · one-line kinds by weight {dict(zip(*LINE_KINDS))} · "
           f"renames to an unused name from a {len(VOCAB)}-word list · recover corruptions by weight {dict(zip(*CORRUPTIONS))} · "
           f"fillers: grep -rn share {GREP_FILLER}, else read_file · stale = an earlier edit in context changes a line the answer must cover · "
+          f"answer = shortest unique span grown to whole statements and to {dict(zip(*ANCHOR_LINES))} lines (31B's edits) · "
           f"duplicate sites (file, line, kind) and overlapping answer windows rejected · ≤ {a.file_cap} drills per file · "
           f"libraries kept level (one with 60 misses in a row counts as used up) · greps: {RARE_SHARE} a name used ≤ {RARE_NAME}× "
           f"in the library, else any, {EMPTY_GREP} of them a typo that finds "
@@ -870,7 +911,11 @@ def build(a):
             if fam == "recover":
                 st[f"corrupt_{rec['corruption']}"] += 1
             json.dump(rec, open(out / f"{rec['instance_id']}.json", "w"), ensure_ascii=False)
-    print(json.dumps({**dict(sorted(st.items())), "old_lines (shortest unique span; 6 = 6+)": dict(sorted(span.items()))}))
+    print(json.dumps({**dict(sorted(st.items())), "old_lines (answer lines; 6 = 6+)": dict(sorted(span.items()))}))
+    ok_all = sum(span.values()) or 1
+    print(f"  answer old_string lines: 1 line {100 * span[1] / ok_all:.0f} % · 2 {100 * span[2] / ok_all:.0f} % · 3-5 "
+          f"{100 * (span[3] + span[4] + span[5]) / ok_all:.0f} % · 6+ {100 * span[6] / ok_all:.0f} %   (31B's successful edits: "
+          f"1 line 33 % · 2 4 % · 3-5 32 % · 6+ 31 %)")
     ok_n = sum(v for k, v in st.items() if k.startswith("ok_")) or 1
     print(f"  multi-line old_string {sum(v for k, v in span.items() if k >= 2)} / {ok_n} · rejected: "
           + " · ".join(f"{k} {v}" for k, v in sorted(Counter(k.split(':')[1] for k in st.elements() if k.startswith('rejected_')).items())))
