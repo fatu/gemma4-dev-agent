@@ -670,6 +670,53 @@ python3 scripts/compare_runs.py runs/dev33_base_p{1,2,3,4} | head -8            
 (passes of one arm differ by up to 5–6 tasks on these 51). Next on the laptop either way: step 2 (an edit-skill LoRA
 on short, checked edit exercises, no whole 31B trajectories) and, later, step 3 (31B relabels E4B's own states).
 
+## B-3p · Step 2 of the E4B gap plan: an edit-skill LoRA from checked drills ▶ after B-3o (~1 h data + ~2 h train/gate + ~4 h A/B)
+
+Why: E4B's edit_file fails 47 % (31B 10 %), mostly bad copies of lines read several outputs back and anchors that are
+not unique; a prompt rule got it to ~30 % at best (wave 5 `edit1`), and whole 31B trajectories also teach 31B's slow
+pacing (B-3n). `train/edit_drills.py` builds short edit exercises from library files that are not eval repos (click,
+jinja2, attrs, anyio, h11, werkzeug, packaging, markdown-it, yaml, dateutil; held out: sqlalchemy, tqdm, tenacity,
+starlette), each answer checked with the harness's own edit_file, and puts the loss on the tool call only
+(`label_scope: tool_call`; the thought is E4B's own, as context). Before any agent eval, the adapter must pass an
+offline gate on the held-out drills (temperature 0): intended file ≥ 80 %, not-found at distance ≥ 2 ≤ 10 %, several
+matches ≤ 3 %, every call parsed. `train/drills_box.sh` runs it in stages; every stage ends with a 📷 line.
+
+**Which prompt:** the drills carry the system prompt and tool list of the arm the A/B will use. Default = `base`
+(latest_e4b). If B-3o picks `mech` or `all`, first build that arm (`BUILD_ONLY=1 … TAG=chk`, as in B-3o) and add
+`SYSTEM=runs/subs/<arm>_chk/prompts/system.md DROP_TOOLS=get_code_neighbors,search_similar_code,get_code_subgraph` to
+**every** drills_box.sh call below, and `ARMS=<arm>` in the A/B.
+
+```bash
+cd gemma4-dev-agent && git pull
+bash train/drills_box.sh build                 # 📷 two '== drills' lines (1500 + 300) + the tools/sampling line (CPU, ~1 min)
+GPU=0 bash train/drills_box.sh gate0           # 📷 E4B without adapter on the held-out drills (~10 min; stops every vllm serve)
+GPU=0 bash train/drills_box.sh think           # 📷 E4B's own thoughts for the training drills (temperature 0.7, ~30–60 min)
+```
+Optional, all 4 cards (~3–5 h), also the data for step 3: E4B's own rollouts on the SWE-rebench tasks of B-3n, every
+trajectory kept (failed tool calls masked), mixed in as an anchor so the drills do not shift when E4B edits:
+```bash
+LATEST=e4b ADAPTER= MODEL=google/gemma-4-E4B-it-qat-w4a16-ct TOK=google/gemma-4-E4B-it-qat-w4a16-ct ARM=base GTAG=e KEEP=all \
+  SFT=runs/sft/rebenche4b SRC=e4b_onpolicy POLICY=gemma-4-e4b-it-qat-w4a16-ct bash scripts/rebench_gen.sh gen    # 📷
+# when the 4 lanes end: the same line with `data` instead of `gen` → runs/sft/rebenche4b.rendered.jsonl   📷
+```
+Then (without the rollouts `mix` warns and trains on drills only):
+```bash
+bash train/drills_box.sh mix                   # 📷 render lines + '== mix' (drills ≤ 40 % of label tokens)
+GPU=0 bash train/drills_box.sh train           # 📷 schedule, eval[...] lines, both '== epoch' lines (r32 α32 lr 3e-5, 2 epochs)
+GPU=0 bash train/drills_box.sh gate1           # 📷 each epoch's gate beside gate0
+bash train/drills_box.sh subs                  # 📷 the gate1 winner → runs/adapters/e4b_drill + build check
+```
+**A/B only if gate1 passes** — no adapter vs `e4b_drill`, two lanes each, two passes per lane (4 vs 4), 51 tasks:
+```bash
+pkill -f "vllm serve"; sleep 5; E4B=google/gemma-4-E4B-it-qat-w4a16-ct; AR=base
+for g in 0 1 2 3; do AD=$([ $((g % 2)) = 1 ] && echo e4b_drill); nohup bash -c "for w in 1 2; do GPU=$g TAG=$([ -n "$AD" ] && echo d || echo n)$g\$w TIME_MIN=8 MAX_TURNS=80 LATEST=e4b ADAPTER=$AD MODEL=$E4B SPLIT=splits/disc_e4b.txt SUBMISSION=runs/base_lb024 ARMS=$AR bash scripts/lane.sh run; done" > runs/lane$g.log 2>&1 & done
+# after both waves:
+for k in n d; do python3 -c "import glob,json,sys; c=[sum(json.loads(l)['resolved'] for l in open(f)) for f in sorted(glob.glob(f'runs/dev33_{sys.argv[2]}_{sys.argv[1]}[0-3][12]/task_results.jsonl'))]; print(sys.argv[1], c, 'mean', sum(c)/max(1,len(c)))" $k $AR; done   # 📷
+python3 scripts/rulestats.py runs/dev33_${AR}_n01 runs/dev33_${AR}_d11   # 📷 edit_ok / edit_mismatch / first edit, without vs with the adapter
+```
+**Read it as:** the adapter counts only if its 4-pass mean beats no adapter's by ≥ 3 tasks, and rulestats shows the
+edit mismatches down without the first edit moving earlier.
+
 ## B-K · The kit line: the kit's 31B data under the kit's own prompt → an E4B LoRA, against no adapter ▶ data any time; GPU after B-3n's `gen` (~4 h wave 1 + training, ~4 h wave 2)
 
 **Why.** User decision (2026-11-03): train on the kit's data with the prompt it was generated under, and run the model

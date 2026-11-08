@@ -16,7 +16,8 @@ reply. Checks (all printed; any failure → exit 1):
   A3  reply spans: thought / text / tool-call token ranges start and end on control tokens; --sample N calls are
       decoded back and compared with target.reasoning / content / tool_calls.
   A4  mask: every token before the reply is −100 (system, user, nudge, compaction summary, tool responses), every
-      reply token incl. the stop token is a label; the label share per call is printed.
+      reply token incl. the stop token is a label; the label share per call is printed. A call with
+      `label_scope: tool_call` (train/edit_drills.py) keeps labels on its tool call + stop token only.
 Outputs quote task text → keep them under runs/ (gitignored).
 """
 import argparse
@@ -189,7 +190,7 @@ def main():
     fails, n_calls, n_targets, label_tot, packed_tot = [], 0, 0, 0, 0
     rendered, shares, a3_pool, mism, malformed = [], [], [], [], []
     n_src = {"delta": 0, "synthetic": 0, "mixed": 0, "delta!=synthetic": 0, "pack_fallback_mixed": 0, "pack_fallback_nothought": 0,
-             "content_control_tokens": 0}
+             "content_control_tokens": 0, "scope_tool_call": 0}
     ref_checked = ref_ok = 0
     for f in sorted(glob.glob(os.path.join(a.records, "*.json"))):
         rec = json.load(open(f))
@@ -257,6 +258,14 @@ def main():
                     fails.append(f"A3 {rec['instance_id']} call {c['call']}: tool_call span not closed")
             if sp[-1][0] != "stop":
                 fails.append(f"A3 {rec['instance_id']} call {c['call']}: reply does not end with a stop token")
+            if c.get("label_scope") == "tool_call":
+                # loss on the tool call (+ its stop token) only: thought and text stay context (train/edit_drills.py)
+                P = len(r["prompt_ids"])
+                for kind, s, e in sp:
+                    if kind in ("thought", "text"):
+                        r["labels"][P + s:P + e] = [-100] * (e - s)
+                kept = sum(1 for x in r["labels"][P:] if x != -100)
+                label_tot += kept - len(r["reply_ids"]); n_src["scope_tool_call"] += 1
             a3_pool.append((rec["instance_id"], c, r, sp))
             rows.append((c, r))
         # --pack: one sequence per segment when the token prefix property holds for every call
@@ -289,13 +298,13 @@ def main():
                     ids = r_last["input_ids"]; labels = [-100] * len(ids)
                     for c, r in items:
                         s = len(r["prompt_ids"]); e = len(r["input_ids"])
-                        labels[s:e] = ids[s:e]
+                        labels[s:e] = r["labels"][s:e]          # = ids[s:e] unless label_scope masked a span
                     packed_tot += sum(1 for x in labels if x != -100)
                     rendered.append({"instance_id": rec["instance_id"], "segment": seg,
                                      "calls": [c["call"] for c, _ in items], "input_ids": ids, "labels": labels})
                 else:
                     for c, r in items:
-                        packed_tot += len(r["reply_ids"])
+                        packed_tot += sum(1 for x in r["labels"][len(r["prompt_ids"]):] if x != -100)
                         rendered.append({"instance_id": rec["instance_id"], "segment": seg, "calls": [c["call"]],
                                          "input_ids": r["input_ids"], "labels": r["labels"]})
         elif rows:
@@ -334,6 +343,7 @@ def main():
           + f" · reply from delta {n_src['delta']} / synthetic {n_src['synthetic']} / mixed text+tool {n_src['mixed']} / delta≠synthetic {n_src['delta!=synthetic']}"
           + (f" e.g. {mism[:5]}" if mism else "")
           + f" · text replies with stray channel tags (stripped like the template) {n_src['content_control_tokens']}"
+          + f" · label_scope tool_call (thought/text masked) {n_src['scope_tool_call']}"
           + f" · A3 sampled {min(a.sample, len(a3_pool))}"
           + (f" · A4 label share per call min {min(shares):.3f} median {sorted(shares)[len(shares)//2]:.3f} max {max(shares):.3f}" if shares else ""))
     if a.pack and packed_tot != label_tot:

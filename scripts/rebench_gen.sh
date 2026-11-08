@@ -10,6 +10,9 @@
 # Knobs (each printed): IDS_FILE (splits/rebench_kit81.txt) · OUT (runs/rebench) · ARM (t07: our latest + temperature
 # 0.7, the plan's sampling temperature; the kit used 0.65) · PASSES (4) · GPUS ("0 1 2 3") · TIME_MIN (7: our latest's
 # literal minutes; the box is faster than an L4, so lenient — fine for data, not for scores) · MODEL (31B) · CONC_GOLD (8)
+# · KEEP (resolved | all: every trajectory, failed tool calls stay masked) · GTAG (g: pass tags g1..g4 → runs/dev33_<ARM>_g<i>) · SFT (runs/sft/rebench31b) · SRC (31b_teacher) · POLICY (the
+# 31B alias) — E4B's own rollouts (BOX_PLAN B-3p): MODEL=<E4B id> LATEST=e4b ADAPTER= ARM=base GTAG=e SFT=runs/sft/rebenche4b
+# SRC=e4b_onpolicy POLICY=gemma-4-e4b-it-qat-w4a16-ct TOK=<E4B id>
 # · TOK (tokenizer for render/parser: the 31B id; same chat template as E4B, A2-checked 2026-11-03) · MAX_TURNS (80: the
 # scorer reads max_turns: 80 from our eval_config.yaml and then prints "- Max loop iterations: 80 turns" in the task
 # prompt; the local CLI ignores eval_config, so without it the generated prompts would lack that line — as the kit's have it).
@@ -18,9 +21,10 @@ cd "$(dirname "$0")/.."
 STAGE="${1:?build|gold|gen|data}"
 IDS_FILE="${IDS_FILE:-splits/rebench_kit81.txt}"; OUT="${OUT:-runs/rebench}"; ARM="${ARM:-t07}"; PASSES="${PASSES:-4}"
 GPUS=(${GPUS:-0 1 2 3}); TIME_MIN="${TIME_MIN:-7}"; MODEL="${MODEL:-google/gemma-4-31B-it-qat-w4a16-ct}"
-TOK="${TOK:-$MODEL}"; PY=.venv-eval/bin/python; SFT=runs/sft/rebench31b; MAX_TURNS="${MAX_TURNS:-80}"
+TOK="${TOK:-$MODEL}"; PY=.venv-eval/bin/python; SFT="${SFT:-runs/sft/rebench31b}"; MAX_TURNS="${MAX_TURNS:-80}"
+GTAG="${GTAG:-g}"; KEEP="${KEEP:-resolved}"; SRC="${SRC:-31b_teacher}"; POLICY="${POLICY:-gemma-4-31b-it-qat-w4a16-ct}"
 export TASKS_FILE="$OUT/tasks.jsonl" SNAPSHOTS_DIR="$OUT/snapshots" REBENCH_SITE="$OUT/site"
-echo "rebench_gen $STAGE · ids $IDS_FILE · out $OUT · arm $ARM · passes $PASSES on GPUs ${GPUS[*]} · TIME_MIN $TIME_MIN · MAX_TURNS $MAX_TURNS · model $MODEL"
+echo "rebench_gen $STAGE · ids $IDS_FILE · out $OUT · arm $ARM · passes $PASSES on GPUs ${GPUS[*]} · TIME_MIN $TIME_MIN · MAX_TURNS $MAX_TURNS · model $MODEL · tags $GTAG<i> · keep $KEEP · sft $SFT ($SRC, $POLICY) · LATEST ${LATEST:-31b} ADAPTER ${ADAPTER-unset}"
 
 case "$STAGE" in
 build)
@@ -41,34 +45,34 @@ gen)
   for i in $(seq 1 "$PASSES"); do
     g=${GPUS[$(( (i - 1) % ${#GPUS[@]} ))]}
     if [ "$i" -gt "${#GPUS[@]}" ]; then echo "PASSES > cards: pass $i waits for nothing — run it after the first wave"; continue; fi
-    GPU=$g TAG=g$i TIME_MIN=$TIME_MIN MAX_TURNS=$MAX_TURNS MODEL=$MODEL ARMS="$ARM" SPLIT="$OUT/ok.txt" SUBMISSION="${SUBMISSION:-runs/base_lb024}" TRAJ=1 \
+    GPU=$g TAG=$GTAG$i TIME_MIN=$TIME_MIN MAX_TURNS=$MAX_TURNS MODEL=$MODEL ARMS="$ARM" SPLIT="$OUT/ok.txt" SUBMISSION="${SUBMISSION:-runs/base_lb024}" TRAJ=1 \
       nohup bash scripts/lane.sh run > "runs/rebench_lane$g.log" 2>&1 &
-    echo "  pass g$i → GPU $g · runs/dev33_${ARM}_g$i · log runs/rebench_lane$g.log"
+    echo "  pass $GTAG$i → GPU $g · runs/dev33_${ARM}_$GTAG$i · log runs/rebench_lane$g.log"
   done
   echo "📷 these lines; progress: tail -2 runs/rebench_lane*.log · when all lanes end: bash scripts/rebench_gen.sh data" ;;
 data)
   rm -rf "$SFT" "$SFT"_pass*; mkdir -p "$SFT"
   for i in $(seq 1 "$PASSES"); do
-    R="runs/dev33_${ARM}_g$i"; [ -d "$R/traj" ] || { echo "  missing $R/traj"; continue; }
-    python3 train/convert_traj.py --run "$R" --source 31b_teacher --policy gemma-4-31b-it-qat-w4a16-ct --tasks "$TASKS_FILE" \
+    R="runs/dev33_${ARM}_$GTAG$i"; [ -d "$R/traj" ] || { echo "  missing $R/traj"; continue; }
+    python3 train/convert_traj.py --run "$R" --source "$SRC" --policy "$POLICY" --tasks "$TASKS_FILE" \
       --out "${SFT}_pass$i" | tail -1
-    python3 - "$R" "${SFT}_pass$i" "$SFT" "$i" <<'PY'
+    python3 - "$R" "${SFT}_pass$i" "$SFT" "$GTAG$i" "$KEEP" <<'PY'
 import json, os, sys
-run, src, dst, i = sys.argv[1:]
+run, src, dst, i, keep = sys.argv[1:]
 res = {json.loads(l)["instance_id"]: json.loads(l) for l in open(os.path.join(run, "task_results.jsonl"))}
 kept = 0
 for f in sorted(os.listdir(src)):
     rec = json.load(open(os.path.join(src, f)))
-    if rec.get("resolved"):
-        json.dump(rec, open(os.path.join(dst, f"{rec['instance_id']}.g{i}.json"), "w"), ensure_ascii=False); kept += 1
-print(f"  pass g{i}: resolved {sum(1 for r in res.values() if r.get('resolved'))} / {len(res)} tasks → {kept} records kept")
+    if keep == "all" or rec.get("resolved"):
+        json.dump(rec, open(os.path.join(dst, f"{rec['instance_id']}.{i}.json"), "w"), ensure_ascii=False); kept += 1
+print(f"  pass {i}: resolved {sum(1 for r in res.values() if r.get('resolved'))} / {len(res)} tasks → {kept} records kept (KEEP={keep})")
 PY
   done
   $PY - "$SFT" <<'PY'
 import glob, json, sys, collections
 recs = [json.load(open(f)) for f in glob.glob(sys.argv[1] + "/*.json")]
 tasks = collections.Counter(r["instance_id"] for r in recs)
-print(f"== resolved trajectories {len(recs)} on {len(tasks)} tasks (kit: 103 on 55) · per task {dict(collections.Counter(tasks.values()))}")
+print(f"== trajectories kept {len(recs)} on {len(tasks)} tasks (kit: 103 on 55) · per task {dict(collections.Counter(tasks.values()))}")
 PY
   $PY train/render.py "$SFT" --tokenizer "$TOK" --pack --sample 200 --out "$SFT.rendered.jsonl" > "$SFT.render.log" 2>&1
   grep -E "^calls|^RESULT" "$SFT.render.log" | cut -c1-260
