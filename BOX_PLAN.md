@@ -705,14 +705,23 @@ LATEST=e4b ADAPTER= MODEL=google/gemma-4-E4B-it-qat-w4a16-ct TOK=google/gemma-4-
 Then (without the rollouts `mix` warns and trains on drills only):
 ```bash
 bash train/drills_box.sh mix                   # 📷 render lines + '== mix' (drills ≤ 40 % of label tokens)
-GPU=0 bash train/drills_box.sh train           # 📷 schedule, eval[...] lines, both '== epoch' lines (r32 α32 lr 3e-5, 2 epochs)
-GPU=0 bash train/drills_box.sh gate1           # 📷 each epoch's gate beside gate0
-bash train/drills_box.sh subs                  # 📷 the gate1 winner → runs/adapters/e4b_drill + build check
+# two learning rates at the same time, one card each; r16 α16 (scale 1) are the defaults since 2026-11-08, 2 epochs each
+GPU=0 LR=1e-5 NAME=e4b_drill_lr1 nohup bash train/drills_box.sh train > runs/drills_train_lr1.log 2>&1 &
+GPU=1 LR=3e-5 NAME=e4b_drill_lr3 nohup bash train/drills_box.sh train > runs/drills_train_lr3.log 2>&1 &
+# when both have ended:
+grep -hE "^drills_box|schedule|eval\[|== epoch" runs/drills_train_lr1.log runs/drills_train_lr3.log | cut -c1-200   # 📷 r 16 · alpha 16 · lr in both sft lines, schedules, eval lines, four '== epoch' lines
+for n in lr1 lr3; do GPU=0 NAME=e4b_drill_$n bash train/drills_box.sh gate1; done   # 📷 both blocks: each epoch's gate beside gate0 (one after the other: gate1 stops every vllm serve)
+NAME=e4b_drill_lr3 bash train/drills_box.sh subs   # 📷 NAME = the learning rate whose best epoch passes the gate (both pass: the higher 'intended'; none: stop here)
 ```
-**A/B only if gate1 passes** — no adapter vs `e4b_drill`, two lanes each, two passes per lane (4 vs 4), 51 tasks:
+Why two learning rates and r16 α16 (Kaggle survey, 2026-11-08: 315 forum topics, 490 notebooks): nobody's LoRA beat
+no adapter in a matched comparison at any rank (4–64) or lr (8e-6–2e-4); α/r = 2 looped (a 31B LB 0.0); our 3e-5 at
+r32 α32 changed B-3n's behaviour strongly (loops) and fitted the first drills to a validation NLL of 0.035; our 1e-4 canary lost
+thinking in 20 steps; the one E4B paired point (a public kit) used lr 2e-5 at scale 0.5. α = r keeps the scale at 1 so
+the lr is the only strength knob, and a smaller rank leaves the scorer more KV cache (one r16 adapter: 27.7K tokens).
+**A/B only if gate1 passes** — no adapter vs the adapter `subs` built (`$NAME`), two lanes each, two passes per lane (4 vs 4), 51 tasks:
 ```bash
-pkill -f "vllm serve"; sleep 5; E4B=google/gemma-4-E4B-it-qat-w4a16-ct; AR=base
-for g in 0 1 2 3; do AD=$([ $((g % 2)) = 1 ] && echo e4b_drill); nohup bash -c "for w in 1 2; do GPU=$g TAG=$([ -n "$AD" ] && echo d || echo n)$g\$w TIME_MIN=8 MAX_TURNS=80 LATEST=e4b ADAPTER=$AD MODEL=$E4B SPLIT=splits/disc_e4b.txt SUBMISSION=runs/base_lb024 ARMS=$AR bash scripts/lane.sh run; done" > runs/lane$g.log 2>&1 & done
+pkill -f "vllm serve"; sleep 5; E4B=google/gemma-4-E4B-it-qat-w4a16-ct; AR=base; NAME=e4b_drill_lr3   # NAME = the adapter subs built
+for g in 0 1 2 3; do AD=$([ $((g % 2)) = 1 ] && echo $NAME); nohup bash -c "for w in 1 2; do GPU=$g TAG=$([ -n "$AD" ] && echo d || echo n)$g\$w TIME_MIN=8 MAX_TURNS=80 LATEST=e4b ADAPTER=$AD MODEL=$E4B SPLIT=splits/disc_e4b.txt SUBMISSION=runs/base_lb024 ARMS=$AR bash scripts/lane.sh run; done" > runs/lane$g.log 2>&1 & done
 # after both waves:
 for k in n d; do python3 -c "import glob,json,sys; c=[sum(json.loads(l)['resolved'] for l in open(f)) for f in sorted(glob.glob(f'runs/dev33_{sys.argv[2]}_{sys.argv[1]}[0-3][12]/task_results.jsonl'))]; print(sys.argv[1], c, 'mean', sum(c)/max(1,len(c)))" $k $AR; done   # 📷
 python3 scripts/rulestats.py runs/dev33_${AR}_n01 runs/dev33_${AR}_d11   # 📷 edit_ok / edit_mismatch / first edit, without vs with the adapter

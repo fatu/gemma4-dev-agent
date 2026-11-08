@@ -14,6 +14,9 @@
 # · DROP_TOOLS (for a tools6 arm) · TOOLS_FROM (a traj log; default the first runs/*/traj/*.jsonl) · OWN (rebenche4b
 # rendered file) · DRILL_SHARE (0.4) · TRAIN_PY (.venv-train/bin/python) · DQ (bf16 base) · EPOCHS LR ACCUM R ALPHA ·
 # NAME (e4b_drill) · EPOCH (subs: default the gate1 winner, else the lower held-out NLL).
+# LoRA defaults r16 α16 (scale 1, lr the only strength knob; 2026-11-08, from the Kaggle survey in the private notes:
+# α/r 2 looped, rank 4–64 made no difference, a smaller rank leaves the scorer more KV cache). Train two NAMEs with
+# LR=1e-5 and LR=3e-5 on two cards (BOX_PLAN B-3p) and let gate1 pick.
 set -uo pipefail
 cd "$(dirname "$0")/.."
 STEP="${1:?build|gate0|think|mix|train|gate1|subs}"; T0=$(date +%s)
@@ -28,7 +31,7 @@ OWN="${OWN:-runs/sft/rebenche4b.rendered.jsonl}"; DRILL_SHARE="${DRILL_SHARE:-0.
 DQ="${DQ:-runs/dequant/gemma-4-E4B-dq}"; NAME="${NAME:-e4b_drill}"; OUTD="runs/sft_out/$NAME"
 E4B=google/gemma-4-E4B-it-qat-w4a16-ct; ALIAS=gemma-4-e4b-it-qat-w4a16-ct; TOK="${TOK:-$E4B}"
 D=runs/sft/drills; H=runs/sft/drills_heldout; G=runs/drills
-SFT="--base $DQ --max-len 32768 --epochs ${EPOCHS:-2} --lr ${LR:-3e-5} --warmup 0.05 --accum ${ACCUM:-16} --r ${R:-32} --alpha ${ALPHA:-32} --clip 1.0 --eval-every 25 --seed 0"
+SFT="--base $DQ --max-len 32768 --epochs ${EPOCHS:-2} --lr ${LR:-3e-5} --warmup 0.05 --accum ${ACCUM:-16} --r ${R:-16} --alpha ${ALPHA:-16} --clip 1.0 --eval-every 25 --seed 0"
 echo "drills_box $STEP · GPU $GPU · train $N_TRAIN from $TRAIN_LIBS · held out $N_HELD from $HELD_LIBS · system $SYSTEM · drop tools [${DROP_TOOLS}] · tools from $TOOLS_FROM · own $OWN · drill share ≤ $DRILL_SHARE · sft: $SFT · name $NAME"
 mkdir -p "$G"
 
