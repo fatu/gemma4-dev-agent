@@ -631,7 +631,10 @@ lenient than the scorer — fine for collecting solved trajectories, not for rea
 **Next (laptop decides after the photos):** train E4B on `runs/sft/rebench31b.rendered.jsonl` on the box
 (a `train_box.sh` stage) and test it against no adapter on all 129 tasks.
 
-## B-3o · Step 1 of the E4B gap plan: scaffold arms, no training, the 51-task split ▶ next (~5–6 h, 4 lanes)
+## B-3o · Step 1 of the E4B gap plan: scaffold arms, no training, the 51-task split ✓ done 2026-11-08: no arm counts
+
+**Result (2026-11-08, 4 passes each):** base 14.0 (12 · 14 · 16 · 14) · mech 13.5 (13 · 12 · 16 · 13) · all 14.0 (15 · 14 · 13 · 14) / 51 →
+neither reaches base + 3; B-3p uses the base prompt. RESULTS.md has the row.
 
 Why (5-agent laptop study, 2026-11-07, private notes): of the 31 tasks 31B solves and E4B misses, E4B finds the right
 file and writes the wrong fix in 17, picks the wrong file or place in 11, and loses 3 to failed edits; the budget, the
