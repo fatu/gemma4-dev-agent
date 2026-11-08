@@ -43,7 +43,8 @@ copied from the read_file output. Every change is a small, bug-fix-like edit tha
              not in a docstring/comment/string) renamed to an unused name from VOCAB, so the code keeps working ·
              call_arg: "in the first call to `f(…)`, change the argument `k=1` to `k=2`" (the answer is the whole
              2-6-line call)
-Rejected and counted by reason: no_site · leak (a whole old line ≥ 6 chars in the task text) · syntax (the intended file
+Rejected and counted by reason: dup (same file, line, kind) · overlap (answer window overlaps an earlier drill of the
+file; ≤ --file-cap drills per file, libraries kept level) · no_site · leak (a whole old line ≥ 6 chars in the task text) · syntax (the intended file
 must ast.parse; no `return_new x`) · window (the view must show the old lines and the scope's def/class line, ≤ 150
 lines, not truncated) · corrupt · apply. Scope names must be unique in the file.
 Checks: every answer is applied with the harness's edit_file on a copy and must give the intended file (strategy
@@ -82,8 +83,11 @@ DEFAULT_SAMPLING = {"temperature": 0.2, "top_p": 0.95, "max_completion_tokens": 
                     "enable_thinking": True, "thinking_token_budget": 4096}             # latest_e4b sampling.yaml
 FAMILIES = (["copy", "anchor", "recover", "stale"], [0.4, 0.15, 0.3, 0.15])
 # tool outputs between the view and the edit: E4B's not-found rate is 13 % at 0, 38 % at 2-3, 45 % at 4+ (study E)
-DISTANCES = ([0, 1, 2, 3, 4, 5, 6, 7, 8, 9], [0.08, 0.1, 0.1, 0.12, 0.12, 0.12, 0.1, 0.1, 0.08, 0.08])  # p50 ≈ real 8K+
+DISTANCES = (list(range(12)), [0.05, 0.07, 0.08, 0.09, 0.1, 0.1, 0.1, 0.1, 0.09, 0.08, 0.07, 0.07])   # tokens p50 ≈ 8K
 GREP_FILLER = 0.5          # share of those outputs that are `grep -rn` results (the rest: read_file of another file)
+EMPTY_GREP = 0.18          # share of the greps that find nothing (a one-letter typo; harness CommandError, exit 1), as E4B's
+RARE_NAME = 6              # grep a name the library uses at most this often (E4B's greps: median 130 chars of output) …
+RARE_SHARE = 0.7           # … this share of the time; else any name (E4B's long tail: p90 3.2K chars, 8 % at the cap)
 # E4B's failed edits (study E, 170): copied wrong 36 % · several matches 32 % · stale 13 % (own family) · call
 # syntax / JSON wrapper 11 % → the recover corruptions, drawn by weight before the site is chosen
 CORRUPTIONS = (["token_change", "dropped_line", "reformat", "short_nonunique", "json_wrapper", "quote_wrap",
@@ -527,6 +531,7 @@ class Builder:
     def __init__(self, a):
         self.a, self.rng, self.n = a, random.Random(a.seed), 0
         self.src, self.why = {}, None          # per-file analysis cache · why the last exercise was rejected
+        self.lib_words = {}                    # lib → Counter of identifiers in its files (set by build)
         setup = json.loads(open(a.tools_from).readline())["setup"]
         drop = set(filter(None, a.drop_tools.split(",")))
         self.tools = [t for t in setup["tool_schemas"] if t["function"]["name"] not in drop]
@@ -607,7 +612,7 @@ class Builder:
                 return site, a, b, old, new, intended
         return None
 
-    def fillers(self, msgs, root, others):
+    def fillers(self, msgs, root, others, lib):
         """the tool outputs between the view and the edit: `grep -rn <name>` through the harness's run_command on the
         drill workspace (GREP_FILLER of them) or a read_file window of another file → counts by kind"""
         from swegemma.tools import workspace as ws
@@ -615,14 +620,26 @@ class Builder:
         rng, got = self.rng, Counter()
         for orel, oc in others:
             if rng.random() < GREP_FILLER:
+                words = self.lib_words.get(lib, Counter())
                 names = sorted({t for t in re.findall(r"\b[a-z_][a-z0-9_]{4,}\b", oc) if not keyword.iskeyword(t)})
                 if names:
-                    cmd = f'grep -rn "{rng.choice(names)}" {orel.split("/")[0]}/ --include="*.py"'
+                    empty = rng.random() < EMPTY_GREP
+                    if empty:                     # a one-letter typo of a real name: grep finds nothing
+                        nm = rng.choice(names)
+                        j = rng.randrange(1, len(nm))
+                        nm = nm[:j] + ("x" if nm[j] != "x" else "q") + nm[j + 1:]
+                    else:
+                        rare = [n for n in names if words[n] <= RARE_NAME] if rng.random() < RARE_SHARE else []
+                        nm = rng.choice(rare or names)
+                    cmd = f'grep -rn "{nm}" {orel.split("/")[0]}/ --include="*.py"'
                     res = run_command(_Ctx(root, run=True), cmd)
-                    if json.loads(res).get("status") == "ok":
+                    r = json.loads(res)
+                    none = r.get("status") == "error" and (r.get("details") or {}).get("exit_code") == 1 \
+                        and not (r.get("details") or {}).get("stdout")
+                    if (r.get("status") == "ok" and not empty) or (empty and none):
                         cid, am = self.call("run_command", {"command": cmd})
                         msgs += [am, {"role": "tool", "tool_call_id": cid, "content": tool_msg(res)}]
-                        got["grep"] += 1
+                        got["grep_empty" if empty else "grep"] += 1
                         continue
             ol = oc.split("\n")
             ds = rng.randint(1, max(1, len(ol) - 60))
@@ -709,7 +726,7 @@ class Builder:
                 self.why = "apply"
                 return None
             msgs += [am, {"role": "tool", "tool_call_id": cid, "content": tool_msg(res)}]
-        got = self.fillers(msgs, root, others)
+        got = self.fillers(msgs, root, others, lib)
         edit = {"id": None, "name": "edit_file",
                 "args": json.dumps({"filepath": rel, "new_string": new, "old_string": old}, ensure_ascii=False)}
         tgt = lambda tc: {"reasoning": None, "content": "", "tool_calls": [tc], "finish_reason": "tool_calls"}
@@ -722,6 +739,7 @@ class Builder:
                "patch_sha": None, "source": "edit_drill", "resolved": None, "policy_model": self.model,
                "sampling": dict(self.sampling, max_tool_calls=28, max_time_minutes=7), "env_fingerprint": None,
                "family": family, "distance": len(others), "fillers": dict(got), "site_line": i + 1, "old_lines": b - a,
+               "window": [a + 1, b],
                "mutation": site["kind"], "scope": site["scope"], "verify": verify, "tools": self.tools}
         if pre:
             rec["pre_kind"] = pre[2]["kind"]
@@ -784,7 +802,10 @@ def build(a):
           f"instructions name scope + first token, never a whole line · one-line kinds by weight {dict(zip(*LINE_KINDS))} · "
           f"renames to an unused name from a {len(VOCAB)}-word list · recover corruptions by weight {dict(zip(*CORRUPTIONS))} · "
           f"fillers: grep -rn share {GREP_FILLER}, else read_file · stale = an earlier edit in context changes a line the answer must cover · "
-          f"duplicate sites (file, line, kind) rejected · out {a.out}")
+          f"duplicate sites (file, line, kind) and overlapping answer windows rejected · ≤ {a.file_cap} drills per file · "
+          f"libraries kept level (one with 60 misses in a row counts as used up) · greps: {RARE_SHARE} a name used ≤ {RARE_NAME}× "
+          f"in the library, else any, {EMPTY_GREP} of them a typo that finds "
+          f"nothing · out {a.out}")
     b = Builder(a)
     print(f"  tools {b.tool_names} · sampling {b.sampling} · policy model {b.model}")
     files = {lib: lib_files(lib, a.min_lines) for lib in libs}
@@ -804,15 +825,26 @@ def build(a):
                 (roots[lib] / rel).write_text(c)
         libs_ok = [lib for lib in libs if files[lib]]
         weights = {lib: [len(c) ** 0.5 for _, c in files[lib]] for lib in libs_ok}   # bigger files more often
-        while sum(v for k, v in st.items() if k.startswith("ok_")) < a.n and st["tried"] < a.n * 6:
-            lib = b.rng.choice(libs_ok)                           # libraries equally often
-            rel, c = b.rng.choices(files[lib], weights[lib])[0]
+        b.lib_words = {lib: Counter(re.findall(r"\b[a-z_][a-z0-9_]{4,}\b", "\n".join(c for _, c in files[lib])))
+                       for lib in libs_ok}
+        per_file, per_lib, wins, misses = Counter(), Counter(), {}, Counter()
+        while sum(v for k, v in st.items() if k.startswith("ok_")) < a.n and st["tried"] < a.n * 12:
+            avail = {lib: [k for k, (r2, _) in enumerate(files[lib]) if per_file[r2] < a.file_cap] for lib in libs_ok}
+            libs_av = [lib for lib in libs_ok if avail[lib] and misses[lib] < 60]   # 60 misses in a row: used up
+            if not libs_av:
+                print(f"  every library is used up (--file-cap {a.file_cap}, 60 misses in a row); stopping early")
+                break
+            low = min(per_lib[lib] for lib in libs_av)            # the library with the fewest drills so far
+            lib = b.rng.choice([x for x in libs_av if per_lib[x] == low])
+            k = b.rng.choices(avail[lib], [weights[lib][j] for j in avail[lib]])[0]
+            rel, c = files[lib][k]
             fam = b.rng.choices(*FAMILIES)[0]
             dist = b.rng.choices(*DISTANCES)[0]
             others = [(r2, c2) for r2, c2 in files[lib] if r2 != rel]
             dis = [b.rng.choice(others) for _ in range(dist)] if others else []
             st["tried"] += 1
             rec = b.exercise(lib, rel, c, roots[lib], dis, fam)
+            misses[lib] += 1
             if rec is None:
                 st[f"rejected_{fam}:{b.why}"] += 1
                 continue
@@ -820,7 +852,15 @@ def build(a):
             if key in seen:
                 st[f"rejected_{fam}:dup"] += 1
                 continue
+            w0, w1 = rec["window"]
+            if any(w0 <= y and x <= w1 for x, y in wins.get(rel, [])):
+                st[f"rejected_{fam}:overlap"] += 1            # the same lines as an earlier drill of this file
+                continue
             seen.add(key)
+            wins.setdefault(rel, []).append((w0, w1))
+            misses[lib] = 0
+            per_file[rel] += 1
+            per_lib[lib] += 1
             for k, v in rec["fillers"].items():
                 st[f"filler_{k}"] += v
             st[f"ok_{fam}"] += 1
@@ -1029,6 +1069,7 @@ def main():
     b.add_argument("--drop-tools", default="", help="comma list, e.g. the 3 graph tools for a tools6 arm")
     b.add_argument("--system", default="scripts/arms/latest_e4b/prompts/system.md")
     b.add_argument("--min-lines", type=int, default=60)
+    b.add_argument("--file-cap", type=int, default=15, help="at most this many drills per source file")
     b.add_argument("--multi", type=float, default=0.3, help="share of copy/recover drills drawn from multi-line sites")
     b.add_argument("--out", required=True)
     d = sub.add_parser("decode")
