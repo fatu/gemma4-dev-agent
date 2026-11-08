@@ -691,7 +691,7 @@ matches ≤ 3 %, every call parsed. `train/drills_box.sh` runs it in stages; eve
 
 ```bash
 cd gemma4-dev-agent && git pull
-bash train/drills_box.sh build                 # 📷 two '== drills' lines (1500 + 300) + the two 'multi-line … rejected' lines + the tools/sampling line (CPU, ~5–8 min)
+bash train/drills_box.sh build                 # 📷 two '== drills' lines (1500 + 300) + the two 'multi-line … rejected' lines + the tools/sampling line (CPU, ~10–15 min)
 GPU=0 bash train/drills_box.sh gate0           # 📷 E4B without adapter on the held-out drills (~10 min; stops every vllm serve)
 GPU=0 bash train/drills_box.sh think           # 📷 E4B's own thoughts for the training drills (temperature 0.7, ~30–60 min)
 ```
@@ -716,9 +716,11 @@ for g in 0 1 2 3; do AD=$([ $((g % 2)) = 1 ] && echo e4b_drill); nohup bash -c "
 # after both waves:
 for k in n d; do python3 -c "import glob,json,sys; c=[sum(json.loads(l)['resolved'] for l in open(f)) for f in sorted(glob.glob(f'runs/dev33_{sys.argv[2]}_{sys.argv[1]}[0-3][12]/task_results.jsonl'))]; print(sys.argv[1], c, 'mean', sum(c)/max(1,len(c)))" $k $AR; done   # 📷
 python3 scripts/rulestats.py runs/dev33_${AR}_n01 runs/dev33_${AR}_d11   # 📷 edit_ok / edit_mismatch / first edit, without vs with the adapter
+for k in n d; do echo "$k drill-template lines added in patches: $(cat runs/dev33_${AR}_${k}[0-3][12]/patches/*.patch 2>/dev/null | grep -cE '^\+(.*must not be empty|.*assert [A-Za-z_]+ is not None|\s*if [A-Za-z_]+ is None:$)')"; done   # 📷
 ```
 **Read it as:** the adapter counts only if its 4-pass mean beats no adapter's by ≥ 3 tasks, and rulestats shows the
-edit mismatches down without the first edit moving earlier.
+edit mismatches down without the first edit moving earlier, and the drill-template line count (the drills' insert_guard
+lines) is not clearly above no adapter's — a rise means the adapter copies the drills' content, not their skill.
 
 ## B-K · The kit line: the kit's 31B data under the kit's own prompt → an E4B LoRA, against no adapter ▶ data any time; GPU after B-3n's `gen` (~4 h wave 1 + training, ~4 h wave 2)
 

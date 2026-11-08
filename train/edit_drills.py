@@ -26,13 +26,17 @@ Families (record field `family`):
            quote wrap, dropped line, re-wrapped block, JSON wrapper, trailing backslash, too-short anchor) and the
            harness's real error → target 1 reads the lines again, target 2 is the correct edit
 Task text (record field `mutation`): the instruction names the site by its def/class scope and the first occurrence of
-a token in that scope, never by quoting a line, so old_string has to be copied from the read_file output:
-  one line   rename / constant / number / string: "in `Cls.meth`, change the first `True` to `False`" · insert_after:
-             "add the line `logger.debug(...)` right after the line that holds the first `name`"
-  multi-line (--multi of copy/recover, the two kinds 50/50) rename_local: "in `func`, rename the local variable `v` to
-             `v_new` everywhere in that function" (every use an ast.Name, 2-6 lines, not in a docstring/comment/string) ·
-             call_arg: "in the first call to `f(…)`, change the argument `k=1` to `k=2`" (the answer is the whole 2-6-line
-             call)
+a token (or a parameter / callee / variable name) in that scope, never by quoting a line, so old_string has to be
+copied from the read_file output. Every change is a small, bug-fix-like edit that keeps the file valid Python:
+  one line (drawn by LINE_KINDS weight) operator `<`→`<=`, `==`→`!=` … · logic `and`↔`or`, delete `not`, `is`→`is not` ·
+             constant True/False/None · number +1 · string first-letter case · default ("change the default value of the
+             parameter `p` from `1` to `2`") · swap_args (the first two positional arguments of the first call to `f`) ·
+             insert_guard (after the first assignment to `x` in a function: `if x is None: return None`, `if not x: raise
+             ValueError(...)` or `assert x is not None`, in the file's indentation)
+  multi-line (--multi of copy/recover, the two kinds 50/50) rename_local: every use of a local (all ast.Name, 2-6 lines,
+             not in a docstring/comment/string) renamed to an unused name from VOCAB, so the code keeps working ·
+             call_arg: "in the first call to `f(…)`, change the argument `k=1` to `k=2`" (the answer is the whole
+             2-6-line call)
 Rejected and counted by reason: no_site · leak (a whole old line ≥ 6 chars in the task text) · syntax (the intended file
 must ast.parse; no `return_new x`) · window (the view must show the old lines and the scope's def/class line, ≤ 150
 lines, not truncated) · corrupt · apply. Scope names must be unique in the file.
@@ -174,7 +178,23 @@ def code_lines(content):
 
 IDENT = re.compile(r"[a-z_][a-z0-9_]*")
 CONST_SWAP = {"True": "False", "False": "True", "None": "0"}
-INSERT = 'logger.debug("checkpoint")'
+OP_SWAP = {"<": "<=", "<=": "<", ">": ">=", ">=": ">", "==": "!=", "!=": "=="}
+LOGIC = {"and": "or", "or": "and"}
+# one-line kinds, drawn by weight before a line is chosen (rename_local / call_arg come from --multi)
+LINE_KINDS = (["operator", "logic", "constant", "number", "string", "default", "swap_args", "insert_guard"],
+              [18, 12, 10, 6, 3, 8, 6, 12])
+# realistic replacement names for rename_local (a name already in the file as a word is never used)
+VOCAB = ["item", "entry", "record", "payload", "current", "target", "source", "options", "config", "handler", "buffer",
+         "token", "node", "parts", "spec", "info", "meta", "pending", "output", "chunk_data", "index", "count", "total",
+         "label", "field", "element", "candidate", "selected", "matched", "resolved", "parsed", "raw_value", "normalized",
+         "prepared", "remaining", "extra", "fallback", "position", "offset", "segment", "fragment", "context", "state",
+         "outcome", "response", "request_obj", "message", "pieces", "values", "mapping", "lookup", "cursor", "limit",
+         "window", "batch", "group_key", "attempt", "step", "marker", "prefix_text", "suffix_text", "base_value"]
+# insert_guard templates on the first assignment to x inside a function: (lines, how the task names them)
+GUARDS = [(["if {x} is None:", "{u}return None"], "two lines: `if {x} is None:` and, one level deeper, `return None`"),
+          (["if not {x}:", '{u}raise ValueError("{x} must not be empty")'],
+           'two lines: `if not {x}:` and, one level deeper, `raise ValueError("{x} must not be empty")`'),
+          (["assert {x} is not None"], "the line `assert {x} is not None`")]
 
 
 def plain_name(s, min_len):
@@ -186,15 +206,37 @@ def bcol(line, col):
     return len(line.encode()[:col].decode(errors="ignore"))
 
 
+def flip_case(lit):
+    """a short string literal with its first letter's case swapped ('Environment' → 'environment')"""
+    q, body = lit[0], lit[1:-1]
+    return q + body[0].swapcase() + body[1:] + q
+
+
+def const_swap(node, seg):
+    """the replacement text for a constant (bool / None / int / short word string), or None"""
+    v = node.value
+    if isinstance(v, bool) or v is None:
+        return CONST_SWAP[seg]
+    if isinstance(v, int) and seg.isdigit():
+        return str(v + 1)
+    if isinstance(v, str) and re.fullmatch(r"(['\"])[A-Za-z][^'\"\\]{2,40}\1", seg):
+        return flip_case(seg)
+    return None
+
+
 class Src:
-    """one library file: tokens, def/class scopes, simple one-line statements and the multi-line sites. The instruction
-    names a site by its scope and by the first occurrence of a token in that scope, never by quoting a whole line, so
-    the old_string has to come from the read_file output"""
+    """one library file: tokens, def/class scopes and the candidate sites. The task names a site by its scope and by the
+    first occurrence of a token (or a parameter / callee / variable name) in that scope, never by quoting a whole line,
+    so the old_string has to come from the read_file output. Every change keeps the file valid Python, and the renames
+    keep it working (all uses of a local, to a name the file does not use)"""
     def __init__(self, content):
         self.content, self.lines = content, content.split("\n")
         self.tree = ast.parse(content)
         self.toks = [t for t in tokenize.generate_tokens(io.StringIO(content).readline)
-                     if t.type in (tokenize.NAME, tokenize.NUMBER, tokenize.STRING)]
+                     if t.type in (tokenize.NAME, tokenize.NUMBER, tokenize.STRING)
+                     or (t.type == tokenize.OP and t.string in OP_SWAP)]
+        self.words = set(re.findall(r"[A-Za-z_]\w*", content))
+        self.unit = "\t" if any(l.startswith("\t") for l in self.lines) else "    "
         self.scopes = []                        # (qualname, first line, last line, node), 1-based, outer before inner
 
         def walk(node, prefix):
@@ -207,17 +249,23 @@ class Src:
                     walk(ch, prefix)
         walk(self.tree, "")
         self.qcount = Counter(s[0] for s in self.scopes)
-        self.simple = {n.lineno for n in ast.walk(self.tree)
-                       if isinstance(n, (ast.Expr, ast.Assign, ast.AugAssign, ast.AnnAssign)) and n.lineno == n.end_lineno}
+        self.assign1 = {n.lineno: n.targets[0].id for n in ast.walk(self.tree)
+                        if isinstance(n, ast.Assign) and len(n.targets) == 1 and isinstance(n.targets[0], ast.Name)
+                        and n.lineno == n.end_lineno}
+        self.calls = [n for n in ast.walk(self.tree) if isinstance(n, ast.Call)]
+        self.lists = {"default": self._default(), "swap_args": self._swap_args()}
         self.multi = [x for x in (self._rename_local(), self._call_arg()) if x]   # one list per kind, picked 50/50
 
+    def seg(self, n):
+        return ast.get_source_segment(self.content, n)
+
     def scope(self, ln):
-        """(qualname, first line, last line) of the innermost def/class holding line ln; module = (None, 1, n)"""
+        """(qualname, first line, last line, node) of the innermost def/class holding line ln; module = (None, 1, n, None)"""
         best = None
         for s in self.scopes:
             if s[1] <= ln <= s[2] and (best is None or s[1] >= best[1]):
                 best = s
-        return (best[0], best[1], best[2]) if best else (None, 1, len(self.lines))
+        return best if best else (None, 1, len(self.lines), None)
 
     def first(self, t, lo, hi):
         """is token t the first token with its type and text in lines lo..hi?"""
@@ -226,48 +274,127 @@ class Src:
     def where(self, q):
         return f"in `{q}`" if q else "at module level"
 
-    def line_site(self, i, rng):
-        """a one-line change at 0-based line i, described by scope + first token"""
+    def site(self, kind, l0, l1, new_lines, q, lo, desc):
+        return {"kind": kind, "l0": l0, "l1": l1, "new_lines": new_lines, "scope": q, "scope_line": lo if q else None,
+                "desc": desc}
+
+    def first_call(self, c, lo, hi):
+        """is call c the first call to its callee in lines lo..hi? → the callee text, or None"""
+        callee = self.seg(c.func)
+        if not callee or "\n" in callee or len(callee) > 40:
+            return None
+        same = [x for x in self.calls if lo <= x.lineno <= hi and self.seg(x.func) == callee]
+        return callee if min(same, key=lambda x: (x.lineno, x.col_offset)) is c else None
+
+    def line_site(self, i, rng, kind):
+        """a one-line change of the given kind at 0-based line i"""
         li, line = i + 1, self.lines[i]
-        q, lo, hi = self.scope(li)
+        q, lo, hi, node = self.scope(li)
         if q and self.qcount[q] != 1:
             return None
         toks = [t for t in self.toks if t.start[0] == li == t.end[0] and self.first(t, lo, hi)]
-        opts = []
-        for t in toks:
-            if t.type == tokenize.NAME and t.string in CONST_SWAP:
-                opts.append(("constant", t, CONST_SWAP[t.string]))
-            elif t.type == tokenize.NAME and plain_name(t.string, 4):
-                opts.append(("rename", t, t.string + "_new"))
-            elif t.type == tokenize.NUMBER and t.string.isdigit():
-                opts.append(("number", t, str(int(t.string) + 1)))
-            elif t.type == tokenize.STRING and re.fullmatch(r"(['\"])[A-Za-z][^'\"\\]{2,40}\1", t.string):
-                opts.append(("string", t, t.string[:-1] + "_v2" + t.string[-1]))
-        anchors = [t for t in toks if t.type == tokenize.NAME and plain_name(t.string, 4)] if li in self.simple else []
-        if anchors:
-            opts.append(("insert_after", rng.choice(anchors), None))
+        w = self.where(q)
+        if kind == "insert_guard":
+            x = self.assign1.get(li)
+            if not x or not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) or not plain_name(x, 3):
+                return None
+            if not any(t.type == tokenize.NAME and t.string == x and t.start[1] < line.find("=") for t in toks):
+                return None                       # not the first assignment to x in this scope
+            lines_t, said = rng.choice(GUARDS)
+            ind = line[:len(line) - len(line.lstrip())]
+            new = [ind + l.format(x=x, u=self.unit) for l in lines_t]
+            return self.site(kind, i, i + 1, [line] + new, q, lo,
+                             f"{w}, right after the first assignment to `{x}`, add {said.format(x=x)}")
+        if kind == "operator":
+            opts = [(t, OP_SWAP[t.string]) for t in toks if t.type == tokenize.OP]
+        elif kind == "logic":
+            opts = [(t, LOGIC[t.string]) for t in toks if t.type == tokenize.NAME and t.string in LOGIC]
+            opts += [(t, "") for t in toks if t.type == tokenize.NAME and t.string == "not"]
+            nxt = lambda t: line[t.end[1]:].lstrip()
+            opts += [(t, "is not") for t in toks if t.type == tokenize.NAME and t.string == "is" and not nxt(t).startswith("not")]
+        elif kind == "constant":
+            opts = [(t, CONST_SWAP[t.string]) for t in toks if t.type == tokenize.NAME and t.string in CONST_SWAP]
+        elif kind == "number":
+            opts = [(t, str(int(t.string) + 1)) for t in toks if t.type == tokenize.NUMBER and t.string.isdigit()]
+        elif kind == "string":
+            opts = [(t, flip_case(t.string)) for t in toks
+                    if t.type == tokenize.STRING and re.fullmatch(r"(['\"])[A-Za-z][^'\"\\]{2,40}\1", t.string)]
+        else:
+            return None
         if not opts:
             return None
-        kind, t, nt = rng.choice(opts)
-        site = {"kind": kind, "l0": i, "l1": i + 1, "scope": q, "scope_line": lo if q else None}
-        if kind == "insert_after":
-            ind = line[:len(line) - len(line.lstrip())]
-            return dict(site, new_lines=[line, ind + INSERT],
-                        desc=f"{self.where(q)}, add the line `{INSERT}` right after the line that holds the first `{t.string}`")
-        verb = "rename" if kind == "rename" else "change"
-        return dict(site, new_lines=[line[:t.start[1]] + nt + line[t.end[1]:]],
-                    desc=f"{self.where(q)}, {verb} the first `{t.string}` to `{nt}`")
+        t, nt = rng.choice(opts)
+        if nt == "":                              # delete the first `not` (and the space after it)
+            new = line[:t.start[1]] + line[t.end[1]:].lstrip(" ")
+            desc = f"{w}, delete the first `not`"
+        else:
+            new = line[:t.start[1]] + nt + line[t.end[1]:]
+            desc = f"{w}, change the first `{t.string}` to `{nt}`"
+        return self.site(kind, i, i + 1, [new], q, lo, desc)
+
+    def _default(self):
+        """a parameter default that is a constant → another constant ("change the default of `p` from 1 to 2")"""
+        out = []
+        for q, s, e, node in self.scopes:
+            if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) or self.qcount[q] != 1:
+                continue
+            a = node.args
+            pos = a.posonlyargs + a.args
+            pairs = list(zip(pos[len(pos) - len(a.defaults):], a.defaults)) + \
+                [(k, d) for k, d in zip(a.kwonlyargs, a.kw_defaults) if d is not None]
+            for arg, d in pairs:
+                if not isinstance(d, ast.Constant) or d.lineno != d.end_lineno:
+                    continue
+                old = self.seg(d)
+                new = const_swap(d, old)
+                if not new:
+                    continue
+                line = self.lines[d.lineno - 1]
+                nl = line[:bcol(line, d.col_offset)] + new + line[bcol(line, d.end_col_offset):]
+                out.append(self.site("default", d.lineno - 1, d.lineno, [nl], q, s,
+                                     f"in `{q}`, change the default value of the parameter `{arg.arg}` from `{old}` to `{new}`"))
+        return out
+
+    def _swap_args(self):
+        """the first call to a callee in its scope, on one line, with two different simple leading positional arguments
+        → swap them"""
+        out = []
+        for c in self.calls:
+            if c.lineno != c.end_lineno or len(c.args) < 2 or any(isinstance(x, ast.Starred) for x in c.args[:2]):
+                continue
+            a0, a1 = c.args[:2]
+            if not all(isinstance(x, (ast.Name, ast.Attribute, ast.Constant)) for x in (a0, a1)):
+                continue
+            s0, s1 = self.seg(a0), self.seg(a1)
+            if not s0 or not s1 or s0 == s1:
+                continue
+            q, lo, hi, _ = self.scope(c.lineno)
+            if q and self.qcount[q] != 1:
+                continue
+            callee = self.first_call(c, lo, hi)
+            if not callee:
+                continue
+            line = self.lines[c.lineno - 1]
+            p0, e0 = bcol(line, a0.col_offset), bcol(line, a0.end_col_offset)
+            p1, e1 = bcol(line, a1.col_offset), bcol(line, a1.end_col_offset)
+            nl = line[:p0] + s1 + line[e0:p1] + s0 + line[e1:]
+            out.append(self.site("swap_args", c.lineno - 1, c.lineno, [nl], q, lo,
+                                 f"{self.where(q)}, in the first call to `{callee}(…)`, swap the first two positional "
+                                 f"arguments (`{s0}` and `{s1}`)"))
+        return out
 
     def _rename_local(self):
-        """a local variable of a function whose every use (2-6 lines apart) is an ast.Name → rename all of them"""
+        """a local variable of a function whose every use (2-6 lines apart) is an ast.Name → rename all of them to a
+        name the file does not use, so the code keeps working"""
         out = []
         for q, s, e, node in self.scopes:
             if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) or self.qcount[q] != 1:
                 continue
             args = {x.arg for x in ast.walk(node.args) if isinstance(x, ast.arg)}
             stores = {n.id for n in ast.walk(node) if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Store)}
+            free = [v for v in VOCAB if v not in self.words]
             for v in sorted(stores - args):
-                if not plain_name(v, 3):
+                if not plain_name(v, 3) or not free:
                     continue
                 names = [n for n in ast.walk(node) if isinstance(n, ast.Name) and n.id == v]
                 toks = [t for t in self.toks if t.type == tokenize.NAME and t.string == v and s <= t.start[0] <= e]
@@ -279,52 +406,43 @@ class Src:
                 l0, l1 = min(t.start[0] for t in toks) - 1, max(t.start[0] for t in toks)
                 if not 2 <= l1 - l0 <= 6:
                     continue
+                w = free[int(hashlib.md5((q + v).encode()).hexdigest(), 16) % len(free)]   # stable per build
                 new = self.lines[l0:l1]
                 for t in sorted(toks, key=lambda t: t.start, reverse=True):
                     k = t.start[0] - 1 - l0
-                    new[k] = new[k][:t.start[1]] + v + "_new" + new[k][t.end[1]:]
-                out.append({"kind": "rename_local", "l0": l0, "l1": l1, "new_lines": new, "scope": q, "scope_line": s,
-                            "desc": f"in `{q}`, rename the local variable `{v}` to `{v}_new` everywhere in that function"})
+                    new[k] = new[k][:t.start[1]] + w + new[k][t.end[1]:]
+                out.append(self.site("rename_local", l0, l1, new, q, s,
+                                     f"in `{q}`, rename the local variable `{v}` to `{w}` everywhere in that function"))
         return out
 
     def _call_arg(self):
         """the first call to a callee in its scope, spanning 2-6 lines, with a constant keyword argument → change it;
         the answer covers the whole call"""
-        out, calls = [], [n for n in ast.walk(self.tree) if isinstance(n, ast.Call)]
-        seg = lambda n: ast.get_source_segment(self.content, n)
-        for c in calls:
+        out = []
+        for c in self.calls:
             if not 1 <= c.end_lineno - c.lineno <= 5:
                 continue
-            callee = seg(c.func)
-            if not callee or "\n" in callee or len(callee) > 40:
-                continue
-            q, lo, hi = self.scope(c.lineno)
+            q, lo, hi, _ = self.scope(c.lineno)
             if q and self.qcount[q] != 1:
                 continue
-            same = [x for x in calls if lo <= x.lineno <= hi and seg(x.func) == callee]
-            if min(same, key=lambda x: (x.lineno, x.col_offset)) is not c:
+            callee = self.first_call(c, lo, hi)
+            if not callee:
                 continue
             for kw in c.keywords:
                 val = kw.value
                 if not kw.arg or not isinstance(val, ast.Constant) or val.lineno != val.end_lineno:
                     continue
-                old = seg(val)
-                if isinstance(val.value, bool) or val.value is None:
-                    new = CONST_SWAP[old]
-                elif isinstance(val.value, int) and old.isdigit():
-                    new = str(val.value + 1)
-                elif isinstance(val.value, str) and re.fullmatch(r"(['\"])[A-Za-z][^'\"\\]{2,40}\1", old):
-                    new = old[:-1] + "_v2" + old[-1]
-                else:
+                old = self.seg(val)
+                new = const_swap(val, old)
+                if not new:
                     continue
                 l0, l1 = c.lineno - 1, c.end_lineno
                 new_lines = self.lines[l0:l1]
                 k, line = val.lineno - 1 - l0, self.lines[val.lineno - 1]
                 new_lines[k] = line[:bcol(line, val.col_offset)] + new + line[bcol(line, val.end_col_offset):]
-                out.append({"kind": "call_arg", "l0": l0, "l1": l1, "new_lines": new_lines, "scope": q,
-                            "scope_line": lo if q else None,
-                            "desc": f"{self.where(q)}, in the first call to `{callee}(…)`, change the argument "
-                                    f"`{kw.arg}={old}` to `{kw.arg}={new}`"})
+                out.append(self.site("call_arg", l0, l1, new_lines, q, lo,
+                                     f"{self.where(q)}, in the first call to `{callee}(…)`, change the argument "
+                                     f"`{kw.arg}={old}` to `{kw.arg}={new}`"))
         return out
 
 
@@ -416,8 +534,16 @@ class Builder:
         if not src or not cand:
             return None
         multi = family != "anchor" and src.multi and rng.random() < self.a.multi
+        kind = None if multi else rng.choices(*LINE_KINDS)[0]
         for _ in range(30):
-            site = rng.choice(rng.choice(src.multi)) if multi else src.line_site(rng.choice(cand), rng)
+            if family == "anchor":                # a repeated line is rare for any one kind: redraw the kind per try
+                kind = rng.choices(*LINE_KINDS)[0]
+            if multi:
+                site = rng.choice(rng.choice(src.multi))
+            elif kind in src.lists:
+                site = rng.choice(src.lists[kind]) if src.lists[kind] else None
+            else:
+                site = src.line_site(rng.choice(cand), rng, kind)
             if not site:
                 continue
             core = "\n".join(lines[site["l0"]:site["l1"]])
@@ -535,7 +661,8 @@ def build(a):
     print(f"edit_drills build · libs {libs} from {sp} · n {a.n} · seed {a.seed} · families {dict(zip(*FAMILIES))} · "
           f"distances {dict(zip(*DISTANCES))} · libraries equally often, files ∝ √size, code lines only · system {a.system} ({len(Path(a.system).read_text())} chars) · "
           f"tools from {a.tools_from} minus [{a.drop_tools}] · min file lines {a.min_lines} · multi-line share (copy/recover) {a.multi} · "
-          f"instructions name scope + first token, never a whole line · out {a.out}")
+          f"instructions name scope + first token, never a whole line · one-line kinds by weight {dict(zip(*LINE_KINDS))} · "
+          f"renames to an unused name from a {len(VOCAB)}-word list · out {a.out}")
     b = Builder(a)
     print(f"  tools {b.tool_names} · sampling {b.sampling} · policy model {b.model}")
     files = {lib: lib_files(lib, a.min_lines) for lib in libs}
@@ -771,7 +898,7 @@ def main():
     b.add_argument("--drop-tools", default="", help="comma list, e.g. the 3 graph tools for a tools6 arm")
     b.add_argument("--system", default="scripts/arms/latest_e4b/prompts/system.md")
     b.add_argument("--min-lines", type=int, default=60)
-    b.add_argument("--multi", type=float, default=0.45, help="share of copy/recover drills drawn from multi-line sites")
+    b.add_argument("--multi", type=float, default=0.3, help="share of copy/recover drills drawn from multi-line sites")
     b.add_argument("--out", required=True)
     d = sub.add_parser("decode")
     d.add_argument("records")
