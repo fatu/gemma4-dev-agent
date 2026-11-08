@@ -47,6 +47,11 @@ Rejected and counted by reason: dup (same file, line, kind) · overlap (answer w
 file; ≤ --file-cap drills per file, libraries kept level) · no_site · leak (a whole old line ≥ 6 chars in the task text) · syntax (the intended file
 must ast.parse; no `return_new x`) · window (the view must show the old lines and the scope's def/class line, ≤ 150
 lines, not truncated) · corrupt · apply. Scope names must be unique in the file.
+Duplicates seen (record field `dup_seen`): when the changed lines occur elsewhere in the file, another copy is always
+in the context: already in the view (in_view), the view widened to the nearest copy (view, DUP_VIEW), or a
+`grep -nF '<first changed line>' <file>` through run_command before the view (grep); none = the lines are unique.
+"Elsewhere" also counts the first changed line stripped inside another line (an anchor copied without its indentation
+matches there too).
 Checks: every answer is applied with the harness's edit_file on a copy and must give the intended file (strategy
 exact, one occurrence); every corruption must fail under all matcher tiers, so the error in context is the one the
 harness returns. Source files: <site-packages>/<lib>/**.py of the eval venv; eval repos (fastapi, rich, requests, httpx)
@@ -68,6 +73,7 @@ import keyword
 import os
 import random
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -91,6 +97,10 @@ EMPTY_GREP = 0.18          # share of the greps that find nothing (a one-letter 
 ANCHOR_LINES = (list(range(1, 9)), [60, 1, 6, 10, 9, 9, 9, 12])   # 1 = keep the shortest span (only ~half are 1 line)
 RARE_NAME = 6              # grep a name the library uses at most this often (E4B's greps: median 130 chars of output) …
 RARE_SHARE = 0.7           # … this share of the time; else any name (E4B's long tail: p90 3.2K chars, 8 % at the cap)
+# the changed lines occur elsewhere in the file but the view shows no other copy (139 of 1,500 drills at 8507112): then
+# whether a short anchor is unique cannot be learned from the context. Widen the view to the nearest other copy (this
+# share, when the view stays ≤ 150 lines), else a `grep -nF` of the first changed line before the view lists every copy
+DUP_VIEW = 0.5
 # E4B's failed edits (study E, 170): copied wrong 36 % · several matches 32 % · stale 13 % (own family) · call
 # syntax / JSON wrapper 11 % → the recover corruptions, drawn by weight before the site is chosen
 CORRUPTIONS = (["token_change", "dropped_line", "reformat", "short_nonunique", "json_wrapper", "quote_wrap",
@@ -749,6 +759,23 @@ class Builder:
             if e0 - s0 + 1 > 150:
                 self.why = "window"
                 return None
+        core = "\n".join(lines[site["l0"]:site["l1"]])
+        probe = next((x.strip() for x in core.split("\n") if x.strip()), "")
+        dup_at = [k for k, x in enumerate(lines) if probe and probe in x and not site["l0"] <= k < site["l1"]]
+        single = n_matches(content, core) == 1 and content.count(core) == 1
+        if single and not dup_at:
+            dup_seen = "none"                     # the changed lines are unique, even stripped: nothing to show
+        elif not dup_at:
+            self.why = "dup_probe"                # repeats only as a block across lines: no one-line probe shows it
+            return None
+        elif any(s0 <= k + 1 <= e0 for k in dup_at):
+            dup_seen = "in_view"
+        else:                                     # make another copy visible (widen the view, else grep)
+            near = min(dup_at, key=lambda k: abs(k - i))
+            ws0, we0 = min(s0, near + 1), max(e0, near + 1)
+            dup_seen = "view" if rng.random() < DUP_VIEW and we0 - ws0 + 1 <= 150 else "grep"
+            if dup_seen == "view":
+                s0, e0 = ws0, we0
         view = json.loads(ws.read_file(ctx, rel, s0, e0))
         shown = view.get("content") or ""
         if view.get("is_truncated") or "\n".join(lines[a:b]) not in shown or any(lines[x - 1] not in shown for x in scope_lines):
@@ -756,6 +783,16 @@ class Builder:
             return None
         system = self.system.replace("{problem_description}", instr)
         msgs = [{"role": "system", "content": system}, {"role": "user", "content": self.user(lib, instr, root)}]
+        if dup_seen == "grep":                    # every copy of the first changed line, with line numbers
+            from swegemma.tools.execution import run_command
+            cmd = f"grep -nF -e {shlex.quote(probe)} {rel}"
+            res = run_command(_Ctx(root, run=True), cmd)
+            r = json.loads(res)
+            if r.get("status") != "ok" or len((r.get("stdout") or "").strip().split("\n")) < 2:
+                self.why = "dup_grep"
+                return None
+            cid, am = self.call("run_command", {"command": cmd})
+            msgs += [am, {"role": "tool", "tool_call_id": cid, "content": tool_msg(res)}]
         cid, am = self.call("read_file", {"filepath": rel, "start_line": s0, "end_line": e0})
         msgs += [am, {"role": "tool", "tool_call_id": cid, "content": tool_msg(ws.read_file(ctx, rel, s0, e0))}]
         if pre:                                   # the first change, done: its diff is the only view of the new text
@@ -779,7 +816,7 @@ class Builder:
                "patch_sha": None, "source": "edit_drill", "resolved": None, "policy_model": self.model,
                "sampling": dict(self.sampling, max_tool_calls=28, max_time_minutes=7), "env_fingerprint": None,
                "family": family, "distance": len(others), "fillers": dict(got), "site_line": i + 1, "old_lines": b - a,
-               "window": [a + 1, b],
+               "window": [a + 1, b], "dup_seen": dup_seen,
                "mutation": site["kind"], "scope": site["scope"], "verify": verify, "tools": self.tools}
         if pre:
             rec["pre_kind"] = pre[2]["kind"]
@@ -846,7 +883,8 @@ def build(a):
           f"duplicate sites (file, line, kind) and overlapping answer windows rejected · ≤ {a.file_cap} drills per file · "
           f"libraries kept level (one with 60 misses in a row counts as used up) · greps: {RARE_SHARE} a name used ≤ {RARE_NAME}× "
           f"in the library, else any, {EMPTY_GREP} of them a typo that finds "
-          f"nothing · out {a.out}")
+          f"nothing · repeated changed lines: another copy always in context (view widened to it {DUP_VIEW}, else "
+          f"grep -nF before the view) · out {a.out}")
     b = Builder(a)
     print(f"  tools {b.tool_names} · sampling {b.sampling} · policy model {b.model}")
     files = {lib: lib_files(lib, a.min_lines) for lib in libs}
@@ -906,6 +944,7 @@ def build(a):
                 st[f"filler_{k}"] += v
             st[f"ok_{fam}"] += 1
             st[f"kind_{rec['mutation']}"] += 1
+            st[f"dup_seen_{rec['dup_seen']}"] += 1
             st[f"lib_{lib}"] += 1
             span[min(rec["old_lines"], 6)] += 1
             if fam == "recover":
