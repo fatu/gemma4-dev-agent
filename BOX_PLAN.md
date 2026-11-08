@@ -524,7 +524,7 @@ own "final deliverable": prompts/system.md replaced by its ~20-line prompt verba
 t00+out6k+time7`, `==` line `prompt 1037 chars`, temperature 0.0, 6144, `time7:` 4.375. The submission candidate is `course`
 only (it contains every slide rule; coursefull is the final slide's condensed prompt).
 
-## B-3m · Failure-study prompt fixes on E4B, all 129 tasks ▶ next (~3–4 h, 4 lanes)
+## B-3m · Failure-study prompt fixes on E4B, all 129 tasks → folded into B-3o (the same four rules on the 51-task split, 4 passes)
 
 The failure study (2026-11-01: an Opus judge on every failed run of E2B, E4B and 31B, plus contrast A on the tasks 31B
 solved and a small model failed) found that the small models:
@@ -630,6 +630,45 @@ lenient than the scorer — fine for collecting solved trajectories, not for rea
 
 **Next (laptop decides after the photos):** train E4B on `runs/sft/rebench31b.rendered.jsonl` on the box
 (a `train_box.sh` stage) and test it against no adapter on all 129 tasks.
+
+## B-3o · Step 1 of the E4B gap plan: scaffold arms, no training, the 51-task split ▶ next (~5–6 h, 4 lanes)
+
+Why (5-agent laptop study, 2026-11-07, private notes): of the 31 tasks 31B solves and E4B misses, E4B finds the right
+file and writes the wrong fix in 17, picks the wrong file or place in 11, and loses 3 to failed edits; the budget, the
+compaction and cut-off replies decide none. Unlike 31B it edits at call 5 (31B 12), never reproduces the issue first
+(0/129 vs 56/129), runs pytest commands that collect no test in about half its calls, submits after a red test, and
+leaves ~17 of its 28 calls unused. Its edit_file fails 47 % (31B 10 %): old_string is copied badly from lines shown
+several outputs back (13 % failures when the lines are in the last output, 45 % at 4+ outputs back) or is not unique.
+No LoRA so far beat no adapter, so this step changes only the prompt and the tool list.
+
+Three arms, E4B with **no adapter**, each **4 passes** (one per lane), all in this one session:
+| arm | what changes |
+|---|---|
+| `base` | nothing (control) |
+| `tools6+spec+edit2` ("mech") | drop the 3 graph tools (E4B called them 2× in 129 tasks; −700 tokens per call) · the issue text again at the end of the system prompt, so it survives compaction (`{problem_description}`, filled per task by ADK) · re-read the ~20 lines right before each edit and copy old_string from that output, 1–3 lines with a unique name; on "occurs N times" add the nearest def/class line |
+| `tools6+spec+edit2+reprofirst+failstop+grepdef+latedit` ("all") | mech + the four B-3m rules from 31B's routine: reproduce first and again after the edit · a red/empty test = a broken patch · grep the definition · edit at calls 11–16 |
+
+Each lane runs all three arms in a rotated order (time of day hits every arm alike); `MAX_TURNS=80` = the scorer's
+prompt line, `TIME_MIN=8` as in B-3m.
+```bash
+cd gemma4-dev-agent && git pull
+M=tools6+spec+edit2; A=$M+reprofirst+failstop+grepdef+latedit
+BUILD_ONLY=1 LATEST=e4b ADAPTER= SUBMISSION=runs/base_lb024 SPLIT=splits/disc_e4b.txt ARMS="base $M $A" TAG=chk \
+  bash scripts/eval_dev.sh | grep -E "latest set|tasks:|: (replaced|inserted|appended)|^spec:|^=="   # 📷 51 tasks · edit2/edit2b/spec lines · tools 9/6/6
+pkill -f "vllm serve"; sleep 5
+O=("base $M $A" "$M $A base" "$A base $M" "base $A $M")
+for g in 0 1 2 3; do GPU=$g TAG=p$((g+1)) TIME_MIN=8 MAX_TURNS=80 LATEST=e4b ADAPTER= MODEL=google/gemma-4-E4B-it-qat-w4a16-ct \
+  SPLIT=splits/disc_e4b.txt SUBMISSION=runs/base_lb024 ARMS="${O[$g]}" nohup bash scripts/lane.sh run > runs/lane$g.log 2>&1 & done
+```
+After all four lanes finish:
+```bash
+for a in base $M $A; do python3 -c "import json,sys; c=[sum(json.loads(l)['resolved'] for l in open(f'runs/dev33_{sys.argv[1]}_p{i}/task_results.jsonl')) for i in (1,2,3,4)]; print(f'{sys.argv[1][:40]:<40}', c, 'mean', sum(c)/4)" "$a"; done   # 📷
+python3 scripts/rulestats.py runs/dev33_base_p1 runs/dev33_${M}_p1 runs/dev33_${A}_p1   # 📷 did E4B follow the rules (edits, tests, first edit)
+python3 scripts/compare_runs.py runs/dev33_base_p{1,2,3,4} | head -8                     # 📷 ctx✗ / errors of the control
+```
+**Read it as:** an arm counts only if its 4-pass mean beats base's by ≥ 3 tasks and its worst pass ≥ base's best − 1
+(passes of one arm differ by up to 5–6 tasks on these 51). Next on the laptop either way: step 2 (an edit-skill LoRA
+on short, checked edit exercises, no whole 31B trajectories) and, later, step 3 (31B relabels E4B's own states).
 
 ## B-K · The kit line: the kit's 31B data under the kit's own prompt → an E4B LoRA, against no adapter ▶ data any time; GPU after B-3n's `gen` (~4 h wave 1 + training, ~4 h wave 2)
 

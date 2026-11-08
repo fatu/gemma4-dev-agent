@@ -128,6 +128,12 @@
 #   grepdef    — g: git grep -n 'def NAME|class NAME', read ~60 lines around the definition, never a whole file
 #   latedit    — h: calls 1-10 reproduce/locate/read, edit 11-16 (deadline 12 → 16, no "best-guess edit now"),
 #                verify 17-22, no exploration from 22 (latedit2/3 move the rest of the call plan)
+# Gap-study scaffold parts (2026-11-07, BOX_PLAN.md B-3o; E4B edit_file fails 47% vs 31B 10%, the failed old_string
+# is mostly a bad copy of lines shown several outputs back, or a non-unique anchor in a repetitive file):
+#   edit2  — re-read the ~20 lines right before each edit_file, copy old_string from that output (not memory, not new_string),
+#            1-3 lines holding a unique name; edit2b: on "occurs N times" add the nearest def/class line (replaces "smaller")
+#   spec   — appends scripts/arms/spec.md: the issue text again via ADK's {problem_description} session-state template
+#            (swegemma agent_runner sets it), so the exact issue survives compaction (82/129 E4B tasks compact); last part
 # BUILD_ONLY=1: build runs/subs/<arm>[_TAG] for each arm and stop (no server, no test deps, no eval) — the source dir
 # for scripts/make_submission.py, so the submission is built by the same code as the measured arm (works on macOS too).
 # MODEL_ALIAS=gemma-4-e4b-it-qat-w4a16-ct: every agent YAML of each arm copy gets this `model:` (small-model bonus on
@@ -291,7 +297,7 @@ echo "tasks: ${#IDS[@]} from $SPLIT · tasks file $TASKS_FILE · snapshots $SNAP
 echo "dev split: ${#IDS[@]} tasks · arms: $ARMS · budget: ${BUDGET_FLAGS[*]:-none} · concurrency ${CONC:-1}"
 for arm in $ARMS; do                                  # check every arm up front, not 2 h into the first one
   for part in ${arm//+/ }; do
-    case "$part" in out8k|nothink|think1k|readdisc|noanalyzer|out6k|out4k|tools6|submit|editrecover|issuefirst|tmpfix|test1|t10|t07|repro|lean|edit1|r1|r2|r3|v4|t00|time7|tail40|outline|win100|course|callchain|grepbatch|twins5|dryhelper|noregress|ask3|editctx|editguard|tmprepro|coursefull|reprofirst|failstop|grepdef|latedit) ;;
+    case "$part" in out8k|nothink|think1k|readdisc|noanalyzer|out6k|out4k|tools6|submit|editrecover|issuefirst|tmpfix|test1|t10|t07|repro|lean|edit1|r1|r2|r3|v4|t00|time7|tail40|outline|win100|course|callchain|grepbatch|twins5|dryhelper|noregress|ask3|editctx|editguard|tmprepro|coursefull|reprofirst|failstop|grepdef|latedit|edit2|spec) ;;
       sample|base) [ "$arm" = "$part" ] || { echo "$part can't stack: $arm"; exit 1; } ;;
       *) echo "unknown arm part $part in $arm"; exit 1 ;; esac
   done
@@ -378,10 +384,16 @@ assert "{" not in rule and "}" not in rule        # ADK templates {name} from se
 print("submit:", "replaced the base's line" if n else "appended")
 PY
   fi
-  for rule in editrecover issuefirst tmpfix test1 repro edit1 r1 r2 r3 v4 tail40 outline win100 grepbatch twins5 callchain dryhelper noregress ask3 editctx editguard tmprepro reprofirst failstop grepdef latedit; do   # one-line prompt rules (scripts/arms/<rule>.md)
+  for rule in editrecover issuefirst tmpfix test1 repro edit1 r1 r2 r3 v4 tail40 outline win100 grepbatch twins5 callchain dryhelper noregress ask3 editctx editguard tmprepro reprofirst failstop grepdef latedit edit2; do   # one-line prompt rules (scripts/arms/<rule>.md)
     has "$rule" && python3 scripts/arms/apply.py "$rule" "$SUB/prompts/system.md"
   done
   if has latedit; then for r in latedit2 latedit3; do python3 scripts/arms/apply.py "$r" "$SUB/prompts/system.md"; done; fi   # the rest of the call plan
+  has edit2 && python3 scripts/arms/apply.py edit2b "$SUB/prompts/system.md"   # the retry line too
+  if has spec; then                            # last, so EXTRA RULES appends land above it; the only {…} in the prompt
+    P="$SUB/prompts/system.md"; cat scripts/arms/spec.md >> "$P"
+    n=$(grep -o "[{}]" "$P" | wc -l | tr -d " "); [ "$n" = 2 ] || { echo "spec: $n braces in $P, want exactly the {problem_description} pair"; exit 1; }
+    echo "spec: appended the issue block ({problem_description}, filled per task from session state) · braces in prompt $n"
+  fi
   echo; echo "== $arm: model $(grep -rhoE '^ *model: *[A-Za-z0-9_.-]+' --include='*.y*ml' --exclude-dir=adapters "$SUB" | sed 's/.*model: *//' | sort -u | tr '\n' ' ')· $(grep -hE '^(temperature|top_p|top_k):|max_output_tokens|thinking_budget|include_thoughts' "$SUB/configs/sampling.yaml" | tr -s ' \n' ' ')· tools $(grep -c '^  - ' "$SUB/agent.yaml") · prompt $(wc -c < "$SUB/prompts/system.md") chars → $RUN   ($(date +%H:%M))"
   [ "${BUILD_ONLY:-0}" = 1 ] && { echo "   built $SUB (BUILD_ONLY: no eval)"; continue; }
   before=$(overflows)
