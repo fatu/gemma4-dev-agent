@@ -684,6 +684,13 @@ starlette), each answer checked with the harness's own edit_file, and puts the l
 offline gate on the held-out drills (temperature 0): intended file ≥ 80 %, not-found at distance ≥ 2 ≤ 10 %, several
 matches ≤ 3 %, every call parsed. `train/drills_box.sh` runs it in stages; every stage ends with a 📷 line.
 
+**Since the first B-3p run (gate 1 not passed: several matches 14–19 %):** E4B's real several-matches failures are mostly
+3+ line blocks copy-pasted across sibling classes (fastapi), which the first drills never had. The drills now (1) always
+show another copy of a repeated changed line, and (2) have a `block` family (~15 %) from the most repetitive non-eval
+libraries (typer, openai, networkx; held out: sqlmodel, huggingface_hub, pandas): a change inside a repeated block whose
+shortest unique span is 3–25 lines, half of them first failing on the whole repeated block. gate0 / gate1 also score a
+held-out **block slice** (80 drills, `runs/sft/drills_heldout_block`), printed as `block slice` beside the gate.
+
 **Which prompt:** the drills carry the system prompt and tool list of the arm the A/B will use. Default = `base`
 (latest_e4b). If B-3o picks `mech` or `all`, first build that arm (`BUILD_ONLY=1 … TAG=chk`, as in B-3o) and add
 `SYSTEM=runs/subs/<arm>_chk/prompts/system.md DROP_TOOLS=get_code_neighbors,search_similar_code,get_code_subgraph` to
@@ -691,8 +698,8 @@ matches ≤ 3 %, every call parsed. `train/drills_box.sh` runs it in stages; eve
 
 ```bash
 cd gemma4-dev-agent && git pull
-bash train/drills_box.sh build                 # 📷 two '== drills' lines (1500 + 300) + the two 'multi-line … rejected' lines + the tools/sampling line (CPU, ~10–15 min)
-GPU=0 bash train/drills_box.sh gate0           # 📷 E4B without adapter on the held-out drills (~10 min; stops every vllm serve)
+bash train/drills_box.sh build                 # 📷 three '== drills' lines (1500 + 300 + 80 block slice) + the 'multi-line … rejected' lines + the tools/sampling line (CPU, ~15–20 min)
+GPU=0 bash train/drills_box.sh gate0           # 📷 E4B without adapter on the held-out drills + the block slice (~12 min; stops every vllm serve)
 GPU=0 bash train/drills_box.sh think           # 📷 E4B's own thoughts for the training drills (temperature 0.7, ~30–60 min)
 ```
 Optional, all 4 cards (~3–5 h), also the data for step 3: E4B's own rollouts on the SWE-rebench tasks of B-3n, every
@@ -718,6 +725,9 @@ no adapter in a matched comparison at any rank (4–64) or lr (8e-6–2e-4); α/
 r32 α32 changed B-3n's behaviour strongly (loops) and fitted the first drills to a validation NLL of 0.035; our 1e-4 canary lost
 thinking in 20 steps; the one E4B paired point (a public kit) used lr 2e-5 at scale 0.5. α = r keeps the scale at 1 so
 the lr is the only strength knob, and a smaller rank leaves the scorer more KV cache (one r16 adapter: 27.7K tokens).
+**Reading gate1:** the gate is unchanged; beside it, the block slice's several-matches rate should fall clearly below
+gate0's block slice (the fastapi-like case). If the gate passes but the block slice does not move, the adapter learned
+the easy anchors only — say so in the run log before the A/B.
 **A/B only if gate1 passes** — no adapter vs the adapter `subs` built (`$NAME`), two lanes each, two passes per lane (4 vs 4), 51 tasks:
 ```bash
 pkill -f "vllm serve"; sleep 5; E4B=google/gemma-4-E4B-it-qat-w4a16-ct; AR=base; NAME=e4b_drill_lr3   # NAME = the adapter subs built

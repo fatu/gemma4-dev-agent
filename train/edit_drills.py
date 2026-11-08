@@ -12,7 +12,9 @@ drills teach only where old_string comes from.
   $PY train/edit_drills.py build --libs click,jinja2,attr,anyio,h11,werkzeug,packaging,markdown_it,yaml,dateutil \
       --n 1500 --tools-from <any traj log> --out runs/sft/drills                                     # training drills
   $PY train/edit_drills.py build --libs sqlalchemy,tqdm,tenacity,starlette --n 300 --seed 1 \
-      --tools-from <same> --out runs/sft/drills_heldout                                               # the gate set
+      --block-libs sqlmodel,huggingface_hub,pandas --tools-from <same> --out runs/sft/drills_heldout   # the gate set
+  $PY train/edit_drills.py build --libs sqlalchemy --block-libs sqlmodel,huggingface_hub,pandas --families block=1 \
+      --n 80 --seed 2 --tools-from <same> --out runs/sft/drills_heldout_block                        # block slice
   $PY train/edit_drills.py decode runs/sft/drills_heldout --model gemma-4-e4b-it-qat-w4a16-ct --temperature 0 \
       --out runs/drills/base_t0.jsonl                                                                 # server on :8000
   $PY train/edit_drills.py score runs/sft/drills_heldout runs/drills/base_t0.jsonl                    # 📷 gate line
@@ -27,6 +29,10 @@ Families (record field `family`, weights FAMILIES):
            correct edit. Corruptions by CORRUPTIONS weight, after E4B's own failed edits (study E): too short an
            anchor (short_nonunique: the changed lines alone, which occur several times → "occurs N times") ≈ 40 %,
            copied wrong (token change, dropped line, re-wrapped block) ≈ 45 %, JSON wrapper / quotes / backslash ≈ 15 %
+  block    a site inside a 3-line block that repeats in the file (sibling classes / functions copy-pasted, like
+           fastapi's), from --block-libs; the shortest unique span is 3-25 lines (BLOCK_LINES, BLOCK_CAP). BLOCK_FAIL of
+           them first copy the longest span that still repeats ("occurs N times", corruption block_nonunique), then
+           target 1 reads again and target 2 is the edit
   stale    the task asks for two changes; the first is already done in the context (edit_file ok, with its diff) and
            changed a line within 3 lines of the second site; the answer window covers that line, so copying the first
            view fails (checked) and the old_string has to come from the edit's own output (verify.pre_edit: score
@@ -84,10 +90,10 @@ import types
 from collections import Counter
 from pathlib import Path
 
-REFUSED_LIBS = {"fastapi", "rich", "requests", "httpx", "pydantic", "pydantic_core"}   # eval repos + fastapi's core dep
+REFUSED_LIBS = {"fastapi", "rich", "requests", "httpx", "httpx2", "pydantic", "pydantic_core"}   # eval repos (+ an httpx fork) + fastapi's core dep
 DEFAULT_SAMPLING = {"temperature": 0.2, "top_p": 0.95, "max_completion_tokens": 6144,
                     "enable_thinking": True, "thinking_token_budget": 4096}             # latest_e4b sampling.yaml
-FAMILIES = (["copy", "anchor", "recover", "stale"], [0.4, 0.15, 0.3, 0.15])
+FAMILIES = (["copy", "anchor", "recover", "stale", "block"], [0.33, 0.1, 0.3, 0.1, 0.17])   # block ≈ 15-20 % of drills (half its tries fail)
 # tool outputs between the view and the edit: E4B's not-found rate is 13 % at 0, 38 % at 2-3, 45 % at 4+ (study E)
 DISTANCES = (list(range(12)), [0.05, 0.07, 0.08, 0.09, 0.1, 0.1, 0.1, 0.1, 0.09, 0.08, 0.07, 0.07])   # tokens p50 ≈ 8K
 GREP_FILLER = 0.5          # share of those outputs that are `grep -rn` results (the rest: read_file of another file)
@@ -101,6 +107,15 @@ RARE_SHARE = 0.7           # … this share of the time; else any name (E4B's lo
 # whether a short anchor is unique cannot be learned from the context. Widen the view to the nearest other copy (this
 # share, when the view stays ≤ 150 lines), else a `grep -nF` of the first changed line before the view lists every copy
 DUP_VIEW = 0.5
+# E4B's several-matches failures (all-129): 52 of 67 in fastapi, 36 of 55 failed old_strings 3+ lines — whole blocks
+# copy-pasted across sibling classes, where the line that tells the copies apart is far away. Code lines inside a
+# repeated 3-line block: fastapi 46 %, the 10 training libraries ~ 1-20 %. block drills come from --block-libs (the
+# most repetitive non-eval libraries), sites inside a repeated BLOCK_LINES-line block whose shortest unique span is
+# ≥ BLOCK_LINES lines (up to BLOCK_CAP); BLOCK_FAIL of them first copy the longest span that still repeats (the
+# harness's "occurs N times"), then read again and edit
+BLOCK_LINES = 3
+BLOCK_CAP = 25
+BLOCK_FAIL = 0.5
 # E4B's failed edits (study E, 170): copied wrong 36 % · several matches 32 % · stale 13 % (own family) · call
 # syntax / JSON wrapper 11 % → the recover corruptions, drawn by weight before the site is chosen
 CORRUPTIONS = (["token_change", "dropped_line", "reformat", "short_nonunique", "json_wrapper", "quote_wrap",
@@ -193,6 +208,36 @@ def minimal_unique(lines, l0, l1, content, cap=8):
             a -= 1
     old = "\n".join(lines[a:b])
     return (a, b) if n_matches(content, old) == 1 and content.count(old) == 1 else None
+
+
+def block_lines(lines):
+    """0-based lines inside a BLOCK_LINES-line block (stripped, no near-empty line) that occurs more than once"""
+    st = [x.strip() for x in lines]
+    tri = lambda i: tuple(st[i:i + BLOCK_LINES])
+    full = [i for i in range(len(st) - BLOCK_LINES + 1) if all(len(x) > 3 for x in tri(i))]
+    seen = Counter(tri(i) for i in full)
+    return sorted({j for i in full if seen[tri(i)] > 1 for j in range(i, i + BLOCK_LINES)})
+
+
+def repeated_span(lines, l0, l1, content, cap=BLOCK_CAP):
+    """the longest span around the changed lines [l0, l1) that still occurs more than once, grown along the same path
+    as minimal_unique (so one more step makes it unique): E4B's whole-block anchor"""
+    a, b, best = l0, l1, None
+    score = lambda s: -1 if s is None else len(re.findall(r"[A-Za-z_]\w{2,}", s))
+    for _ in range(cap):
+        old = "\n".join(lines[a:b])
+        if not old.strip() or n_matches(content, old) < 2:
+            break
+        best = (a, b)
+        up = lines[a - 1] if a > 0 else None
+        dn = lines[b] if b < len(lines) else None
+        if up is not None and score(up) >= score(dn):
+            a -= 1
+        elif dn is not None:
+            b += 1
+        elif up is not None:
+            a -= 1
+    return best
 
 
 def code_lines(content):
@@ -305,6 +350,7 @@ class Src:
             "string": has(lambda t: t.type == tokenize.STRING),
             "insert_guard": sorted(ln - 1 for ln in self.assign1)}
         self.multi = [x for x in (self._rename_local(), self._call_arg()) if x]   # one list per kind, picked 50/50
+        self.block_lines = block_lines(self.lines)
 
     def stmt_span(self, ln):
         """(first, last) 1-based lines of the smallest statement (or compound header) holding line ln"""
@@ -389,7 +435,7 @@ class Src:
             opts = [(t, str(int(t.string) + 1)) for t in toks if t.type == tokenize.NUMBER and t.string.isdigit()]
         elif kind == "string":
             opts = [(t, flip_case(t.string)) for t in toks
-                    if t.type == tokenize.STRING and re.fullmatch(r"(['\"])[A-Za-z][^'\"\\]{2,40}\1", t.string)]
+                    if t.type == tokenize.STRING and re.fullmatch(r"(['\"])[A-Za-z][^'\"\\`]{2,40}\1", t.string)]   # no backticks: the task quotes in them
         else:
             return None
         if not opts:
@@ -599,10 +645,12 @@ class Builder:
                 self.src[rel] = None
         return self.src[rel]
 
-    def pick(self, src, content, lines, cand, multi, kind, repeat, near=None):
+    def pick(self, src, content, lines, cand, multi, kind, repeat, near=None, cap=8, min_span=1):
         """a site and its answer window → (site, a, b, old, new, intended) or None. repeat: the changed lines must
         occur more than once (anchor drills, short_nonunique recover drills); near: a 0-based line the answer window
-        must also cover, sites only within ±3 lines of it (stale drills: the line the earlier edit changed)"""
+        must also cover, sites only within ±3 lines of it (stale drills: the line the earlier edit changed); cap / min_span:
+        the shortest unique span may grow cap steps and must be ≥ min_span lines (block drills: BLOCK_CAP, BLOCK_LINES),
+        and list kinds then only take sites on a cand line"""
         from swegemma.edit import apply_replacement
         rng = self.rng
         for _ in range(30):
@@ -611,7 +659,8 @@ class Builder:
             if multi:
                 site = rng.choice(rng.choice(src.multi))
             elif kind in src.lists:
-                pool = [x for x in src.lists[kind] if near is None or 0 < abs(x["l0"] - near) <= 3]
+                pool = [x for x in src.lists[kind] if (near is None or 0 < abs(x["l0"] - near) <= 3)
+                        and (min_span == 1 or x["l0"] in cand)]
                 site = rng.choice(pool) if pool else None
             else:
                 ok = set(cand) & set(src.kind_lines.get(kind, cand))
@@ -628,8 +677,8 @@ class Builder:
             l0, l1 = site["l0"], site["l1"]
             if near is not None:
                 l0, l1 = min(l0, near), max(l1, near + 1)
-            w = minimal_unique(lines, l0, l1, content)
-            if not w:
+            w = minimal_unique(lines, l0, l1, content, cap)
+            if not w or w[1] - w[0] < min_span:
                 continue
             a, b = self.grow(src, lines, w, l0, l1)
             new_lines = lines[a:site["l0"]] + site["new_lines"] + lines[site["l1"]:b]
@@ -707,7 +756,13 @@ class Builder:
         if not src or not cand:
             return None
         ckind = rng.choices(*CORRUPTIONS)[0] if family == "recover" else None
-        repeat = family == "anchor" or ckind == "short_nonunique"
+        if family == "block":
+            ckind = "block_nonunique" if rng.random() < BLOCK_FAIL else None
+            cand = sorted(set(cand) & set(src.block_lines))
+            if not cand:
+                self.why = "no_block"
+                return None
+        repeat = family in ("anchor", "block") or ckind == "short_nonunique"
         pre = None                                # stale: (old, new, site) of the earlier edit, applied first
         if family == "stale":
             k1 = rng.choice(["operator", "logic", "constant", "number", "string"])
@@ -732,7 +787,8 @@ class Builder:
         else:
             multi = family != "anchor" and not repeat and src.multi and rng.random() < self.a.multi
             kind = None if multi else rng.choices(*LINE_KINDS)[0]
-            p = self.pick(src, content, lines, cand, multi, kind, repeat)
+            blk = dict(cap=BLOCK_CAP, min_span=BLOCK_LINES) if family == "block" else {}
+            p = self.pick(src, content, lines, cand, multi, kind, repeat, **blk)
             if not p:
                 return None
             site, a, b, old, new, intended = p
@@ -760,7 +816,9 @@ class Builder:
                 self.why = "window"
                 return None
         core = "\n".join(lines[site["l0"]:site["l1"]])
-        probe = next((x.strip() for x in core.split("\n") if x.strip()), "")
+        newset = {x.strip() for x in site["new_lines"]}   # the first line the change touches (call_arg: inside the call)
+        probe = next((x.strip() for x in core.split("\n") if x.strip() and x.strip() not in newset),
+                     next((x.strip() for x in core.split("\n") if x.strip()), ""))
         dup_at = [k for k, x in enumerate(lines) if probe and probe in x and not site["l0"] <= k < site["l1"]]
         single = n_matches(content, core) == 1 and content.count(core) == 1
         if single and not dup_at:
@@ -820,9 +878,16 @@ class Builder:
                "mutation": site["kind"], "scope": site["scope"], "verify": verify, "tools": self.tools}
         if pre:
             rec["pre_kind"] = pre[2]["kind"]
-        if family == "recover":
+        if ckind:
             core = "\n".join(lines[site["l0"]:site["l1"]])
-            c = corrupt(ckind, old, new, core, "\n".join(site["new_lines"]), content, lines, a, b, rng)
+            if ckind == "block_nonunique":        # the longest span that still repeats, with the change applied
+                sp_ = repeated_span(lines, site["l0"], site["l1"], content)
+                c = None
+                if sp_ and sp_[1] - sp_[0] >= BLOCK_LINES and sp_[0] <= site["l0"] and site["l1"] <= sp_[1]:
+                    c = ("\n".join(lines[sp_[0]:sp_[1]]),
+                         "\n".join(lines[sp_[0]:site["l0"]] + site["new_lines"] + lines[site["l1"]:sp_[1]]))
+            else:
+                c = corrupt(ckind, old, new, core, "\n".join(site["new_lines"]), content, lines, a, b, rng)
             if not c:
                 self.why = "corrupt"
                 return None
@@ -872,6 +937,7 @@ def lib_files(lib, min_lines):
 
 def build(a):
     libs = [x for x in a.libs.split(",") if x]
+    block_libs = [x for x in a.block_libs.split(",") if x and x not in libs]
     sp = site_packages()
     print(f"edit_drills build · libs {libs} from {sp} · n {a.n} · seed {a.seed} · families {dict(zip(*FAMILIES))} · "
           f"distances {dict(zip(*DISTANCES))} · libraries equally often, files ∝ √size, code lines only · system {a.system} ({len(Path(a.system).read_text())} chars) · "
@@ -884,10 +950,15 @@ def build(a):
           f"libraries kept level (one with 60 misses in a row counts as used up) · greps: {RARE_SHARE} a name used ≤ {RARE_NAME}× "
           f"in the library, else any, {EMPTY_GREP} of them a typo that finds "
           f"nothing · repeated changed lines: another copy always in context (view widened to it {DUP_VIEW}, else "
-          f"grep -nF before the view) · out {a.out}")
+          f"grep -nF before the view) · block family from {block_libs or 'nothing (no --block-libs): off'}: sites in a "
+          f"repeated {BLOCK_LINES}-line block, shortest unique span {BLOCK_LINES}-{BLOCK_CAP} lines, {BLOCK_FAIL} first fail "
+          f"on the longest repeating span · out {a.out}")
     b = Builder(a)
-    print(f"  tools {b.tool_names} · sampling {b.sampling} · policy model {b.model}")
-    files = {lib: lib_files(lib, a.min_lines) for lib in libs}
+    print(f"  tools {b.tool_names} · sampling {b.sampling} · policy model {b.model} · family weights "
+          f"{a.families or dict(zip(*FAMILIES))}")
+    files = {lib: lib_files(lib, a.min_lines) for lib in libs + block_libs}
+    for lib in block_libs:                       # block libraries: only files with a repeated block
+        files[lib] = [(r, c) for r, c in files[lib] if block_lines(c.split("\n"))]
     for lib, fs in files.items():
         print(f"  {lib}: {len(fs)} files ≥ {a.min_lines} lines")
     out = Path(a.out)
@@ -903,21 +974,34 @@ def build(a):
                 (roots[lib] / rel).parent.mkdir(parents=True, exist_ok=True)
                 (roots[lib] / rel).write_text(c)
         libs_ok = [lib for lib in libs if files[lib]]
+        block_ok = [lib for lib in block_libs if files[lib]]
         weights = {lib: [len(c) ** 0.5 for _, c in files[lib]] for lib in libs_ok}   # bigger files more often
+        weights.update({lib: [len(block_lines(c.split("\n"))) ** 0.5 for _, c in files[lib]] for lib in block_ok})
         b.lib_words = {lib: Counter(re.findall(r"\b[a-z_][a-z0-9_]{4,}\b", "\n".join(c for _, c in files[lib])))
-                       for lib in libs_ok}
+                       for lib in libs_ok + block_ok}
         per_file, per_lib, wins, misses = Counter(), Counter(), {}, Counter()
+        fams = dict(zip(*FAMILIES))
+        if a.families:                            # e.g. block=1: a held-out slice of one family
+            fams = {k: float(v) for k, v in (x.split("=") for x in a.families.split(","))}
+            assert set(fams) <= set(FAMILIES[0]), fams
+        if not block_ok and "block" in fams:
+            fams.pop("block")
         while sum(v for k, v in st.items() if k.startswith("ok_")) < a.n and st["tried"] < a.n * 12:
-            avail = {lib: [k for k, (r2, _) in enumerate(files[lib]) if per_file[r2] < a.file_cap] for lib in libs_ok}
-            libs_av = [lib for lib in libs_ok if avail[lib] and misses[lib] < 60]   # 60 misses in a row: used up
+            fam = b.rng.choices(list(fams), list(fams.values()))[0]
+            group = block_ok if fam == "block" else libs_ok        # block drills: their own libraries
+            avail = {lib: [k for k, (r2, _) in enumerate(files[lib]) if per_file[r2] < a.file_cap] for lib in group}
+            libs_av = [lib for lib in group if avail[lib] and misses[lib] < 60]   # 60 misses in a row: used up
             if not libs_av:
+                if fam == "block":
+                    print(f"  block libraries used up after {st['ok_block']} block drills; the rest without them")
+                    fams.pop("block")
+                    continue
                 print(f"  every library is used up (--file-cap {a.file_cap}, 60 misses in a row); stopping early")
                 break
             low = min(per_lib[lib] for lib in libs_av)            # the library with the fewest drills so far
             lib = b.rng.choice([x for x in libs_av if per_lib[x] == low])
             k = b.rng.choices(avail[lib], [weights[lib][j] for j in avail[lib]])[0]
             rel, c = files[lib][k]
-            fam = b.rng.choices(*FAMILIES)[0]
             dist = b.rng.choices(*DISTANCES)[0]
             others = [(r2, c2) for r2, c2 in files[lib] if r2 != rel]
             dis = [b.rng.choice(others) for _ in range(dist)] if others else []
@@ -947,7 +1031,7 @@ def build(a):
             st[f"dup_seen_{rec['dup_seen']}"] += 1
             st[f"lib_{lib}"] += 1
             span[min(rec["old_lines"], 6)] += 1
-            if fam == "recover":
+            if rec.get("corruption"):
                 st[f"corrupt_{rec['corruption']}"] += 1
             json.dump(rec, open(out / f"{rec['instance_id']}.json", "w"), ensure_ascii=False)
     print(json.dumps({**dict(sorted(st.items())), "old_lines (answer lines; 6 = 6+)": dict(sorted(span.items()))}))
@@ -1043,7 +1127,7 @@ def score(a):
         if v.get("pre_edit"):                     # stale drills: the earlier edit in the context is applied first
             content = apply_replacement(content, v["pre_edit"]["old"], v["pre_edit"]["new"]).new_content
         row = {"family": rec["family"], "distance": rec["distance"], "call": m["call"], "target": tgt["name"],
-               "outcome": None}
+               "outcome": None, "repeated": rec.get("dup_seen", "?")}
         got = (m.get("tool_calls") or [None])[0]
         if not got:
             row["outcome"] = "no_call" if m.get("finish_reason") != "length" else "cut_off"
@@ -1075,7 +1159,7 @@ def score(a):
     n = len(edits) or 1
     print(f"edit_drills score · {a.decoded} on {a.records} · {len(rows)} decoded calls, {len(edits)} edit targets")
     print("  edit outcomes:", {k: f"{v} ({100 * v / n:.0f}%)" for k, v in tot.most_common()})
-    for key in ("family", "distance"):
+    for key in ("family", "distance", "repeated"):
         groups = sorted({r[key] for r in edits})
         for g in groups:
             sub = [r for r in edits if r[key] == g]
@@ -1093,6 +1177,11 @@ def score(a):
     ok = intended >= 0.80 and nf <= 0.10 and sev <= 0.03 and parsed >= 0.99
     print(f"== gate: intended {100 * intended:.0f}% (≥ 80) · not_found at distance ≥ 2 {100 * nf:.0f}% (≤ 10) · "
           f"several matches {100 * sev:.0f}% (≤ 3) · parsed {100 * parsed:.0f}% (≥ 99) → {'PASS' if ok else 'not yet'}")
+    blk = [r for r in edits if r["family"] == "block"]
+    if blk:
+        kb = Counter(r["outcome"] for r in blk)
+        print(f"   block slice (repeated blocks, fastapi-like; read next to the gate): n {len(blk)} · intended "
+              f"{100 * kb['intended'] / len(blk):.0f}% · several matches {100 * kb['several_matches'] / len(blk):.0f}%")
 
 
 def think(a):
@@ -1155,6 +1244,9 @@ def main():
     b.add_argument("--min-lines", type=int, default=60)
     b.add_argument("--file-cap", type=int, default=15, help="at most this many drills per source file")
     b.add_argument("--multi", type=float, default=0.3, help="share of copy/recover drills drawn from multi-line sites")
+    b.add_argument("--families", default="", help="override the family weights, e.g. block=1 (the held-out block slice)")
+    b.add_argument("--block-libs", default="typer,openai,networkx",
+                   help="libraries for the block family ('' = no block drills); held-out: sqlmodel,huggingface_hub")
     b.add_argument("--out", required=True)
     d = sub.add_parser("decode")
     d.add_argument("records")

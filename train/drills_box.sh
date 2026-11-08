@@ -2,7 +2,7 @@
 # Step 2 of the E4B gap plan on the GPU box (BOX_PLAN.md B-3p): an edit-skill LoRA from checked edit_file drills
 # (train/edit_drills.py) mixed with E4B's own resolved calls on SWE-rebench tasks, gated offline on held-out drills
 # before any agent eval. One stage per call; no `set -e`: every stage prints its result and ends with a 📷 line.
-#   bash train/drills_box.sh build          # CPU: training + held-out drills (≈ 1 min)
+#   bash train/drills_box.sh build          # CPU: training + held-out drills + the held-out block slice (≈ 15 min)
 #   GPU=0 bash train/drills_box.sh gate0    # E4B, no adapter, on the held-out drills (temperature 0) → the baseline gate
 #   GPU=0 bash train/drills_box.sh think    # E4B's own thoughts into the training drills (temperature 0.7)
 #   bash train/drills_box.sh mix            # render + mix with runs/sft/rebenche4b (drills ≤ DRILL_SHARE of label tokens)
@@ -10,7 +10,8 @@
 #   GPU=0 bash train/drills_box.sh gate1    # each epoch's adapter on the held-out drills, beside gate0
 #   bash train/drills_box.sh subs           # the chosen epoch → runs/adapters/$NAME + a build check
 # gate0 / think / gate1 start their own server on $GPU and stop every `vllm serve` first: run them when no lane runs.
-# Knobs (every one printed): GPU · N_TRAIN (1500) · N_HELD (300) · TRAIN_LIBS · HELD_LIBS · SYSTEM (the arm's system.md)
+# Knobs (every one printed): GPU · N_TRAIN (1500) · N_HELD (300) · N_BLOCK (80, the held-out block slice) · TRAIN_LIBS ·
+# HELD_LIBS · BLOCK_LIBS / HELD_BLOCK_LIBS (the block family's repetitive libraries) · SYSTEM (the arm's system.md)
 # · DROP_TOOLS (for a tools6 arm) · TOOLS_FROM (a traj log; default the first runs/*/traj/*.jsonl) · OWN (rebenche4b
 # rendered file) · DRILL_SHARE (0.4) · TRAIN_PY (.venv-train/bin/python) · DQ (bf16 base) · EPOCHS LR ACCUM R ALPHA ·
 # NAME (e4b_drill) · EPOCH (subs: default the gate1 winner, else the lower held-out NLL).
@@ -24,15 +25,16 @@ say() { echo "== $(date '+%T') [$(( $(date +%s) - T0 ))s] $*"; }
 GPU="${GPU:-0}"; PY=.venv-eval/bin/python; TRAIN_PY="${TRAIN_PY:-.venv-train/bin/python}"
 N_TRAIN="${N_TRAIN:-1500}"; N_HELD="${N_HELD:-300}"
 TRAIN_LIBS="${TRAIN_LIBS:-click,jinja2,attr,anyio,h11,werkzeug,packaging,markdown_it,yaml,dateutil}"
-HELD_LIBS="${HELD_LIBS:-sqlalchemy,tqdm,tenacity,starlette}"
+HELD_LIBS="${HELD_LIBS:-sqlalchemy,tqdm,tenacity,starlette}"; N_BLOCK="${N_BLOCK:-80}"
+BLOCK_LIBS="${BLOCK_LIBS:-typer,openai,networkx}"; HELD_BLOCK_LIBS="${HELD_BLOCK_LIBS:-sqlmodel,huggingface_hub,pandas}"
 SYSTEM="${SYSTEM:-scripts/arms/latest_e4b/prompts/system.md}"; DROP_TOOLS="${DROP_TOOLS:-}"
 TOOLS_FROM="${TOOLS_FROM:-$(ls runs/*/traj/*.jsonl runs/*/*/traj/*.jsonl 2>/dev/null | grep -v '\.tools\.jsonl$' | head -1)}"
 OWN="${OWN:-runs/sft/rebenche4b.rendered.jsonl}"; DRILL_SHARE="${DRILL_SHARE:-0.4}"
 DQ="${DQ:-runs/dequant/gemma-4-E4B-dq}"; NAME="${NAME:-e4b_drill}"; OUTD="runs/sft_out/$NAME"
 E4B=google/gemma-4-E4B-it-qat-w4a16-ct; ALIAS=gemma-4-e4b-it-qat-w4a16-ct; TOK="${TOK:-$E4B}"
-D=runs/sft/drills; H=runs/sft/drills_heldout; G=runs/drills
+D=runs/sft/drills; H=runs/sft/drills_heldout; HB=runs/sft/drills_heldout_block; G=runs/drills
 SFT="--base $DQ --max-len 32768 --epochs ${EPOCHS:-2} --lr ${LR:-3e-5} --warmup 0.05 --accum ${ACCUM:-16} --r ${R:-16} --alpha ${ALPHA:-16} --clip 1.0 --eval-every 25 --seed 0"
-echo "drills_box $STEP · GPU $GPU · train $N_TRAIN from $TRAIN_LIBS · held out $N_HELD from $HELD_LIBS · system $SYSTEM · drop tools [${DROP_TOOLS}] · tools from $TOOLS_FROM · own $OWN · drill share ≤ $DRILL_SHARE · sft: $SFT · name $NAME"
+echo "drills_box $STEP · GPU $GPU · train $N_TRAIN from $TRAIN_LIBS (block: $BLOCK_LIBS) · held out $N_HELD from $HELD_LIBS (block: $HELD_BLOCK_LIBS) + block slice $N_BLOCK · system $SYSTEM · drop tools [${DROP_TOOLS}] · tools from $TOOLS_FROM · own $OWN · drill share ≤ $DRILL_SHARE · sft: $SFT · name $NAME"
 mkdir -p "$G"
 
 serve() {   # $1 = a dir with adapters/<name>/ to mount, or "" for none; stops every vllm serve on the box first
@@ -46,15 +48,19 @@ serve() {   # $1 = a dir with adapters/<name>/ to mount, or "" for none; stops e
 case "$STEP" in
 build)
   [ -f "$TOOLS_FROM" ] || { echo "TOOLS_FROM=$TOOLS_FROM: no traj log"; exit 1; }
-  $PY train/edit_drills.py build --libs "$TRAIN_LIBS" --n "$N_TRAIN" --seed 0 --tools-from "$TOOLS_FROM" \
+  $PY train/edit_drills.py build --libs "$TRAIN_LIBS" --block-libs "$BLOCK_LIBS" --n "$N_TRAIN" --seed 0 --tools-from "$TOOLS_FROM" \
     --drop-tools "$DROP_TOOLS" --system "$SYSTEM" --out $D 2>&1 | grep -v LiteLLM | cut -c1-300
-  $PY train/edit_drills.py build --libs "$HELD_LIBS" --n "$N_HELD" --seed 1 --tools-from "$TOOLS_FROM" \
+  $PY train/edit_drills.py build --libs "$HELD_LIBS" --block-libs "$HELD_BLOCK_LIBS" --n "$N_HELD" --seed 1 --tools-from "$TOOLS_FROM" \
     --drop-tools "$DROP_TOOLS" --system "$SYSTEM" --out $H 2>&1 | grep -v LiteLLM | cut -c1-300
-  echo "📷 the two '== drills' lines and the tools / sampling line" ;;
+  $PY train/edit_drills.py build --libs "${HELD_LIBS%%,*}" --block-libs "$HELD_BLOCK_LIBS" --families block=1 --n "$N_BLOCK" --seed 2 \
+    --tools-from "$TOOLS_FROM" --drop-tools "$DROP_TOOLS" --system "$SYSTEM" --out $HB 2>&1 | grep -v LiteLLM | cut -c1-300
+  echo "📷 the three '== drills' lines and the tools / sampling line" ;;
 gate0)
   serve ""
   $PY train/edit_drills.py decode $H --model $ALIAS --temperature 0 --out $G/heldout_base_t0.jsonl 2>&1 | grep -E "^==|^edit_drills"
   $PY train/edit_drills.py score $H $G/heldout_base_t0.jsonl 2>&1 | grep -v LiteLLM | tee $G/gate0.txt
+  $PY train/edit_drills.py decode $HB --model $ALIAS --temperature 0 --out $G/heldblock_base_t0.jsonl 2>&1 | grep -E "^==|^edit_drills"
+  echo "-- block slice"; $PY train/edit_drills.py score $HB $G/heldblock_base_t0.jsonl 2>&1 | grep -v LiteLLM | tee $G/gate0_block.txt | grep -E "edit outcomes|block slice"
   pkill -f "[v]llm serve"
   echo "📷 everything from 'edit_drills score' down (laptop expectation from the study: not_found ≈ 40 % at distance ≥ 2)" ;;
 think)
@@ -107,9 +113,11 @@ gate1)
   serve runs/drill_serve
   for a in $(ls runs/drill_serve/adapters); do
     $PY train/edit_drills.py decode $H --model "$a" --temperature 0 --out $G/heldout_${a}_t0.jsonl 2>&1 | grep -E "^=="
-    echo "-- $a"; $PY train/edit_drills.py score $H $G/heldout_${a}_t0.jsonl 2>&1 | grep -v LiteLLM | tee $G/gate1_$a.txt | grep -E "edit outcomes|distance [0-5]|^== gate"
+    echo "-- $a"; $PY train/edit_drills.py score $H $G/heldout_${a}_t0.jsonl 2>&1 | grep -v LiteLLM | tee $G/gate1_$a.txt | grep -E "edit outcomes|distance [0-5]|^== gate|block slice"
+    $PY train/edit_drills.py decode $HB --model "$a" --temperature 0 --out $G/heldblock_${a}_t0.jsonl 2>&1 | grep -E "^=="
+    $PY train/edit_drills.py score $HB $G/heldblock_${a}_t0.jsonl 2>&1 | grep -v LiteLLM | tee $G/gate1_block_$a.txt | grep -E "block slice"
   done
-  echo "-- no adapter (gate0)"; grep -E "edit outcomes|^== gate" $G/gate0.txt 2>/dev/null || echo "  (no gate0 yet)"
+  echo "-- no adapter (gate0)"; grep -E "edit outcomes|^== gate|block slice" $G/gate0.txt $G/gate0_block.txt 2>/dev/null || echo "  (no gate0 yet)"
   pkill -f "[v]llm serve"
   echo "📷 every '--' block (each adapter's outcomes, distance lines and gate) and the gate0 lines" ;;
 subs)
