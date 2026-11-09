@@ -64,7 +64,7 @@ build)
     --drop-tools "$DROP_TOOLS" --system "$SYSTEM" --out $H 2>&1 | grep -v LiteLLM | cut -c1-300
   $PY train/edit_drills.py build --libs "${HELD_LIBS%%,*}" --block-libs "$HELD_BLOCK_LIBS" --families block=1 --n "$N_BLOCK" --seed 2 \
     --tools-from "$TOOLS_FROM" --drop-tools "$DROP_TOOLS" --system "$SYSTEM" --out $HB 2>&1 | grep -v LiteLLM | cut -c1-300
-  $PY train/edit_drills.py build --libs "$HELD_LIBS" --block-libs "" --families retry=1 --n "$N_RETRY" --seed 4 \
+  $PY train/edit_drills.py build --libs "$HELD_LIBS" --block-libs "" --families retry=1 --n "$N_RETRY" --seed 4 --exclude $H \
     --tools-from "$TOOLS_FROM" --drop-tools "$DROP_TOOLS" --system "$SYSTEM" --out $HR 2>&1 | grep -v LiteLLM | cut -c1-300
   echo "📷 the four '== drills' lines and the tools / sampling line" ;;
 gate0)

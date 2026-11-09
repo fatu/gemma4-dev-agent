@@ -130,6 +130,7 @@ DUP_VIEW = 0.5
 BLOCK_LINES = 3
 BLOCK_CAP = 25
 BLOCK_FAIL = 0.5
+REREAD_MARGIN = (0, 25)    # lines read again around the failed span + the answer, each side drawn uniformly (≤ 150 lines)
 # E4B's failed edits (study E, 170): copied wrong 36 % · several matches 32 % · stale 13 % (own family) · call
 # syntax / JSON wrapper 11 % → the recover corruptions, drawn by weight before the site is chosen
 CORRUPTIONS = (["token_change", "dropped_line", "reformat", "short_nonunique", "json_wrapper", "quote_wrap",
@@ -603,8 +604,8 @@ def token_change(line, rng, words=()):
     few words dropped from a comment / string · an argument dropped from a call · the line cut short · another name of
     the file (words) → the line or None (never a character-level typo: LLMs do not make those)"""
     w = line.split()
-    text = len(w) >= 4 and not re.search(r"[=()\[\]{}]", line) and not line.rstrip().endswith(":") \
-        and w[0] not in keyword.kwlist                       # docstring / prose line: words, not names
+    text = (len(w) >= 4 and not re.search(r"[=()\[\]{}]", line) and not line.rstrip().endswith(":")
+            and w[0] not in keyword.kwlist) or bool(re.match(r"\s*(\.\. |:\w+[ :])", line))   # docstring / RST prose
     for _ in range(6):
         op = rng.choices(*MISREMEMBER_OPS)[0]
         if text and op in ("name_variant", "arg_drop", "other_name"):
@@ -630,9 +631,9 @@ def token_change(line, rng, words=()):
             cands = []
             if re.search(r"\[:\d", line):
                 cands.append(re.sub(r"\[:(\d)", r"[0:\1", line, count=1))
-            if st.endswith(","):
+            if st.endswith(",") and not text:
                 cands.append(st[:-1])
-            elif st and st[-1] not in ":,([{\\":
+            elif st and st[-1] not in ":,([{\\" and not text:
                 cands.append(st + ",")
             if st.endswith((")", "]", "}")) and len(st) > 1:
                 cands.append(st[:-1])
@@ -730,7 +731,7 @@ def retry_fail(kind, content, lines, site, a, b, vs, ve, rng):
     c0, c1, off = site["l0"] - a2, site["l1"] - a2, len(site["new_lines"]) - (site["l1"] - site["l0"])
     nidx = lambda j: j if j < c0 else j + off             # an unchanged line's index in new
     unchanged = [j for j in range(len(old_l)) if old_l[j].strip() and not c0 <= j < c1]
-    words = sorted({w for w in re.findall(r"\b[A-Za-z_]\w{3,}\b", content) if not keyword.iskeyword(w)})
+    words = sorted({w for w in re.findall(r"\b[A-Za-z_]\w{3,}\b", content) if not keyword.iskeyword(w) and not w.startswith("__")})
     for _ in range(12):
         ol, nl = list(old_l), list(new_l)
         if kind in ("misquote_both", "token_change"):
@@ -747,7 +748,9 @@ def retry_fail(kind, content, lines, site, a, b, vs, ve, rng):
         elif kind == "invented":
             for j in range(len(ol)):
                 if ol[j].strip():
-                    alt = misquote(ol[j], rng, words) or token_change(ol[j], rng, words)
+                    alt = token_change(ol[j], rng, words)          # invented: 1-2 misrememberings per line
+                    if alt and rng.random() < 0.3:
+                        alt = token_change(alt, rng, words) or alt
                     if alt:
                         ol[j] = alt
                         if not c0 <= j < c1:
@@ -774,7 +777,7 @@ def retry_fail(kind, content, lines, site, a, b, vs, ve, rng):
                     nl = nl[:ni] + esc(nl[ni:nk]) + nl[nk:]
         bad, bad_new = "\n".join(ol), "\n".join(nl)
         if bad != "\n".join(old_l) and bad.strip() and n_matches(content, bad) == 0:
-            return bad, bad_new
+            return bad, bad_new, (a2, b2)
     return None
 
 
@@ -810,6 +813,8 @@ class Builder:
         return build_agent_prompt(task, cfg, tree, declared_tools=self.tool_names)
 
     def call(self, name, args):
+        if name == "read_file":                   # E4B's own key order for read_file: alphabetical
+            args = dict(sorted(args.items()))
         self.n += 1
         cid = f"chatcmpl-tool-drill{self.n:08x}"
         return cid, {"role": "assistant", "content": None, "tool_calls": [
@@ -1074,7 +1079,8 @@ class Builder:
             if not c:
                 self.why = "corrupt"
                 return None
-            bad, bad_new = c
+            bad, bad_new = c[:2]
+            span = c[2] if len(c) > 2 else (sp_[0], sp_[1]) if ckind == "block_nonunique" else (max(0, a - 2), min(len(lines), b + 2))
             cid, am = self.call("edit_file", {"filepath": rel, "new_string": bad_new, "old_string": bad})
             err = ws.edit_file(ctx, rel, bad, bad_new)
             if json.loads(err).get("status") != "error":
@@ -1082,8 +1088,21 @@ class Builder:
                 self.why = "corrupt"
                 return None
             msgs += [am, {"role": "tool", "tool_call_id": cid, "content": tool_msg(err)}]
-            rs, re_ = max(1, a + 1 - 4), min(len(lines), b + 4)
-            reread = {"id": None, "name": "read_file", "args": json.dumps({"filepath": rel, "start_line": rs, "end_line": re_})}
+            # the lines read again: the failed span and the answer, with margins drawn on their own (REREAD_MARGIN), so the
+            # answer's place in the read is never a fixed offset (a fixed ± 4 let the answer be copied as "the read
+            # minus 4 lines each end")
+            f0, f1 = min(a, span[0]), max(b, span[1])
+            rs, re_ = max(1, f0 + 1 - rng.randint(*REREAD_MARGIN)), min(len(lines), f1 + rng.randint(*REREAD_MARGIN))
+            if re_ - rs + 1 > 150:
+                rs = max(1, a + 1 - rng.randint(0, 10))
+                re_ = min(len(lines), rs + 149)
+            rd = json.loads(ws.read_file(ctx, rel, rs, re_))
+            if rd.get("is_truncated") or old not in (rd.get("content") or "") or re_ < b:
+                (Path(root) / rel).write_text(content)
+                self.why = "reread"
+                return None
+            reread = {"id": None, "name": "read_file",
+                      "args": json.dumps({"end_line": re_, "filepath": rel, "start_line": rs}, ensure_ascii=False)}
             state = rng.choices(*RETRY_STATES)[0] if family == "retry" else None
             if state in ("resent", "reread_resent"):  # the loop: (read again,) the identical call, the same error
                 if state == "reread_resent":
@@ -1151,7 +1170,7 @@ def build(a):
           f"on the longest repeating span · retry errors by weight {dict(zip(*RETRY_ERRORS))} · retry loop states "
           f"{dict(zip(*RETRY_STATES))} · retry failed old_string lines by weight {dict(zip(*FAILED_LINES))} (7-8 / 9-12 / 13-20 / "
           f"21-40 inside the last four) · misquote strength {dict(zip(*MISQUOTE))} · escaped look {ESCAPED[0]} (whole span "
-          f"{ESCAPED[1]:.2f}) · out {a.out}")
+          f"{ESCAPED[1]:.2f}) · re-read margins {REREAD_MARGIN} · exclude windows of {a.exclude or 'nothing'} · out {a.out}")
     b = Builder(a)
     print(f"  tools {b.tool_names} · sampling {b.sampling} · policy model {b.model} · family weights "
           f"{a.families or dict(zip(*FAMILIES))}")
@@ -1179,6 +1198,9 @@ def build(a):
         b.lib_words = {lib: Counter(re.findall(r"\b[a-z_][a-z0-9_]{4,}\b", "\n".join(c for _, c in files[lib])))
                        for lib in libs_ok + block_ok}
         per_file, per_lib, wins, misses = Counter(), Counter(), {}, Counter()
+        for x in load_records(a.exclude).values() if a.exclude else []:   # another set's answer windows stay out
+            wins.setdefault(x["verify"]["path"], []).append(tuple(x["window"]))
+            seen.add((x["verify"]["path"], x["site_line"], x["mutation"]))
         fams = dict(zip(*FAMILIES))
         if a.families:                            # e.g. block=1: a held-out slice of one family
             fams = {k: float(v) for k, v in (x.split("=") for x in a.families.split(","))}
@@ -1326,7 +1348,8 @@ def drill_file(rec, cache):
 def call_outcome(rec, call, m, cache):
     """one decoded reply against its target → (outcome, the model's edit args or None). Outcomes: intended,
     applied_other_change, several_matches, not_found, wrong_file, bad_args, other_tool:<name>, same_tool (a read_file
-    target answered by read_file of the right file), no_call, cut_off"""
+    target answered by read_file of the right file), edit_intended_early (a read_file target answered by the correct
+    edit at once: also right), no_call, cut_off"""
     from swegemma.edit import apply_replacement
     tgt = rec["calls"][call - 1]["target"]["tool_calls"][0]
     v = rec["verify"]
@@ -1334,6 +1357,15 @@ def call_outcome(rec, call, m, cache):
     if not got:
         return ("no_call" if m.get("finish_reason") != "length" else "cut_off"), None
     if got["name"] != tgt["name"]:
+        if tgt["name"] == "read_file" and got["name"] == "edit_file":   # the correct edit at once is also right
+            try:
+                ga = json.loads(got["args"]) if isinstance(got["args"], str) else got["args"]
+                r = apply_replacement(drill_file(rec, cache), ga["old_string"], ga["new_string"])
+                if ga.get("filepath", "").removeprefix("/workspace/") == v["path"] and \
+                        sha(r.new_content) == v["intended_sha256"]:
+                    return "edit_intended_early", ga
+            except (ValueError, KeyError, TypeError, json.JSONDecodeError):
+                pass
         return f"other_tool:{got['name']}", None
     try:
         ga = json.loads(got["args"]) if isinstance(got["args"], str) else got["args"]
@@ -1371,7 +1403,7 @@ def score(a):
         row["outcome"], ga = call_outcome(rec, m["call"], m, files)
         if rec.get("failed_old") is not None and tgt["name"] == "edit_file":   # a failed old_string sent again
             row["resend"] = bool(ga) and ga.get("old_string") == rec["failed_old"]
-        if ga and isinstance(ga.get("old_string"), str):        # answer length: the model's old_string vs the target's
+        if ga and isinstance(ga.get("old_string"), str) and tgt["name"] == "edit_file":   # answer length: model vs target
             row["old_lines"] = ga["old_string"].count("\n") + 1
             row["tgt_lines"] = json.loads(tgt["args"])["old_string"].count("\n") + 1
         rows.append(row)
@@ -1389,7 +1421,8 @@ def score(a):
                   f"{100 * k['not_found'] / len(sub):.0f}% · several {100 * k['several_matches'] / len(sub):.0f}%")
     rr = [r for r in rows if r["target"] == "read_file"]
     if rr:
-        print(f"  recover call 1 (target read_file): same tool {sum(r['outcome'] == 'same_tool' for r in rr)} / {len(rr)}")
+        print(f"  recover call 1 (target read_file): same tool {sum(r['outcome'] == 'same_tool' for r in rr)} / {len(rr)} · "
+              f"the correct edit at once (also right) {sum(r['outcome'] == 'edit_intended_early' for r in rr)}")
     rs_ = [r for r in edits if "resend" in r]
     if rs_:
         print(f"   resend (edit targets after a failed edit in context: the model's old_string is the failed one): "
@@ -1485,6 +1518,8 @@ def main():
     b.add_argument("--file-cap", type=int, default=15, help="at most this many drills per source file")
     b.add_argument("--multi", type=float, default=0.3, help="share of copy/recover drills drawn from multi-line sites")
     b.add_argument("--families", default="", help="override the family weights, e.g. block=1 (the held-out block slice)")
+    b.add_argument("--exclude", default="", help="a drill dir whose answer windows this set must not overlap (the "
+                   "held-out retry slice vs the held-out set)")
     b.add_argument("--block-libs", default="typer,openai,networkx",
                    help="libraries for the block family ('' = no block drills); held-out: sqlmodel,huggingface_hub")
     b.add_argument("--out", required=True)
