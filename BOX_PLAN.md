@@ -686,7 +686,7 @@ on short, checked edit exercises, no whole 31B trajectories) and, later, step 3 
 | 4 | E4B's own SWE-rebench rollouts on GPUs 1–3, three passes: the rebench task data must be on this box first (`runs/rebench/`: tasks.jsonl, ok.txt, snapshots, site). `GPUS="1 2 3" PASSES=3 LATEST=e4b ADAPTER= MODEL=google/gemma-4-E4B-it-qat-w4a16-ct TOK=google/gemma-4-E4B-it-qat-w4a16-ct ARM=base GTAG=e KEEP=all SFT=runs/sft/rebenche4b SRC=e4b_onpolicy POLICY=gemma-4-e4b-it-qat-w4a16-ct bash scripts/rebench_gen.sh gen`; when the 3 lanes end, the same line with `data` | 3 cards · ~3–5 h | the gen lines; later the data lines | optional — without it `mix` trains on drills only (it warns); `data` needs the same PASSES=3 GTAG=e |
 | 5 | `bash train/drills_box.sh mix` | CPU · minutes | the render lines + `== mix` | render not PASS → stop |
 | 6 | two learning rates at once: `GPU=0 LR=1e-5 NAME=e4b_drill_lr1 …train` and `GPU=1 LR=3e-5 NAME=e4b_drill_lr3 …train` (full lines below) | 2 cards · ~1–2 h | the `grep -hE …` line below: r/alpha/lr, schedules, eval lines, four `== epoch` lines | — |
-| 7 | `for n in lr1 lr3; do GPU=0 NAME=e4b_drill_$n bash train/drills_box.sh gate1; done` | 1 card · ~30 min | every `--` block (outcomes, distance lines, gate, block slice, answer length) and the gate0 lines | go only if (a) a gate passes, (b) its block slice several matches is clearly below gate0's, (c) its non-block median answer length is < gate0's + 2 lines; otherwise stop and send the photos |
+| 7 | `for n in lr1 lr3; do GPU=0 NAME=e4b_drill_$n bash train/drills_box.sh gate1; done` | 1 card · ~30 min | every `--` block (outcomes, distance lines, gate, block slice, answer length) and the gate0 lines | go only if (a) a gate passes, (b) its block slice several matches is clearly below gate0's, (c) its non-block median answer length is ≤ the target's median (the `answer length (non-block …)` line; 3 at gate0); otherwise stop and send the photos |
 | 8 | `NAME=<the passing one> bash train/drills_box.sh subs` | CPU · minutes | the subs lines (epoch, adapter_config r/alpha, build check) | build check fails → stop |
 | 9 | the A/B: no adapter vs the adapter, 4 lanes × 2 passes on the 51 tasks (commands below) | 4 cards · ~4 h | the per-arm resolved counts, `rulestats` and the drill-template line count | read it with the rule under the A/B commands |
 
@@ -750,8 +750,9 @@ the lr is the only strength knob, and a smaller rank leaves the scorer more KV c
   answer. Its new lines `samples: {kept:… dropped:…}` and `calls with a thought by family` go in the photo: a family
   with few thoughts is one E4B rarely gets right (expected: block, anchor).
 - `gate0` / `gate1` print `answer length (non-block …)` and `(block …)`: the model's old_string lines vs the target's.
-**Reading gate1:** the gate is unchanged; the non-block answer length must not grow clearly over gate0's (≥ 2 lines in
-the median = the block drills pulled every anchor longer); beside it, the block slice's several-matches rate should fall clearly below
+**Reading gate1:** the gate is unchanged; the non-block median answer length must not exceed the target's
+median printed on the same line (3 lines at gate0, where E4B wrote 1; more = the block drills pulled every anchor longer
+than needed; the earlier rule "< gate0's + 2" would have rejected an adapter that reaches the target); beside it, the block slice's several-matches rate should fall clearly below
 gate0's block slice (the fastapi-like case). If the gate passes but the block slice does not move, the adapter learned
 the easy anchors only — say so in the run log before the A/B.
 **A/B only if gate1 passes** — no adapter vs the adapter `subs` built (`$NAME`), two lanes each, two passes per lane (4 vs 4), 51 tasks:
