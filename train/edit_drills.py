@@ -151,6 +151,7 @@ RETRY_STATES = (["once", "resent", "reread_resent"], [0.4, 0.35, 0.25])
 # escapes like 16 of the 63 real ones (5 the whole span on one line, 11 a few lines joined): a look, not the cause
 FAILED_LINES = ([1, 2, 3, 4, 5, 6, 8, 12, 20, 40], [5, 6, 9, 5, 3, 5, 4, 8, 7, 11])
 MISQUOTE = (["small", "medium", "large"], [50, 35, 15])
+INVENTED_LINES = ([1, 3, 4], [5, 5, 1])   # the 11 distinct real invented old_strings: short snippets around the site
 ESCAPED = (0.25, 5 / 16)                  # share of not-found failed edits escaped · of those, the whole span on one line
 
 
@@ -462,7 +463,10 @@ class Src:
             nxt = lambda t: line[t.end[1]:].lstrip()
             opts += [(t, "is not") for t in toks if t.type == tokenize.NAME and t.string == "is" and not nxt(t).startswith("not")]
         elif kind == "constant":
-            opts = [(t, CONST_SWAP[t.string]) for t in toks if t.type == tokenize.NAME and t.string in CONST_SWAP]
+            ann = lambda t: line[:t.start[1]].rstrip().endswith(("|", "[", "->")) or \
+                line[t.end[1]:].lstrip().startswith(("|", "]"))    # `X | None`, `Optional[None]`: 0 there is no fix
+            opts = [(t, CONST_SWAP[t.string]) for t in toks if t.type == tokenize.NAME and t.string in CONST_SWAP
+                    and not (t.string == "None" and ann(t))]
         elif kind == "number":
             opts = [(t, str(int(t.string) + 1)) for t in toks if t.type == tokenize.NUMBER and t.string.isdigit()]
         elif kind == "string":
@@ -631,9 +635,18 @@ def token_change(line, rng, words=()):
             cands = []
             if re.search(r"\[:\d", line):
                 cands.append(re.sub(r"\[:(\d)", r"[0:\1", line, count=1))
-            if st.endswith(",") and not text:
+            depth, top_eq = 0, False              # an item of a call / list (no statement, no top-level `=`)
+            for k, ch in enumerate(st):
+                depth += ch in "([{"
+                depth -= ch in ")]}"
+                if ch == "=" and depth <= 0 and st[k - 1:k] not in ("=", "!", "<", ">") and st[k + 1:k + 2] != "=":
+                    top_eq = True
+            top_eq = top_eq and not re.match(r"\w+=[^=]", st.lstrip())   # `key=value,`: a keyword argument is an item
+            item = not text and not top_eq and st.split()[:1] and st.split()[0] not in keyword.kwlist \
+                and not st.endswith(":")
+            if st.endswith(",") and item:
                 cands.append(st[:-1])
-            elif st and st[-1] not in ":,([{\\" and not text:
+            elif st and st[-1] not in ":,([{\\" and item:
                 cands.append(st + ",")
             if st.endswith((")", "]", "}")) and len(st) > 1:
                 cands.append(st[:-1])
@@ -716,9 +729,11 @@ def retry_fail(kind, content, lines, site, a, b, vs, ve, rng):
     misremembered, the same in old and new) · token_change (a line misremembered in old only) · invented (every line
     misremembered) · dropped_line (a line skipped in both); ESCAPED of them then written with literal \\n / \\" escapes (the
     whole span or a few lines). Kept only if the harness's matcher cannot find it"""
-    want = rng.choices(*FAILED_LINES)[0]
-    want = {8: (7, 8), 12: (9, 12), 20: (13, 20), 40: (21, 40)}.get(want, (want, want))
-    want = rng.randint(*want)
+    if kind == "invented":                    # a short snippet around the changed lines, not the whole answer window
+        want, a, b = rng.choices(*INVENTED_LINES)[0], site["l0"], site["l1"]
+    else:
+        want = rng.choices(*FAILED_LINES)[0]
+        want = rng.randint(*{8: (7, 8), 12: (9, 12), 20: (13, 20), 40: (21, 40)}.get(want, (want, want)))
     a2, b2, down = a, b, rng.random() < 0.5
     while b2 - a2 < want and (a2 > vs or b2 < ve):
         if (down and b2 < ve) or a2 <= vs:
@@ -731,7 +746,11 @@ def retry_fail(kind, content, lines, site, a, b, vs, ve, rng):
     c0, c1, off = site["l0"] - a2, site["l1"] - a2, len(site["new_lines"]) - (site["l1"] - site["l0"])
     nidx = lambda j: j if j < c0 else j + off             # an unchanged line's index in new
     unchanged = [j for j in range(len(old_l)) if old_l[j].strip() and not c0 <= j < c1]
-    words = sorted({w for w in re.findall(r"\b[A-Za-z_]\w{3,}\b", content) if not keyword.iskeyword(w) and not w.startswith("__")})
+    try:                                      # names of the code only (not words of docstrings / comments)
+        names = {t.string for t in tokenize.generate_tokens(io.StringIO(content).readline) if t.type == tokenize.NAME}
+    except (tokenize.TokenError, IndentationError):
+        names = set(re.findall(r"\b[A-Za-z_]\w{3,}\b", content))
+    words = sorted(w for w in names if len(w) >= 4 and not keyword.iskeyword(w) and not w.startswith("__"))
     for _ in range(12):
         ol, nl = list(old_l), list(new_l)
         if kind in ("misquote_both", "token_change"):
@@ -1097,7 +1116,8 @@ class Builder:
                 rs = max(1, a + 1 - rng.randint(0, 10))
                 re_ = min(len(lines), rs + 149)
             rd = json.loads(ws.read_file(ctx, rel, rs, re_))
-            if rd.get("is_truncated") or old not in (rd.get("content") or "") or re_ < b:
+            if rd.get("is_truncated") or old not in (rd.get("content") or "") or re_ < b or rs > f0 + 1 or re_ < f1 \
+                    or (rs, re_) == (s0, e0):
                 (Path(root) / rel).write_text(content)
                 self.why = "reread"
                 return None
