@@ -8,7 +8,8 @@
 #                                           # samples; a thought is kept only from a sample whose own call was the answer)
 #   bash train/drills_box.sh mix            # render + mix with runs/sft/rebenche4b (drills ≤ DRILL_SHARE of label tokens)
 #   GPU=0 bash train/drills_box.sh train    # the LoRA (one card)
-#   GPU=0 bash train/drills_box.sh gate1    # each epoch's adapter on the held-out drills, beside gate0
+#   GPU=0 bash train/drills_box.sh gate1    # each epoch's adapter on the held-out drills, paired against gate0's per-drill
+#                                           # outcomes (McNemar), verdict by tier (edit_drills.py TIER_AB / TIER_STRETCH)
 #   bash train/drills_box.sh subs           # the chosen epoch → runs/adapters/$NAME + a build check
 # gate0 / think / gate1 start their own server on $GPU and stop every `vllm serve` first: run them when no lane runs —
 # or, beside running lanes (e.g. E4B's rollouts on GPUs 1-3), with KILL_ALL=0 DPORT=8010: then only this script's own
@@ -70,12 +71,13 @@ build)
 gate0)
   serve ""
   $PY train/edit_drills.py decode $H --url $URL --model $ALIAS --temperature 0 --out $G/heldout_base_t0.jsonl 2>&1 | grep -E "^==|^edit_drills"
-  $PY train/edit_drills.py score $H $G/heldout_base_t0.jsonl 2>&1 | grep -v LiteLLM | tee $G/gate0.txt
+  $PY train/edit_drills.py score $H $G/heldout_base_t0.jsonl --outcomes $G/gate0.out.jsonl --summary $G/gate0.sum.json 2>&1 | grep -v LiteLLM | tee $G/gate0.txt
   $PY train/edit_drills.py decode $HB --url $URL --model $ALIAS --temperature 0 --out $G/heldblock_base_t0.jsonl 2>&1 | grep -E "^==|^edit_drills"
-  echo "-- block slice"; $PY train/edit_drills.py score $HB $G/heldblock_base_t0.jsonl 2>&1 | grep -v LiteLLM | tee $G/gate0_block.txt | grep -E "edit outcomes|block slice"
+  echo "-- block slice"; $PY train/edit_drills.py score $HB $G/heldblock_base_t0.jsonl --outcomes $G/gate0_block.out.jsonl --summary $G/gate0_block.sum.json 2>&1 | grep -v LiteLLM | tee $G/gate0_block.txt | grep -E "edit outcomes|block slice"
   $PY train/edit_drills.py decode $HR --url $URL --model $ALIAS --temperature 0 --out $G/heldretry_base_t0.jsonl 2>&1 | grep -E "^==|^edit_drills"
-  echo "-- retry slice"; $PY train/edit_drills.py score $HR $G/heldretry_base_t0.jsonl 2>&1 | grep -v LiteLLM | tee $G/gate0_retry.txt | grep -E "edit outcomes|resend|recover call 1"
+  echo "-- retry slice"; $PY train/edit_drills.py score $HR $G/heldretry_base_t0.jsonl --outcomes $G/gate0_retry.out.jsonl --summary $G/gate0_retry.sum.json 2>&1 | grep -v LiteLLM | tee $G/gate0_retry.txt | grep -E "edit outcomes|resend|recover call 1"
   stop_serve
+  echo "  per-drill outcomes kept for gate1's paired comparison: $G/gate0*.out.jsonl"
   echo "📷 everything from 'edit_drills score' down, the '-- block slice' and '-- retry slice' lines" ;;
 think)
   serve ""
@@ -122,20 +124,22 @@ train)
     --eval $H.rendered.jsonl --out "$OUTD" 2>&1 | grep -v Warning | tee runs/sft_$NAME.log | cut -c1-250
   echo "📷 the schedule line, the 'eval[...]' lines and both '== epoch' lines" ;;
 gate1)
+  [ -s $G/gate0.out.jsonl ] && [ -s $G/gate0_block.out.jsonl ] && [ -s $G/gate0_retry.out.jsonl ] || { echo "run gate0 first (on these held-out sets): gate1 is read against it, paired"; exit 1; }
   rm -rf runs/drill_serve; mkdir -p runs/drill_serve/adapters
   for e in $OUTD/epoch*/; do k=$(basename "$e"); [ -f "$e/adapter_model.safetensors" ] && cp -r "$e" "runs/drill_serve/adapters/${NAME}_$k"; done
   serve runs/drill_serve
   for a in $(ls runs/drill_serve/adapters); do
     $PY train/edit_drills.py decode $H --url $URL --model "$a" --temperature 0 --out $G/heldout_${a}_t0.jsonl 2>&1 | grep -E "^=="
-    echo "-- $a"; $PY train/edit_drills.py score $H $G/heldout_${a}_t0.jsonl 2>&1 | grep -v LiteLLM | tee $G/gate1_$a.txt | grep -E "edit outcomes|distance [0-5]|^== gate|block slice|answer length"
+    echo "-- $a"; $PY train/edit_drills.py score $H $G/heldout_${a}_t0.jsonl --baseline $G/gate0.out.jsonl --summary $G/gate1_$a.sum.json 2>&1 | grep -v LiteLLM | tee $G/gate1_$a.txt | grep -E "edit outcomes|^== gate|answer length"
     $PY train/edit_drills.py decode $HB --url $URL --model "$a" --temperature 0 --out $G/heldblock_${a}_t0.jsonl 2>&1 | grep -E "^=="
-    $PY train/edit_drills.py score $HB $G/heldblock_${a}_t0.jsonl 2>&1 | grep -v LiteLLM | tee $G/gate1_block_$a.txt | grep -E "block slice|answer length \(block"
+    $PY train/edit_drills.py score $HB $G/heldblock_${a}_t0.jsonl --baseline $G/gate0_block.out.jsonl --summary $G/gate1_block_$a.sum.json 2>&1 | grep -v LiteLLM | tee $G/gate1_block_$a.txt >/dev/null
     $PY train/edit_drills.py decode $HR --url $URL --model "$a" --temperature 0 --out $G/heldretry_${a}_t0.jsonl 2>&1 | grep -E "^=="
-    echo "-- $a retry slice"; $PY train/edit_drills.py score $HR $G/heldretry_${a}_t0.jsonl 2>&1 | grep -v LiteLLM | tee $G/gate1_retry_$a.txt | grep -E "edit outcomes|resend|recover call 1"
+    $PY train/edit_drills.py score $HR $G/heldretry_${a}_t0.jsonl --baseline $G/gate0_retry.out.jsonl --summary $G/gate1_retry_$a.sum.json 2>&1 | grep -v LiteLLM | tee $G/gate1_retry_$a.txt >/dev/null
+    $PY train/edit_drills.py tier --main $G/gate1_$a.sum.json --block $G/gate1_block_$a.sum.json --retry $G/gate1_retry_$a.sum.json --name "$a" 2>&1 | grep -v LiteLLM | tee $G/tier_$a.txt
   done
   echo "-- no adapter (gate0)"; grep -E "edit outcomes|^== gate|block slice|answer length|resend" $G/gate0.txt $G/gate0_block.txt $G/gate0_retry.txt 2>/dev/null || echo "  (no gate0 yet)"
   stop_serve
-  echo "📷 every '--' block (each adapter's outcomes, distance lines and gate) and the gate0 lines" ;;
+  echo "📷 each adapter's '-- <name>' block: edit outcomes, gate, answer length, and the whole 'edit_drills tier' block (✓/✗ lines + '== tier'); full scores in $G/gate1_*.txt" ;;
 subs)
   BEST=$(python3 - "$G" "$NAME" <<'PY'
 import glob, re, sys

@@ -17,7 +17,9 @@ drills teach only where old_string comes from.
       --n 80 --seed 2 --tools-from <same> --out runs/sft/drills_heldout_block                        # block slice
   $PY train/edit_drills.py decode runs/sft/drills_heldout --model gemma-4-e4b-it-qat-w4a16-ct --temperature 0 \
       --out runs/drills/base_t0.jsonl                                                                 # server on :8000
-  $PY train/edit_drills.py score runs/sft/drills_heldout runs/drills/base_t0.jsonl                    # 📷 gate line
+  $PY train/edit_drills.py score runs/sft/drills_heldout runs/drills/base_t0.jsonl --outcomes g0.out.jsonl   # gate0
+  $PY train/edit_drills.py score … adapter_t0.jsonl --baseline g0.out.jsonl --summary g1.sum.json   # gate1, paired (McNemar)
+  $PY train/edit_drills.py tier --main g1.sum.json --block g1_block.sum.json --retry g1_retry.sum.json   # 📷 the tier block
   $PY train/edit_drills.py think runs/sft/drills runs/drills/think_t07.jsonl --out runs/sft/drills_native
 
 Families (record field `family`, weights FAMILIES):
@@ -1418,8 +1420,8 @@ def score(a):
         if not rec:
             continue
         tgt = rec["calls"][m["call"] - 1]["target"]["tool_calls"][0]
-        row = {"family": rec["family"], "distance": rec["distance"], "call": m["call"], "target": tgt["name"],
-               "outcome": None, "repeated": rec.get("dup_seen", "?")}
+        row = {"id": m["instance_id"], "family": rec["family"], "distance": rec["distance"], "call": m["call"],
+               "target": tgt["name"], "outcome": None, "repeated": rec.get("dup_seen", "?")}
         row["outcome"], ga = call_outcome(rec, m["call"], m, files)
         if rec.get("failed_old") is not None and tgt["name"] == "edit_file":   # a failed old_string sent again
             row["resend"] = bool(ga) and ga.get("old_string") == rec["failed_old"]
@@ -1469,6 +1471,107 @@ def score(a):
         kb = Counter(r["outcome"] for r in blk)
         print(f"   block slice (repeated blocks, fastapi-like; read next to the gate): n {len(blk)} · intended "
               f"{100 * kb['intended'] / len(blk):.0f}% · several matches {100 * kb['several_matches'] / len(blk):.0f}%")
+    if a.outcomes:                                # per drill call, for a paired comparison against this run later
+        with open(a.outcomes, "w") as w:
+            for r in rows:
+                w.write(json.dumps(r) + "\n")
+    nb = [r for r in edits if r["family"] != "block" and "old_lines" in r]
+    summ = {"records": a.records, "decoded": a.decoded, "n": len(edits), **metrics(edits),
+            "answer_median": med([r["old_lines"] for r in nb]), "target_median": med([r["tgt_lines"] for r in nb])}
+    if a.baseline:
+        base = {(r["id"], r["call"]): r for r in map(json.loads, open(a.baseline)) if r["target"] == "edit_file"}
+        pairs = [(base[(r["id"], r["call"])], r) for r in edits if (r["id"], r["call"]) in base]
+        summ["base"] = metrics([b for b, _ in pairs])
+        summ["paired_n"] = len(pairs)
+        print(f"== paired vs {a.baseline} ({len(pairs)} edit calls on the same drills; McNemar exact, two-sided):")
+        for key, good in (("intended", True), ("several_matches", False)):
+            b_ = sum(x["outcome"] == key and y["outcome"] != key for x, y in pairs)   # only the baseline has it
+            c_ = sum(x["outcome"] != key and y["outcome"] == key for x, y in pairs)   # only this run has it
+            both = sum(x["outcome"] == key and y["outcome"] == key for x, y in pairs)
+            p_ = mcnemar(b_, c_)
+            summ["p_" + {"intended": "intended", "several_matches": "several"}[key]] = p_
+            d = 100 * (c_ - b_) / (len(pairs) or 1)
+            print(f"   {key}: both {both} · only baseline {b_} · only this run {c_} · change {d:+.1f} pts · p {p_:.3g}"
+                  f" ({'better' if (d > 0) == good and d else 'worse' if d else 'same'})")
+        for k in ("intended", "several", "not_found_far", "parsed", "resend"):
+            if summ["base"].get(k) is not None and summ.get(k) is not None:
+                summ[f"d_{k}"] = summ[k] - summ["base"][k]
+        print("   " + " · ".join(f"{k} {100 * summ['base'][k]:.0f} → {100 * summ[k]:.0f} %" for k in
+                                 ("intended", "several", "not_found_far", "parsed", "resend") if summ["base"].get(k) is not None
+                                 and summ.get(k) is not None))
+    if a.summary:
+        json.dump(summ, open(a.summary, "w"), indent=1)
+
+
+def metrics(edits):
+    """the gate's rates over edit calls (fractions; resend over calls with a failed edit in context, else None)"""
+    n = len(edits) or 1
+    k = Counter(r["outcome"] for r in edits)
+    far = [r for r in edits if r["distance"] >= 2]
+    rs = [r for r in edits if "resend" in r]
+    return {"intended": k["intended"] / n, "several": k["several_matches"] / n,
+            "not_found_far": sum(r["outcome"] == "not_found" for r in far) / (len(far) or 1),
+            "parsed": 1 - (k["no_call"] + k["bad_args"] + k["cut_off"]) / n,
+            "resend": sum(r["resend"] for r in rs) / len(rs) if rs else None}
+
+
+def mcnemar(b, c):
+    """exact two-sided McNemar p on the discordant pairs b, c"""
+    from math import comb
+    n = b + c
+    if n == 0:
+        return 1.0
+    return min(1.0, 2 * sum(comb(n, i) for i in range(min(b, c) + 1)) / 2 ** n)
+
+
+# the tiers gate1 is read with (2026-11-09; relative to gate0 on the same drills: the drills oversample repeated lines, so
+# the 31B-level absolute gate is far off — E4B's real first-try several-matches rate is 5 %, the drills' 20 %)
+TIER_AB = {"d_intended": 0.05, "d_several": -0.05, "p_several": 0.05, "nf_slack": 0.02, "parsed": 0.99,
+           "block_d_several": -0.12, "retry_d_intended": 0.10}
+TIER_STRETCH = {"intended": 0.72, "several": 0.10, "block_several": 0.50, "retry_intended": 0.60}
+
+
+def tier(a):
+    """gate1's verdict from score --summary files (each scored with --baseline gate0): the A/B tier (a detectable,
+    meaningful gain over no adapter, no regression → run the agent A/B), the stretch tier, and the old 31B-level gate"""
+    m = json.load(open(a.main))
+    blk = json.load(open(a.block)) if a.block else None
+    rt = json.load(open(a.retry)) if a.retry else None
+    if "base" not in m:
+        sys.exit(f"{a.main}: scored without --baseline (gate0): no paired comparison")
+    t, ok = TIER_AB, []
+    chk = lambda name, cond, txt: ok.append(bool(cond)) or print(f"   {'✓' if cond else '✗'} {name}: {txt}")
+    print(f"edit_drills tier · {a.name} · A/B tier {TIER_AB} · stretch {TIER_STRETCH}")
+    print("-- A/B tier (run the agent A/B):")
+    chk("hit", m["d_intended"] >= t["d_intended"], f"{100 * m['base']['intended']:.0f} → {100 * m['intended']:.0f} % "
+        f"({100 * m['d_intended']:+.1f}, need ≥ +{100 * t['d_intended']:.0f}; p {m['p_intended']:.3g})")
+    chk("several matches", m["d_several"] <= t["d_several"] and m["p_several"] < t["p_several"],
+        f"{100 * m['base']['several']:.0f} → {100 * m['several']:.0f} % ({100 * m['d_several']:+.1f}, need ≤ "
+        f"{100 * t['d_several']:.0f} with p < {t['p_several']}; p {m['p_several']:.3g})")
+    chk("not found at distance ≥ 2", m["d_not_found_far"] <= t["nf_slack"],
+        f"{100 * m['base']['not_found_far']:.0f} → {100 * m['not_found_far']:.0f} % (no more than +{100 * t['nf_slack']:.0f})")
+    chk("parsed", m["parsed"] >= t["parsed"], f"{100 * m['parsed']:.0f} % (≥ {100 * t['parsed']:.0f})")
+    chk("answer length", m["answer_median"] is not None and m["answer_median"] <= m["target_median"],
+        f"non-block median {m['answer_median']} lines ≤ the target's {m['target_median']}")
+    if blk:
+        chk("block slice several matches", blk.get("d_several") is not None and blk["d_several"] <= t["block_d_several"],
+            f"{100 * blk['base']['several']:.0f} → {100 * blk['several']:.0f} % (need ≤ {100 * t['block_d_several']:.0f} pts)")
+    if rt:
+        chk("retry slice hit", rt.get("d_intended") is not None and rt["d_intended"] >= t["retry_d_intended"],
+            f"{100 * rt['base']['intended']:.0f} → {100 * rt['intended']:.0f} % (need ≥ +{100 * t['retry_d_intended']:.0f})")
+        if rt.get("resend") is not None and rt["base"].get("resend") is not None:
+            chk("retry slice resends", rt["resend"] <= rt["base"]["resend"],
+                f"{100 * rt['base']['resend']:.0f} → {100 * rt['resend']:.0f} % (no more)")
+    ab = all(ok)
+    s_ = TIER_STRETCH
+    st = m["intended"] >= s_["intended"] and m["several"] <= s_["several"] and \
+        (not blk or blk["several"] <= s_["block_several"]) and (not rt or rt["intended"] >= s_["retry_intended"])
+    g31 = m["intended"] >= 0.80 and m["not_found_far"] <= 0.10 and m["several"] <= 0.03 and m["parsed"] >= 0.99
+    print(f"-- stretch tier: hit {100 * m['intended']:.1f} % (≥ {100 * s_['intended']:.0f}) · several {100 * m['several']:.1f} % "
+          f"(≤ {100 * s_['several']:.0f})" + (f" · block slice several {100 * blk['several']:.1f} % (≤ {100 * s_['block_several']:.0f})" if blk else "")
+          + (f" · retry slice hit {100 * rt['intended']:.1f} % (≥ {100 * s_['retry_intended']:.0f})" if rt else "") + f" → {'PASS' if st else 'not yet'}")
+    print(f"== tier {a.name}: A/B tier {'PASS → run the agent A/B' if ab else 'not passed → stop, send the photos'} · "
+          f"stretch {'PASS' if st else 'not yet'} · 31B-level gate {'PASS' if g31 else 'not yet'}")
 
 
 def think(a):
@@ -1555,13 +1658,21 @@ def main():
     s = sub.add_parser("score")
     s.add_argument("records")
     s.add_argument("decoded")
+    s.add_argument("--outcomes", default="", help="write each decoded call's outcome here (jsonl), for later pairing")
+    s.add_argument("--baseline", default="", help="a gate0 --outcomes file: paired 2x2 + McNemar against it")
+    s.add_argument("--summary", default="", help="write the rates (+ the paired comparison) here (json), for `tier`")
+    tr = sub.add_parser("tier")
+    tr.add_argument("--main", required=True, help="score --summary of the held-out set (scored with --baseline)")
+    tr.add_argument("--block", default="", help="… of the held-out block slice")
+    tr.add_argument("--retry", default="", help="… of the held-out retry slice")
+    tr.add_argument("--name", default="")
     t = sub.add_parser("think")
     t.add_argument("records")
     t.add_argument("decoded")
     t.add_argument("--max-thought-chars", type=int, default=12000)
     t.add_argument("--out", required=True)
     a = ap.parse_args()
-    {"build": build, "decode": decode, "score": score, "think": think}[a.cmd](a)
+    {"build": build, "decode": decode, "score": score, "think": think, "tier": tier}[a.cmd](a)
 
 
 if __name__ == "__main__":
