@@ -35,9 +35,11 @@ Families (record field `family`, weights FAMILIES):
            target 1 reads again and target 2 is the edit
   retry    E4B's real retry loops (all-129: after a failed edit E4B retried straight away 103 of 147 times, ok 14 %;
            it resent the identical old_string 48 times, 0 ok; 31B re-reads first and is ok 81 %). Context: copy + a
-           failed edit_file whose error is drawn by RETRY_ERRORS from E4B's real not-found / several-matches causes
-           (a misremembered line copied into old AND new · a line altered in old only · text from before an earlier
-           edit of the file, stale_text · invented lines · a skipped line · too short an anchor) and a loop state by
+           failed edit_file (FAILED_LINES long, lines misremembered at MISQUOTE strength, both from E4B's real failures)
+           whose error is drawn by RETRY_ERRORS from E4B's real not-found / several-matches causes
+           (too short an anchor · a misremembered line copied into old AND new · a line altered in old only · invented
+           lines · text from before an earlier edit of the file, stale_text · a skipped line; ESCAPED of the not-found
+           ones also written with literal \n escapes, as E4B does) and a loop state by
            RETRY_STATES: once (one failure) · resent (the identical call failed twice) · reread_resent (failed, read the
            lines again, resent the identical call, failed again). Targets: once / resent → target 1 reads the lines
            again, target 2 is the correct edit; reread_resent → the correct edit (the fresh view is in context). score
@@ -132,12 +134,23 @@ BLOCK_FAIL = 0.5
 # syntax / JSON wrapper 11 % → the recover corruptions, drawn by weight before the site is chosen
 CORRUPTIONS = (["token_change", "dropped_line", "reformat", "short_nonunique", "json_wrapper", "quote_wrap",
                 "trailing_backslash"], [30, 8, 7, 40, 6, 6, 3])
-# retry family: the failed edit's cause by E4B's real failed edits that were followed by a retry (all-129: not found 126 =
-# a misremembered line in old and new 49 · altered in old only 21 · stale text 29 · invented 17 · skipped line 9; several
-# matches 67), and the loop state before the target (retried straight away 103 / re-read 44 of 147; identical resends 48)
-RETRY_ERRORS = (["misquote_both", "token_change", "stale_text", "invented", "dropped_line", "short_nonunique"],
-                [49, 21, 29, 17, 9, 67])
+# retry family, from E4B's real failed edits (all-129 base; 126 not-found + 67 several-matches errors, but only 63 + 40
+# distinct (task, old_string): the rest are identical resends). The failed edit's cause by distinct count (literal \n
+# escapes undone first: the harness's matcher undoes them too, so they are never the cause): several matches 40 · a
+# misremembered line in old and new 23 · a line altered in old only 11 · invented 11 · stale text 10 · a skipped line 8.
+# The loop state before the target: after a failed edit E4B retried straight away 103 of 147 times, re-read first 44;
+# identical resends 48 (0 ok)
+RETRY_ERRORS = (["short_nonunique", "misquote_both", "token_change", "invented", "stale_text", "dropped_line"],
+                [40, 23, 11, 11, 10, 8])
 RETRY_STATES = (["once", "resent", "reread_resent"], [0.4, 0.35, 0.25])
+# the failed old_string's length in lines (the 63 distinct real ones, escaped lines counted: p50 6 · p90 26; buckets 7-8 /
+# 9-12 / 13-20 / 21-40 drawn uniformly inside); how far a misremembered line is from the real one (distinct, lines with
+# escapes left out: best similarity to any line of the file p10 0.39 · p25 0.80 · p50 0.91 · p75 0.95 → small / medium /
+# large: 1 / 2 / 3-4 of token_change's LLM-like misrememberings, MISREMEMBER_OPS); ESCAPED of the not-found ones written with literal \n / \"
+# escapes like 16 of the 63 real ones (5 the whole span on one line, 11 a few lines joined): a look, not the cause
+FAILED_LINES = ([1, 2, 3, 4, 5, 6, 8, 12, 20, 40], [5, 6, 9, 5, 3, 5, 4, 8, 7, 11])
+MISQUOTE = (["small", "medium", "large"], [50, 35, 15])
+ESCAPED = (0.25, 5 / 16)                  # share of not-found failed edits escaped · of those, the whole span on one line
 
 
 def sha(s):
@@ -581,24 +594,83 @@ class Src:
         return out
 
 
-def token_change(line, rng):
-    """one identifier shortened/pluralised or one bracket/colon swapped (E4B's copy errors) → the line or None"""
-    toks = list(re.finditer(r"[A-Za-z_]\w+|\d+|[\[\]():]", line))
-    if not toks:
-        return None
-    t = rng.choice(toks)
-    g = t.group(0)
-    rep = {"(": "[", ")": "]", "[": "(", "]": ")", ":": ""}.get(g, g[:-1] + ("s" if not g.endswith("s") else ""))
-    return line[:t.start()] + rep + line[t.end():]
+MISREMEMBER_OPS = (["name_variant", "punct", "word_drop", "arg_drop", "truncate", "other_name"], [30, 25, 12, 13, 5, 15])
 
 
-def corrupt(kind, old, new, core, core_new, content, lines, a, b, rng, site=None):
+def token_change(line, rng, words=()):
+    """one way an LLM misremembers a line it read (E4B's real misquotes, all-129): a name variant (max_redirects →
+    max_redirect_count, current_x → x) · punctuation ([:2] → [0:2], a comma or closing bracket more or less, quotes) · a
+    few words dropped from a comment / string · an argument dropped from a call · the line cut short · another name of
+    the file (words) → the line or None (never a character-level typo: LLMs do not make those)"""
+    w = line.split()
+    text = len(w) >= 4 and not re.search(r"[=()\[\]{}]", line) and not line.rstrip().endswith(":") \
+        and w[0] not in keyword.kwlist                       # docstring / prose line: words, not names
+    for _ in range(6):
+        op = rng.choices(*MISREMEMBER_OPS)[0]
+        if text and op in ("name_variant", "arg_drop", "other_name"):
+            op = "word_drop"
+        out = None
+        prose = [m.span() for m in re.finditer(r"#.*$|\"[^\"]*\"|'[^']*'", line)]   # strings and comments: no names there
+        ids = [m for m in re.finditer(r"\b[A-Za-z_]\w{2,}\b", line) if not keyword.iskeyword(m.group(0))
+               and not m.group(0).startswith("__") and not any(a0 <= m.start() < b0 for a0, b0 in prose)]
+        if op == "name_variant" and ids:
+            m = rng.choice(ids)
+            g = m.group(0)
+            parts = g.split("_")
+            if len([x for x in parts if x]) >= 2 and rng.random() < 0.5:
+                keep = [x for x in parts if x]
+                v = "_".join(keep[1:] if rng.random() < 0.5 else keep[:-1])
+                if not v.isidentifier() or keyword.iskeyword(v):
+                    continue
+            else:
+                v = g + rng.choice(["_count", "_name", "_value", "s", "_list", "_id", "_type"])
+            out = line[:m.start()] + v + line[m.end():]
+        elif op == "punct":
+            st = line.rstrip()
+            cands = []
+            if re.search(r"\[:\d", line):
+                cands.append(re.sub(r"\[:(\d)", r"[0:\1", line, count=1))
+            if st.endswith(","):
+                cands.append(st[:-1])
+            elif st and st[-1] not in ":,([{\\":
+                cands.append(st + ",")
+            if st.endswith((")", "]", "}")) and len(st) > 1:
+                cands.append(st[:-1])
+            if "'" in line and '"' not in line:
+                cands.append(line.replace("'", '"'))
+            elif '"' in line and "'" not in line:
+                cands.append(line.replace('"', "'"))
+            out = rng.choice(cands) if cands else None
+        elif op == "word_drop":
+            m = re.search(r"(^\s*|#\s*|\"|')([^\"'#]*\s[^\"'#]*\s[^\"'#]*\s[^\"'#]+)", line) if text else \
+                re.search(r"(#\s*|\"|')([^\"'#]*\s[^\"'#]*\s[^\"'#]*\s[^\"'#]+)", line)
+            if m:
+                ws = m.group(2).split(" ")
+                k = rng.randrange(len(ws))
+                n = rng.randint(1, min(3, len(ws) - 2))
+                out = line[:m.start(2)] + " ".join(ws[:k] + ws[k + n:]) + line[m.end(2):]
+        elif op == "arg_drop":
+            m = re.search(r"\(([^()]*,[^()]*)\)", line)
+            if m:
+                args = m.group(1).split(",")
+                k = rng.randrange(len(args))
+                out = line[:m.start(1)] + ",".join(args[:k] + args[k + 1:]).strip() + line[m.end(1):]
+        elif op == "truncate" and len(line.strip()) >= 40:
+            out = line[:int(len(line) * rng.uniform(0.5, 0.8))].rstrip()
+        elif op == "other_name" and ids and words:
+            m = rng.choice(ids)
+            out = line[:m.start()] + rng.choice(words) + line[m.end():]
+        if out is not None and out != line and out.strip():
+            return out
+    return None
+
+
+def corrupt(kind, old, new, core, core_new, content, lines, a, b, rng):
     """one E4B-style failed edit of the given kind → (bad old_string, its new_string) or None. Kept only if the full
     matcher really fails on it (not found), or for short_nonunique really reports several matches. short_nonunique
     is the changed lines alone (`core`, which then must occur more than once) with their own new text, the way E4B
     anchors too short; the others corrupt a 1-5-line span around the site (E4B's own attempts: median 4 lines) and keep
-    the full new_string. misquote_both (retry): an unchanged line of the span altered the same way in old AND new (E4B
-    misremembers a context line and copies it into both); invented (retry): every line altered"""
+    the full new_string."""
     if kind == "short_nonunique":
         return (core, core_new) if core.strip() and n_matches(content, core) > 1 else None
     a, b = max(0, a - rng.randint(0, 2)), min(len(lines), b + rng.randint(0, 2))
@@ -611,19 +683,6 @@ def corrupt(kind, old, new, core, core_new, content, lines, a, b, rng, site=None
             if alt:
                 ol[j] = alt
                 bad = "\n".join(ol)
-        elif kind == "misquote_both" and site:
-            keep = [j for j in range(len(ol)) if ol[j].strip() and not site["l0"] <= a + j < site["l1"]]
-            if keep:
-                j = rng.choice(keep)
-                alt = token_change(ol[j], rng)
-                if alt:
-                    ol[j] = alt
-                    bad = "\n".join(ol)
-                    bad_new = "\n".join(ol[:site["l0"] - a] + site["new_lines"] + ol[site["l1"] - a:])
-        elif kind == "invented":
-            alts = [token_change(x, rng) if x.strip() else x for x in ol]
-            if all(x is not None for x in alts):
-                bad = "\n".join(alts)
         elif kind == "quote_wrap":
             bad = '"' + old + '"'
         elif kind == "dropped_line" and len(ol) >= 3:
@@ -636,6 +695,85 @@ def corrupt(kind, old, new, core, core_new, content, lines, a, b, rng, site=None
         elif kind == "json_wrapper":
             bad = old + '", "start_line": %d, "end_line": %d, "total_lines": %d, "is_truncated": false}' % (a + 1, b, len(lines))
         if bad and bad != old and n_matches(content, bad) == 0:
+            return bad, bad_new
+    return None
+
+
+def misquote(line, rng, words):
+    """the line as E4B misremembers it, at a strength drawn from MISQUOTE → the altered line or None"""
+    lvl = rng.choices(*MISQUOTE)[0]
+
+    out = line
+    for _ in range({"small": 1, "medium": 2, "large": rng.randint(3, 4)}[lvl]):
+        out = token_change(out, rng, words) or out
+    return out if out != line and out.strip() else None
+
+
+def retry_fail(kind, content, lines, site, a, b, vs, ve, rng):
+    """a retry drill's failed edit, E4B-style → (old, new) or None: a span of FAILED_LINES lines around the answer
+    window (inside the view [vs, ve), 0-based) with the change applied in new, then misquote_both (an unchanged line
+    misremembered, the same in old and new) · token_change (a line misremembered in old only) · invented (every line
+    misremembered) · dropped_line (a line skipped in both); ESCAPED of them then written with literal \\n / \\" escapes (the
+    whole span or a few lines). Kept only if the harness's matcher cannot find it"""
+    want = rng.choices(*FAILED_LINES)[0]
+    want = {8: (7, 8), 12: (9, 12), 20: (13, 20), 40: (21, 40)}.get(want, (want, want))
+    want = rng.randint(*want)
+    a2, b2, down = a, b, rng.random() < 0.5
+    while b2 - a2 < want and (a2 > vs or b2 < ve):
+        if (down and b2 < ve) or a2 <= vs:
+            b2 += 1
+        else:
+            a2 -= 1
+        down = not down
+    old_l = lines[a2:b2]
+    new_l = lines[a2:site["l0"]] + site["new_lines"] + lines[site["l1"]:b2]
+    c0, c1, off = site["l0"] - a2, site["l1"] - a2, len(site["new_lines"]) - (site["l1"] - site["l0"])
+    nidx = lambda j: j if j < c0 else j + off             # an unchanged line's index in new
+    unchanged = [j for j in range(len(old_l)) if old_l[j].strip() and not c0 <= j < c1]
+    words = sorted({w for w in re.findall(r"\b[A-Za-z_]\w{3,}\b", content) if not keyword.iskeyword(w)})
+    for _ in range(12):
+        ol, nl = list(old_l), list(new_l)
+        if kind in ("misquote_both", "token_change"):
+            js = unchanged if kind == "misquote_both" else [j for j in range(len(ol)) if ol[j].strip()]
+            if not js:
+                return None
+            j = rng.choice(js)
+            alt = misquote(ol[j], rng, words)
+            if not alt:
+                continue
+            ol[j] = alt
+            if kind == "misquote_both":
+                nl[nidx(j)] = alt
+        elif kind == "invented":
+            for j in range(len(ol)):
+                if ol[j].strip():
+                    alt = misquote(ol[j], rng, words) or token_change(ol[j], rng, words)
+                    if alt:
+                        ol[j] = alt
+                        if not c0 <= j < c1:
+                            nl[nidx(j)] = alt
+        elif kind == "dropped_line":
+            if len(unchanged) < 1 or len(ol) < 3:
+                return None
+            inner = [j for j in unchanged if 0 < j < len(ol) - 1]
+            if not inner:
+                return None
+            j = rng.choice(inner)
+            del nl[nidx(j)]
+            del ol[j]
+        if rng.random() < ESCAPED[0] and len(ol) >= 2 and len(nl) >= 2:   # the look: literal \n / \" escapes
+            esc = lambda xs: [json.dumps("\n".join(xs))[1:-1]]
+            if rng.random() < ESCAPED[1]:
+                ol, nl = esc(ol), esc(nl)
+            else:                                 # a few lines joined; in new the same lines where they are unchanged
+                i = rng.randrange(len(ol) - 1)
+                k = min(len(ol), i + rng.randint(2, 4))
+                ni, nk = nidx(i), nidx(k - 1) + 1
+                ol = ol[:i] + esc(ol[i:k]) + ol[k:]
+                if 0 <= ni < nk <= len(nl):
+                    nl = nl[:ni] + esc(nl[ni:nk]) + nl[nk:]
+        bad, bad_new = "\n".join(ol), "\n".join(nl)
+        if bad != "\n".join(old_l) and bad.strip() and n_matches(content, bad) == 0:
             return bad, bad_new
     return None
 
@@ -929,8 +1067,10 @@ class Builder:
                          "\n".join(lines[sp_[0]:site["l0"]] + site["new_lines"] + lines[site["l1"]:sp_[1]]))
             elif ckind == "stale_text":            # the first view's text (before the earlier edit), with the change
                 c = ("\n".join(lines[a:b]), "\n".join(lines[a:site["l0"]] + site["new_lines"] + lines[site["l1"]:b]))
+            elif family == "retry" and ckind != "short_nonunique":
+                c = retry_fail(ckind, content, lines, site, a, b, s0 - 1, e0, rng)
             else:
-                c = corrupt(ckind, old, new, core, "\n".join(site["new_lines"]), content, lines, a, b, rng, site)
+                c = corrupt(ckind, old, new, core, "\n".join(site["new_lines"]), content, lines, a, b, rng)
             if not c:
                 self.why = "corrupt"
                 return None
@@ -1009,7 +1149,9 @@ def build(a):
           f"grep -nF right after the view) · block family from {block_libs or 'nothing (no --block-libs): off'}: sites in a "
           f"repeated {BLOCK_LINES}-line block, shortest unique span {BLOCK_LINES}-{BLOCK_CAP} lines, {BLOCK_FAIL} first fail "
           f"on the longest repeating span · retry errors by weight {dict(zip(*RETRY_ERRORS))} · retry loop states "
-          f"{dict(zip(*RETRY_STATES))} · out {a.out}")
+          f"{dict(zip(*RETRY_STATES))} · retry failed old_string lines by weight {dict(zip(*FAILED_LINES))} (7-8 / 9-12 / 13-20 / "
+          f"21-40 inside the last four) · misquote strength {dict(zip(*MISQUOTE))} · escaped look {ESCAPED[0]} (whole span "
+          f"{ESCAPED[1]:.2f}) · out {a.out}")
     b = Builder(a)
     print(f"  tools {b.tool_names} · sampling {b.sampling} · policy model {b.model} · family weights "
           f"{a.families or dict(zip(*FAMILIES))}")
@@ -1052,6 +1194,9 @@ def build(a):
                 if fam == "block":
                     print(f"  block libraries used up after {st['ok_block']} block drills; the rest without them")
                     fams.pop("block")
+                    if not fams:
+                        print("  no family left; stopping early")
+                        break
                     continue
                 print(f"  every library is used up (--file-cap {a.file_cap}, 60 misses in a row); stopping early")
                 break

@@ -2,7 +2,7 @@
 # Step 2 of the E4B gap plan on the GPU box (BOX_PLAN.md B-3p): an edit-skill LoRA from checked edit_file drills
 # (train/edit_drills.py) mixed with E4B's own resolved calls on SWE-rebench tasks, gated offline on held-out drills
 # before any agent eval. One stage per call; no `set -e`: every stage prints its result and ends with a 📷 line.
-#   bash train/drills_box.sh build          # CPU: training + held-out drills + the held-out block slice (≈ 15 min)
+#   bash train/drills_box.sh build          # CPU: training + held-out drills + the held-out block and retry slices (≈ 20 min)
 #   GPU=0 bash train/drills_box.sh gate0    # E4B, no adapter, on the held-out drills (temperature 0) → the baseline gate
 #   GPU=0 bash train/drills_box.sh think    # E4B's own thoughts into the training drills (temperature 0.7, THINK_SAMPLES
 #                                           # samples; a thought is kept only from a sample whose own call was the answer)
@@ -14,7 +14,8 @@
 # or, beside running lanes (e.g. E4B's rollouts on GPUs 1-3), with KILL_ALL=0 DPORT=8010: then only this script's own
 # server (vllm serve … --port $DPORT) is started and stopped, and the lanes keep theirs. Start the lanes FIRST
 # (rebench_gen.sh gen stops every vllm serve when it starts).
-# Knobs (every one printed): GPU · N_TRAIN (1500) · N_HELD (300) · N_BLOCK (80, the held-out block slice) · TRAIN_LIBS ·
+# Knobs (every one printed): GPU · N_TRAIN (1500) · N_HELD (300) · N_BLOCK (80, the held-out block slice) · N_RETRY (80, the
+# held-out retry slice: E4B's failed-edit loops, read with its `resend` line) · TRAIN_LIBS ·
 # HELD_LIBS · BLOCK_LIBS / HELD_BLOCK_LIBS (the block family's repetitive libraries) · SYSTEM (the arm's system.md)
 # · THINK_SAMPLES (4) · DROP_TOOLS (for a tools6 arm) · TOOLS_FROM (a traj log; default the first runs/*/traj/*.jsonl) · OWN (rebenche4b
 # rendered file) · DRILL_SHARE (0.4) · TRAIN_PY (.venv-train/bin/python) · DQ (bf16 base) · EPOCHS LR ACCUM R ALPHA ·
@@ -29,17 +30,17 @@ say() { echo "== $(date '+%T') [$(( $(date +%s) - T0 ))s] $*"; }
 GPU="${GPU:-0}"; KILL_ALL="${KILL_ALL:-1}"; DPORT="${DPORT:-8000}"; PY=.venv-eval/bin/python; TRAIN_PY="${TRAIN_PY:-.venv-train/bin/python}"
 N_TRAIN="${N_TRAIN:-1500}"; N_HELD="${N_HELD:-300}"
 TRAIN_LIBS="${TRAIN_LIBS:-click,jinja2,attr,anyio,h11,werkzeug,packaging,markdown_it,yaml,dateutil}"
-HELD_LIBS="${HELD_LIBS:-sqlalchemy,tqdm,tenacity,starlette}"; N_BLOCK="${N_BLOCK:-80}"
+HELD_LIBS="${HELD_LIBS:-sqlalchemy,tqdm,tenacity,starlette}"; N_BLOCK="${N_BLOCK:-80}"; N_RETRY="${N_RETRY:-80}"
 BLOCK_LIBS="${BLOCK_LIBS:-typer,openai,networkx}"; HELD_BLOCK_LIBS="${HELD_BLOCK_LIBS:-sqlmodel,huggingface_hub,pandas}"
 SYSTEM="${SYSTEM:-scripts/arms/latest_e4b/prompts/system.md}"; DROP_TOOLS="${DROP_TOOLS:-}"
 TOOLS_FROM="${TOOLS_FROM:-$(ls runs/*/traj/*.jsonl runs/*/*/traj/*.jsonl 2>/dev/null | grep -v '\.tools\.jsonl$' | head -1)}"
 OWN="${OWN:-runs/sft/rebenche4b.rendered.jsonl}"; DRILL_SHARE="${DRILL_SHARE:-0.4}"; THINK_SAMPLES="${THINK_SAMPLES:-4}"
 DQ="${DQ:-runs/dequant/gemma-4-E4B-dq}"; NAME="${NAME:-e4b_drill}"; OUTD="runs/sft_out/$NAME"
 E4B=google/gemma-4-E4B-it-qat-w4a16-ct; ALIAS=gemma-4-e4b-it-qat-w4a16-ct; TOK="${TOK:-$E4B}"
-D=runs/sft/drills; H=runs/sft/drills_heldout; HB=runs/sft/drills_heldout_block; G=runs/drills
+D=runs/sft/drills; H=runs/sft/drills_heldout; HB=runs/sft/drills_heldout_block; HR=runs/sft/drills_heldout_retry; G=runs/drills
 SFT="--base $DQ --max-len 32768 --epochs ${EPOCHS:-2} --lr ${LR:-3e-5} --warmup 0.05 --accum ${ACCUM:-16} --r ${R:-16} --alpha ${ALPHA:-16} --clip 1.0 --eval-every 25 --seed 0"
 if [ "$KILL_ALL" = 0 ] && [ "$DPORT" = 8000 ]; then echo "KILL_ALL=0 needs DPORT ≠ 8000 (the lanes serve on 8000)"; exit 1; fi
-echo "drills_box $STEP · GPU $GPU · server port $DPORT · stops $([ "$KILL_ALL" = 1 ] && echo 'every vllm serve' || echo "only its own (port $DPORT)") · train $N_TRAIN from $TRAIN_LIBS (block: $BLOCK_LIBS) · held out $N_HELD from $HELD_LIBS (block: $HELD_BLOCK_LIBS) + block slice $N_BLOCK · system $SYSTEM · drop tools [${DROP_TOOLS}] · tools from $TOOLS_FROM · own $OWN · drill share ≤ $DRILL_SHARE · think samples $THINK_SAMPLES · sft: $SFT · name $NAME"
+echo "drills_box $STEP · GPU $GPU · server port $DPORT · stops $([ "$KILL_ALL" = 1 ] && echo 'every vllm serve' || echo "only its own (port $DPORT)") · train $N_TRAIN from $TRAIN_LIBS (block: $BLOCK_LIBS) · held out $N_HELD from $HELD_LIBS (block: $HELD_BLOCK_LIBS) + block slice $N_BLOCK + retry slice $N_RETRY · system $SYSTEM · drop tools [${DROP_TOOLS}] · tools from $TOOLS_FROM · own $OWN · drill share ≤ $DRILL_SHARE · think samples $THINK_SAMPLES · sft: $SFT · name $NAME"
 mkdir -p "$G"
 
 stop_serve() {   # KILL_ALL=1: every vllm serve on the box; 0: only ours (by its port)
@@ -63,15 +64,19 @@ build)
     --drop-tools "$DROP_TOOLS" --system "$SYSTEM" --out $H 2>&1 | grep -v LiteLLM | cut -c1-300
   $PY train/edit_drills.py build --libs "${HELD_LIBS%%,*}" --block-libs "$HELD_BLOCK_LIBS" --families block=1 --n "$N_BLOCK" --seed 2 \
     --tools-from "$TOOLS_FROM" --drop-tools "$DROP_TOOLS" --system "$SYSTEM" --out $HB 2>&1 | grep -v LiteLLM | cut -c1-300
-  echo "📷 the three '== drills' lines and the tools / sampling line" ;;
+  $PY train/edit_drills.py build --libs "$HELD_LIBS" --block-libs "" --families retry=1 --n "$N_RETRY" --seed 4 \
+    --tools-from "$TOOLS_FROM" --drop-tools "$DROP_TOOLS" --system "$SYSTEM" --out $HR 2>&1 | grep -v LiteLLM | cut -c1-300
+  echo "📷 the four '== drills' lines and the tools / sampling line" ;;
 gate0)
   serve ""
   $PY train/edit_drills.py decode $H --url $URL --model $ALIAS --temperature 0 --out $G/heldout_base_t0.jsonl 2>&1 | grep -E "^==|^edit_drills"
   $PY train/edit_drills.py score $H $G/heldout_base_t0.jsonl 2>&1 | grep -v LiteLLM | tee $G/gate0.txt
   $PY train/edit_drills.py decode $HB --url $URL --model $ALIAS --temperature 0 --out $G/heldblock_base_t0.jsonl 2>&1 | grep -E "^==|^edit_drills"
   echo "-- block slice"; $PY train/edit_drills.py score $HB $G/heldblock_base_t0.jsonl 2>&1 | grep -v LiteLLM | tee $G/gate0_block.txt | grep -E "edit outcomes|block slice"
+  $PY train/edit_drills.py decode $HR --url $URL --model $ALIAS --temperature 0 --out $G/heldretry_base_t0.jsonl 2>&1 | grep -E "^==|^edit_drills"
+  echo "-- retry slice"; $PY train/edit_drills.py score $HR $G/heldretry_base_t0.jsonl 2>&1 | grep -v LiteLLM | tee $G/gate0_retry.txt | grep -E "edit outcomes|resend|recover call 1"
   stop_serve
-  echo "📷 everything from 'edit_drills score' down (laptop expectation from the study: not_found ≈ 40 % at distance ≥ 2)" ;;
+  echo "📷 everything from 'edit_drills score' down, the '-- block slice' and '-- retry slice' lines" ;;
 think)
   serve ""
   $PY train/edit_drills.py decode $D --url $URL --model $ALIAS --temperature 0.7 --samples "$THINK_SAMPLES" --out $G/train_think_t07.jsonl 2>&1 | grep -E "^==|^edit_drills"
@@ -125,8 +130,10 @@ gate1)
     echo "-- $a"; $PY train/edit_drills.py score $H $G/heldout_${a}_t0.jsonl 2>&1 | grep -v LiteLLM | tee $G/gate1_$a.txt | grep -E "edit outcomes|distance [0-5]|^== gate|block slice|answer length"
     $PY train/edit_drills.py decode $HB --url $URL --model "$a" --temperature 0 --out $G/heldblock_${a}_t0.jsonl 2>&1 | grep -E "^=="
     $PY train/edit_drills.py score $HB $G/heldblock_${a}_t0.jsonl 2>&1 | grep -v LiteLLM | tee $G/gate1_block_$a.txt | grep -E "block slice|answer length \(block"
+    $PY train/edit_drills.py decode $HR --url $URL --model "$a" --temperature 0 --out $G/heldretry_${a}_t0.jsonl 2>&1 | grep -E "^=="
+    echo "-- $a retry slice"; $PY train/edit_drills.py score $HR $G/heldretry_${a}_t0.jsonl 2>&1 | grep -v LiteLLM | tee $G/gate1_retry_$a.txt | grep -E "edit outcomes|resend|recover call 1"
   done
-  echo "-- no adapter (gate0)"; grep -E "edit outcomes|^== gate|block slice|answer length" $G/gate0.txt $G/gate0_block.txt 2>/dev/null || echo "  (no gate0 yet)"
+  echo "-- no adapter (gate0)"; grep -E "edit outcomes|^== gate|block slice|answer length|resend" $G/gate0.txt $G/gate0_block.txt $G/gate0_retry.txt 2>/dev/null || echo "  (no gate0 yet)"
   stop_serve
   echo "📷 every '--' block (each adapter's outcomes, distance lines and gate) and the gate0 lines" ;;
 subs)
