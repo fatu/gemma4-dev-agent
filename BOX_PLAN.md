@@ -673,7 +673,61 @@ python3 scripts/compare_runs.py runs/dev33_base_p{1,2,3,4} | head -8            
 (passes of one arm differ by up to 5–6 tasks on these 51). Next on the laptop either way: step 2 (an edit-skill LoRA
 on short, checked edit exercises, no whole 31B trajectories) and, later, step 3 (31B relabels E4B's own states).
 
-## B-3p · Step 2 of the E4B gap plan: an edit-skill LoRA from checked drills ▶ after B-3o (~1 h data + ~2 h train/gate + ~4 h A/B)
+## B-3q · The edit-skill LoRA again: drills rebuilt from E4B's real failures, gate in tiers ▶ next (~0.7 h build + ~15 min gate0 + ~4–8 h think + ~2–3 h train + ~1 h gate1, then ~4 h A/B)
+
+B-3p's two runs did not pass gate 1 (B-3p below: kept as the record, **do not run its steps**). What changed for B-3q, all in the code:
+- **Drills:** a `retry` family from E4B's real failure loops (a failed edit by E4B's real causes, the identical call resent,
+  a re-read followed by the same call), LLM-like misremembered lines, re-reads whose range no longer gives the answer away.
+- **Training mix:** 2,800 drills with more anchor / block / retry (`TRAIN_FAMILIES`, ≤ 25 per file): 1,155 of them make the
+  model choose a unique anchor while a repeat is in view (478 of 1,500 before; ~1,500 is the estimate for several matches
+  ≤ 10 %). The held-out sets keep the standard family weights.
+- **Gate:** read by tier, paired against gate0 on the same drills (exact McNemar). The 31B-level gate (hit ≥ 80 %, several
+  ≤ 3 %) is printed beside it but no longer decides.
+- **Training:** one learning rate, 1e-5, four epochs (in B-3p 3e-5 made the block slice worse with every epoch; 1e-5 was
+  still improving at epoch 2). Every epoch's adapter goes through gate1.
+- **E4B's rollouts are reused** (`runs/sft/rebenche4b.rendered.jsonl` from B-3p's step 4): no new rollouts.
+
+### B-3q run order on the box (2026-11-09, code ≥ `a28a198`) — one step at a time, 📷 after each
+
+| # | step | card(s) · time | 📷 | stop / go |
+|---|---|---|---|---|
+| 0 | `cd gemma4-dev-agent && git pull && git log --oneline -1 && ls -la runs/sft/rebenche4b.rendered.jsonl` | — | the commit line and the file line | commit `a28a198` or later; the rollouts file must exist (else send the photo) |
+| 1 | `bash train/drills_box.sh build` | CPU · ~40 min | four `== drills` lines (2800 · 300 · 80 block slice · 80 retry slice), the header line (families, file cap) | any `Traceback`, or a set below its count → stop |
+| 2 | `GPU=0 bash train/drills_box.sh gate0` | 1 card · ~15 min | everything from `edit_drills score` down, the `-- block slice` and `-- retry slice` lines | none: this is the baseline every adapter is paired with (new held-out sets: not comparable with B-3p's 62 / 20) |
+| 3 | `GPU=0 nohup bash train/drills_box.sh think > runs/drills_think.log 2>&1 &` then `tail -5 runs/drills_think.log` when it ends | 1 card · ~4–8 h (`THINK_SAMPLES=2` halves it) | `== think`, `samples:`, `calls with a thought by family`, the two score lines | **no stop rule**: block / anchor / retry will have few thoughts (39 % / 28 % in B-3p); they train with an empty thought (decided 2026-11-08; the loss is on the tool call only) |
+| 4 | `bash train/drills_box.sh mix` | CPU · minutes | the render lines, `drills kept by family`, `== mix` | render not PASS → stop; if the kept line says drills were dropped, run it again with `DRILL_SHARE=0.75` and send both |
+| 5 | `GPU=0 LR=1e-5 EPOCHS=4 NAME=e4b_drill_q nohup bash train/drills_box.sh train > runs/drills_train_q.log 2>&1 &`, when it ends `grep -hE "^drills_box|schedule|eval\[|== epoch" runs/drills_train_q.log \| cut -c1-200` | 1 card · ~2–3 h | the header (lr 1e-5 · epochs 4 · r 16 · alpha 16), the schedule, the eval lines, four `== epoch` lines | — |
+| 6 | `GPU=0 NAME=e4b_drill_q bash train/drills_box.sh gate1` | 1 card · ~1 h (4 adapters × 3 sets) | each adapter's `-- <name>` block and its whole `edit_drills tier` block (✓/✗ lines, `== tier`) | go only for an adapter whose `== tier` line says **A/B tier PASS**; several pass → the one with the highest hit; none → stop, send the photos |
+| 7 | `NAME=e4b_drill_q bash train/drills_box.sh subs` (it takes the epoch that passed the A/B tier with the highest hit; `EPOCH=<n>` names one) | CPU · minutes | the subs lines (epoch, adapter_config r/alpha, build check) | build check fails → stop |
+| 8 | the A/B (commands below): no adapter vs the adapter, 4 lanes × 2 passes on the 51 tasks | 4 cards · ~4 h | the per-arm resolved counts, both `edit_stats` blocks, `rulestats`, the drill-template line count | read it with the rule under the commands |
+
+The A/B tier (step 6): against gate0 — hit ≥ +5 pts · several matches ≤ −5 pts with p < 0.05 · not found at distance ≥ 2 no
+more than +2 · parsed ≥ 99 % · non-block median answer ≤ the target's · block slice several matches ≤ −12 pts · retry slice hit
+≥ +10 pts and resends no more. The block drills are now 25 % of the drills' label tokens (12 % before): if answers get longer
+than the target everywhere, the answer-length line fails — that is the check for it.
+
+```bash
+# step 8, after subs: 2 lanes without and 2 with the adapter, 2 passes each
+pkill -f "vllm serve"; sleep 5; E4B=google/gemma-4-E4B-it-qat-w4a16-ct; AR=base; NAME=e4b_drill_q
+for g in 0 1 2 3; do AD=$([ $((g % 2)) = 1 ] && echo $NAME); nohup bash -c "for w in 1 2; do GPU=$g TAG=$([ -n "$AD" ] && echo qd || echo qn)$g\$w TIME_MIN=8 MAX_TURNS=80 LATEST=e4b ADAPTER=$AD MODEL=$E4B SPLIT=splits/disc_e4b.txt SUBMISSION=runs/base_lb024 ARMS=$AR bash scripts/lane.sh run; done" > runs/lane$g.log 2>&1 & done
+# after both waves:
+for k in qn qd; do python3 -c "import glob,json,sys; c=[sum(json.loads(l)['resolved'] for l in open(f)) for f in sorted(glob.glob(f'runs/dev33_{sys.argv[2]}_{sys.argv[1]}[0-3][12]/task_results.jsonl'))]; print(sys.argv[1], c, 'mean', sum(c)/max(1,len(c)))" $k $AR; done   # 📷
+python3 scripts/edit_stats.py --pooled runs/dev33_${AR}_qn[0-3][12]   # 📷 no adapter, its 4 passes pooled: edit outcomes, retries, identical resends, loops
+python3 scripts/edit_stats.py --pooled runs/dev33_${AR}_qd[0-3][12]   # 📷 the adapter
+python3 scripts/rulestats.py runs/dev33_${AR}_qn01 runs/dev33_${AR}_qd11   # 📷
+for k in qn qd; do echo "$k drill-template lines added in patches: $(cat runs/dev33_${AR}_${k}[0-3][12]/patches/*.patch 2>/dev/null | grep -cE '^\+(.*must not be empty|.*assert [A-Za-z_]+ is not None|\s*if [A-Za-z_]+ is None:$)')"; done   # 📷
+```
+**Read the A/B as:** the resolved mean of 51 tasks has a noise of about ± 3.5 tasks, and removing E4B's edit loops can win
+back 2–3 tasks at most, so the resolved counts alone will not decide. The adapter counts if (1) its 4-pass mean is not
+below no adapter's by more than the noise, (2) `edit_stats` shows the edit skill moved in real runs: failed edits per task
+down, identical resends down, loops (tasks with ≥ 2 failed edits in a row on a file) down, "read again → next ok" up, and
+(3) the first edit does not move earlier and the drill-template line count is not clearly above no adapter's (a rise = the
+adapter copies the drills' content, not their skill). A ≥ 3-task gain with (2) and (3) is the clear case.
+
+After every GPU step: the run-cost lines (`scripts/run_costs.py`, where the step prints them) go in the same photo.
+Nothing here is pushed from the box; the laptop logs each photo in RESULTS.md and the private run log.
+
+## B-3p · Step 2 of the E4B gap plan: an edit-skill LoRA from checked drills ✖ gate 1 not passed twice (2026-11-08, 2026-11-09) → B-3q above. Kept as the record: do not run these steps
 
 ### B-3p run order on the box (2026-11-08, code ≥ `f00ab93`) — one step at a time, 📷 after each
 

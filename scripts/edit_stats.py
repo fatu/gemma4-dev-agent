@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """edit_file outcomes of one or more runs, from their traj logs — the edit-level readout of an A/B (B-3q): the resolved
 count of 51 tasks has a noise of about ± 3.5 tasks, these rates move first.
-  python3 scripts/edit_stats.py runs/<run> [runs/<run> …]
+  python3 scripts/edit_stats.py runs/<run> [runs/<run> …]      # several runs: one block each, then all of them pooled
+  python3 scripts/edit_stats.py --pooled runs/<run> …          # only the pooled block (an A/B arm's passes)
 Per run (aggregates only, no task ids):
   edit calls            ok / not found / several matches / other, and failed edits per task
   first tries           outcome of the first edit on a file, or the first after a success on it
@@ -58,8 +59,7 @@ def pct(a, b):
     return f"{100 * a / b:.0f} %" if b else "–"
 
 
-def report(run):
-    res, tasks = load(run)
+def report(run, res, tasks):
     edits, first, nxt, how_ok = Counter(), Counter(), Counter(), Counter()
     failed_per_task, loops, loop_tasks, longest, same = [], 0, 0, 0, 0
     for ev in tasks.values():
@@ -106,7 +106,15 @@ def report(run):
 
 
 if __name__ == "__main__":
-    if len(sys.argv) < 2:
+    runs = [r.rstrip("/") for r in sys.argv[1:] if r != "--pooled"]
+    if not runs:
         sys.exit(__doc__)
-    for r in sys.argv[1:]:
-        report(r.rstrip("/"))
+    all_res, all_tasks = {}, {}
+    for r in runs:
+        res, tasks = load(r)
+        if "--pooled" not in sys.argv:
+            report(r, res, tasks)
+        all_res.update({f"{r}/{k}": v for k, v in res.items()})
+        all_tasks.update({f"{r}/{k}": v for k, v in tasks.items()})
+    if len(runs) > 1 or "--pooled" in sys.argv:
+        report(f"pooled over {len(runs)} runs", all_res, all_tasks)

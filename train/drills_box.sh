@@ -155,15 +155,18 @@ subs)
   BEST=$(python3 - "$G" "$NAME" <<'PY'
 import glob, re, sys
 best = None
-for f in glob.glob(f"{sys.argv[1]}/gate1_{sys.argv[2]}_epoch*.txt"):
+for f in glob.glob(f"{sys.argv[1]}/gate1_{sys.argv[2]}_epoch*.txt"):          # only adapters whose tier says A/B tier PASS
     m = re.search(r"== gate: intended (\d+)%", open(f).read())
-    if m and (best is None or int(m.group(1)) > best[0]):
+    t = f.replace("/gate1_", "/tier_")
+    ok = "A/B tier PASS" in (open(t).read() if __import__("os").path.exists(t) else "")
+    if m and ok and (best is None or int(m.group(1)) > best[0]):
         best = (int(m.group(1)), re.search(r"epoch(\d+)", f).group(1))
 print(best[1] if best else "")
 PY
 )
   EP="${EPOCH:-$BEST}"
-  say "subs: gate1 winner epoch ${BEST:-none} → epoch ${EP:-?} (EPOCH=${EPOCH:-auto}) → runs/adapters/$NAME"
+  say "subs: gate1 winner (A/B tier PASS, highest hit) epoch ${BEST:-none} → epoch ${EP:-?} (EPOCH=${EPOCH:-auto}) → runs/adapters/$NAME"
+  [ -n "$EP" ] || { echo "no epoch of $NAME passed the A/B tier (runs/drills/tier_${NAME}_epoch*.txt): stop here, or name one with EPOCH=<n>"; exit 1; }
   [ -f "$OUTD/epoch$EP/adapter_model.safetensors" ] || { echo "no $OUTD/epoch$EP/adapter_model.safetensors"; exit 1; }
   rm -rf "runs/adapters/$NAME"; mkdir -p runs/adapters; cp -r "$OUTD/epoch$EP" "runs/adapters/$NAME"
   python3 -c "import json,sys;c=json.load(open(sys.argv[1]));print('  adapter_config: r',c.get('r'),'alpha',c.get('lora_alpha'),'base',c.get('base_model_name_or_path'))" "runs/adapters/$NAME/adapter_config.json"
