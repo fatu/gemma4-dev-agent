@@ -675,6 +675,24 @@ on short, checked edit exercises, no whole 31B trajectories) and, later, step 3 
 
 ## B-3p · Step 2 of the E4B gap plan: an edit-skill LoRA from checked drills ▶ after B-3o (~1 h data + ~2 h train/gate + ~4 h A/B)
 
+### B-3p run order on the box (2026-11-08, code ≥ `f00ab93`) — one step at a time, 📷 after each
+
+| # | step | card(s) · time | 📷 | stop / go |
+|---|---|---|---|---|
+| 0 | `cd gemma4-dev-agent && git pull && git log --oneline -1` | — | the commit line | the commit must be `f00ab93` or later |
+| 1 | `bash train/drills_box.sh build` | CPU · ~15–20 min | three `== drills` lines (1500 · 300 · 80 block slice) + the tools/sampling line | any `Traceback` or a set below its count → stop |
+| 2 | `GPU=0 bash train/drills_box.sh gate0` | 1 card · ~12 min | `edit outcomes`, `== gate`, `block slice`, both `answer length` lines, and the `-- block slice` block | the block slice's several matches with no adapter should be high (fastapi-like); if it is low (< 10 %), the block drills are not hard for E4B → send the photo before going on |
+| 3 | `GPU=0 bash train/drills_box.sh think` | 1 card · ~2–4 h (`THINK_SAMPLES=2` halves it) | `== think`, `samples: {kept… dropped…}`, `calls with a thought by family`, the two score lines | block or anchor with a thought in < 50 % of its calls → send the photo and wait: the laptop adds hint-written thoughts (STaR-style rationalization) before training |
+| 4 | optional: E4B's own SWE-rebench rollouts (`scripts/rebench_gen.sh gen`, then `data`; commands below) | 4 cards · ~3–5 h | the gen and data lines | without them `mix` trains on drills only (it warns) |
+| 5 | `bash train/drills_box.sh mix` | CPU · minutes | the render lines + `== mix` | render not PASS → stop |
+| 6 | two learning rates at once: `GPU=0 LR=1e-5 NAME=e4b_drill_lr1 …train` and `GPU=1 LR=3e-5 NAME=e4b_drill_lr3 …train` (full lines below) | 2 cards · ~1–2 h | the `grep -hE …` line below: r/alpha/lr, schedules, eval lines, four `== epoch` lines | — |
+| 7 | `for n in lr1 lr3; do GPU=0 NAME=e4b_drill_$n bash train/drills_box.sh gate1; done` | 1 card · ~30 min | every `--` block (outcomes, distance lines, gate, block slice, answer length) and the gate0 lines | go only if (a) a gate passes, (b) its block slice several matches is clearly below gate0's, (c) its non-block median answer length is < gate0's + 2 lines; otherwise stop and send the photos |
+| 8 | `NAME=<the passing one> bash train/drills_box.sh subs` | CPU · minutes | the subs lines (epoch, adapter_config r/alpha, build check) | build check fails → stop |
+| 9 | the A/B: no adapter vs the adapter, 4 lanes × 2 passes on the 51 tasks (commands below) | 4 cards · ~4 h | the per-arm resolved counts, `rulestats` and the drill-template line count | read it with the rule under the A/B commands |
+
+After every GPU step: the run-cost lines (`scripts/run_costs.py`, where the step prints them) go in the same photo.
+Nothing here is pushed from the box; the laptop logs each photo in RESULTS.md and the private run log.
+
 Why: E4B's edit_file fails 47 % (31B 10 %), mostly bad copies of lines read several outputs back and anchors that are
 not unique; a prompt rule got it to ~30 % at best (wave 5 `edit1`), and whole 31B trajectories also teach 31B's slow
 pacing (B-3n). `train/edit_drills.py` builds short edit exercises from library files that are not eval repos (click,
