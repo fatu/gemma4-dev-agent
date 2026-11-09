@@ -10,7 +10,10 @@
 #   GPU=0 bash train/drills_box.sh train    # the LoRA (one card)
 #   GPU=0 bash train/drills_box.sh gate1    # each epoch's adapter on the held-out drills, beside gate0
 #   bash train/drills_box.sh subs           # the chosen epoch → runs/adapters/$NAME + a build check
-# gate0 / think / gate1 start their own server on $GPU and stop every `vllm serve` first: run them when no lane runs.
+# gate0 / think / gate1 start their own server on $GPU and stop every `vllm serve` first: run them when no lane runs —
+# or, beside running lanes (e.g. E4B's rollouts on GPUs 1-3), with KILL_ALL=0 DPORT=8010: then only this script's own
+# server (vllm serve … --port $DPORT) is started and stopped, and the lanes keep theirs. Start the lanes FIRST
+# (rebench_gen.sh gen stops every vllm serve when it starts).
 # Knobs (every one printed): GPU · N_TRAIN (1500) · N_HELD (300) · N_BLOCK (80, the held-out block slice) · TRAIN_LIBS ·
 # HELD_LIBS · BLOCK_LIBS / HELD_BLOCK_LIBS (the block family's repetitive libraries) · SYSTEM (the arm's system.md)
 # · THINK_SAMPLES (4) · DROP_TOOLS (for a tools6 arm) · TOOLS_FROM (a traj log; default the first runs/*/traj/*.jsonl) · OWN (rebenche4b
@@ -23,7 +26,7 @@ set -uo pipefail
 cd "$(dirname "$0")/.."
 STEP="${1:?build|gate0|think|mix|train|gate1|subs}"; T0=$(date +%s)
 say() { echo "== $(date '+%T') [$(( $(date +%s) - T0 ))s] $*"; }
-GPU="${GPU:-0}"; PY=.venv-eval/bin/python; TRAIN_PY="${TRAIN_PY:-.venv-train/bin/python}"
+GPU="${GPU:-0}"; KILL_ALL="${KILL_ALL:-1}"; DPORT="${DPORT:-8000}"; PY=.venv-eval/bin/python; TRAIN_PY="${TRAIN_PY:-.venv-train/bin/python}"
 N_TRAIN="${N_TRAIN:-1500}"; N_HELD="${N_HELD:-300}"
 TRAIN_LIBS="${TRAIN_LIBS:-click,jinja2,attr,anyio,h11,werkzeug,packaging,markdown_it,yaml,dateutil}"
 HELD_LIBS="${HELD_LIBS:-sqlalchemy,tqdm,tenacity,starlette}"; N_BLOCK="${N_BLOCK:-80}"
@@ -35,16 +38,21 @@ DQ="${DQ:-runs/dequant/gemma-4-E4B-dq}"; NAME="${NAME:-e4b_drill}"; OUTD="runs/s
 E4B=google/gemma-4-E4B-it-qat-w4a16-ct; ALIAS=gemma-4-e4b-it-qat-w4a16-ct; TOK="${TOK:-$E4B}"
 D=runs/sft/drills; H=runs/sft/drills_heldout; HB=runs/sft/drills_heldout_block; G=runs/drills
 SFT="--base $DQ --max-len 32768 --epochs ${EPOCHS:-2} --lr ${LR:-3e-5} --warmup 0.05 --accum ${ACCUM:-16} --r ${R:-16} --alpha ${ALPHA:-16} --clip 1.0 --eval-every 25 --seed 0"
-echo "drills_box $STEP · GPU $GPU · train $N_TRAIN from $TRAIN_LIBS (block: $BLOCK_LIBS) · held out $N_HELD from $HELD_LIBS (block: $HELD_BLOCK_LIBS) + block slice $N_BLOCK · system $SYSTEM · drop tools [${DROP_TOOLS}] · tools from $TOOLS_FROM · own $OWN · drill share ≤ $DRILL_SHARE · think samples $THINK_SAMPLES · sft: $SFT · name $NAME"
+if [ "$KILL_ALL" = 0 ] && [ "$DPORT" = 8000 ]; then echo "KILL_ALL=0 needs DPORT ≠ 8000 (the lanes serve on 8000)"; exit 1; fi
+echo "drills_box $STEP · GPU $GPU · server port $DPORT · stops $([ "$KILL_ALL" = 1 ] && echo 'every vllm serve' || echo "only its own (port $DPORT)") · train $N_TRAIN from $TRAIN_LIBS (block: $BLOCK_LIBS) · held out $N_HELD from $HELD_LIBS (block: $HELD_BLOCK_LIBS) + block slice $N_BLOCK · system $SYSTEM · drop tools [${DROP_TOOLS}] · tools from $TOOLS_FROM · own $OWN · drill share ≤ $DRILL_SHARE · think samples $THINK_SAMPLES · sft: $SFT · name $NAME"
 mkdir -p "$G"
 
-serve() {   # $1 = a dir with adapters/<name>/ to mount, or "" for none; stops every vllm serve on the box first
-  pkill -f "[v]llm serve"; sleep 5
-  SUBMISSION="${1:-harness/sample_submission}" MODEL=$E4B TP=1 GPU_UTIL=0.85 CUDA_VISIBLE_DEVICES=$GPU PORT=8000 \
-    nohup bash scripts/serve_vllm.sh > $G/vllm.log 2>&1 &
-  for i in $(seq 1 180); do curl -s --max-time 2 http://127.0.0.1:8000/v1/models >/dev/null 2>&1 && break; sleep 5; done
-  echo "  server up after ~$((i * 5)) s: $(curl -s http://127.0.0.1:8000/v1/models | python3 -c 'import json,sys; print([m["id"] for m in json.load(sys.stdin)["data"]])' 2>/dev/null || echo 'NOT UP — tail '$G/vllm.log)"
+stop_serve() {   # KILL_ALL=1: every vllm serve on the box; 0: only ours (by its port)
+  if [ "$KILL_ALL" = 1 ]; then pkill -f "[v]llm serve"; else pkill -f "[v]llm serve.*--port $DPORT"; fi
 }
+serve() {   # $1 = a dir with adapters/<name>/ to mount, or "" for none; stop_serve first
+  stop_serve; sleep 5
+  SUBMISSION="${1:-harness/sample_submission}" MODEL=$E4B TP=1 GPU_UTIL=0.85 CUDA_VISIBLE_DEVICES=$GPU PORT=$DPORT \
+    nohup bash scripts/serve_vllm.sh > $G/vllm.log 2>&1 &
+  for i in $(seq 1 180); do curl -s --max-time 2 http://127.0.0.1:$DPORT/v1/models >/dev/null 2>&1 && break; sleep 5; done
+  echo "  server up after ~$((i * 5)) s: $(curl -s http://127.0.0.1:$DPORT/v1/models | python3 -c 'import json,sys; print([m["id"] for m in json.load(sys.stdin)["data"]])' 2>/dev/null || echo 'NOT UP — tail '$G/vllm.log)"
+}
+URL="http://127.0.0.1:$DPORT/v1"
 
 case "$STEP" in
 build)
@@ -58,18 +66,18 @@ build)
   echo "📷 the three '== drills' lines and the tools / sampling line" ;;
 gate0)
   serve ""
-  $PY train/edit_drills.py decode $H --model $ALIAS --temperature 0 --out $G/heldout_base_t0.jsonl 2>&1 | grep -E "^==|^edit_drills"
+  $PY train/edit_drills.py decode $H --url $URL --model $ALIAS --temperature 0 --out $G/heldout_base_t0.jsonl 2>&1 | grep -E "^==|^edit_drills"
   $PY train/edit_drills.py score $H $G/heldout_base_t0.jsonl 2>&1 | grep -v LiteLLM | tee $G/gate0.txt
-  $PY train/edit_drills.py decode $HB --model $ALIAS --temperature 0 --out $G/heldblock_base_t0.jsonl 2>&1 | grep -E "^==|^edit_drills"
+  $PY train/edit_drills.py decode $HB --url $URL --model $ALIAS --temperature 0 --out $G/heldblock_base_t0.jsonl 2>&1 | grep -E "^==|^edit_drills"
   echo "-- block slice"; $PY train/edit_drills.py score $HB $G/heldblock_base_t0.jsonl 2>&1 | grep -v LiteLLM | tee $G/gate0_block.txt | grep -E "edit outcomes|block slice"
-  pkill -f "[v]llm serve"
+  stop_serve
   echo "📷 everything from 'edit_drills score' down (laptop expectation from the study: not_found ≈ 40 % at distance ≥ 2)" ;;
 think)
   serve ""
-  $PY train/edit_drills.py decode $D --model $ALIAS --temperature 0.7 --samples "$THINK_SAMPLES" --out $G/train_think_t07.jsonl 2>&1 | grep -E "^==|^edit_drills"
+  $PY train/edit_drills.py decode $D --url $URL --model $ALIAS --temperature 0.7 --samples "$THINK_SAMPLES" --out $G/train_think_t07.jsonl 2>&1 | grep -E "^==|^edit_drills"
   $PY train/edit_drills.py think $D $G/train_think_t07.jsonl --out ${D}_native 2>&1 | grep -E "^==|^   (samples|calls with)"
   $PY train/edit_drills.py score $D $G/train_think_t07.jsonl 2>&1 | grep -E "edit outcomes|^== gate"   # E4B on its own training drills
-  pkill -f "[v]llm serve"
+  stop_serve
   echo "📷 the '== think' line, the 'samples:' and 'calls with a thought by family' lines and the two score lines" ;;
 mix)
   for d in ${D}_native $H; do
@@ -113,13 +121,13 @@ gate1)
   for e in $OUTD/epoch*/; do k=$(basename "$e"); [ -f "$e/adapter_model.safetensors" ] && cp -r "$e" "runs/drill_serve/adapters/${NAME}_$k"; done
   serve runs/drill_serve
   for a in $(ls runs/drill_serve/adapters); do
-    $PY train/edit_drills.py decode $H --model "$a" --temperature 0 --out $G/heldout_${a}_t0.jsonl 2>&1 | grep -E "^=="
+    $PY train/edit_drills.py decode $H --url $URL --model "$a" --temperature 0 --out $G/heldout_${a}_t0.jsonl 2>&1 | grep -E "^=="
     echo "-- $a"; $PY train/edit_drills.py score $H $G/heldout_${a}_t0.jsonl 2>&1 | grep -v LiteLLM | tee $G/gate1_$a.txt | grep -E "edit outcomes|distance [0-5]|^== gate|block slice|answer length"
-    $PY train/edit_drills.py decode $HB --model "$a" --temperature 0 --out $G/heldblock_${a}_t0.jsonl 2>&1 | grep -E "^=="
+    $PY train/edit_drills.py decode $HB --url $URL --model "$a" --temperature 0 --out $G/heldblock_${a}_t0.jsonl 2>&1 | grep -E "^=="
     $PY train/edit_drills.py score $HB $G/heldblock_${a}_t0.jsonl 2>&1 | grep -v LiteLLM | tee $G/gate1_block_$a.txt | grep -E "block slice|answer length \(block"
   done
   echo "-- no adapter (gate0)"; grep -E "edit outcomes|^== gate|block slice|answer length" $G/gate0.txt $G/gate0_block.txt 2>/dev/null || echo "  (no gate0 yet)"
-  pkill -f "[v]llm serve"
+  stop_serve
   echo "📷 every '--' block (each adapter's outcomes, distance lines and gate) and the gate0 lines" ;;
 subs)
   BEST=$(python3 - "$G" "$NAME" <<'PY'
