@@ -15,11 +15,12 @@
 # or, beside running lanes (e.g. E4B's rollouts on GPUs 1-3), with KILL_ALL=0 DPORT=8010: then only this script's own
 # server (vllm serve … --port $DPORT) is started and stopped, and the lanes keep theirs. Start the lanes FIRST
 # (rebench_gen.sh gen stops every vllm serve when it starts).
-# Knobs (every one printed): GPU · N_TRAIN (1500) · N_HELD (300) · N_BLOCK (80, the held-out block slice) · N_RETRY (80, the
+# Knobs (every one printed): GPU · N_TRAIN (2800) · TRAIN_FAMILIES (the training set's family weights: more anchor / block
+# / retry than the held-out sets, which keep edit_drills.py's FAMILIES) · FILE_CAP (25 drills per training file) · N_HELD (300) · N_BLOCK (80, the held-out block slice) · N_RETRY (80, the
 # held-out retry slice: E4B's failed-edit loops, read with its `resend` line) · TRAIN_LIBS ·
 # HELD_LIBS · BLOCK_LIBS / HELD_BLOCK_LIBS (the block family's repetitive libraries) · SYSTEM (the arm's system.md)
 # · THINK_SAMPLES (4) · DROP_TOOLS (for a tools6 arm) · TOOLS_FROM (a traj log; default the first runs/*/traj/*.jsonl) · OWN (rebenche4b
-# rendered file) · DRILL_SHARE (0.4) · TRAIN_PY (.venv-train/bin/python) · DQ (bf16 base) · EPOCHS LR ACCUM R ALPHA ·
+# rendered file) · DRILL_SHARE (0.6: the drills keep at most this share of the mix's label tokens; 0.4 until B-3q) · TRAIN_PY (.venv-train/bin/python) · DQ (bf16 base) · EPOCHS LR ACCUM R ALPHA ·
 # NAME (e4b_drill) · EPOCH (subs: default the gate1 winner, else the lower held-out NLL).
 # LoRA defaults r16 α16 (scale 1, lr the only strength knob; 2026-11-08, from the Kaggle survey in the private notes:
 # α/r 2 looped, rank 4–64 made no difference, a smaller rank leaves the scorer more KV cache). Train two NAMEs with
@@ -29,19 +30,22 @@ cd "$(dirname "$0")/.."
 STEP="${1:?build|gate0|think|mix|train|gate1|subs}"; T0=$(date +%s)
 say() { echo "== $(date '+%T') [$(( $(date +%s) - T0 ))s] $*"; }
 GPU="${GPU:-0}"; KILL_ALL="${KILL_ALL:-1}"; DPORT="${DPORT:-8000}"; PY=.venv-eval/bin/python; TRAIN_PY="${TRAIN_PY:-.venv-train/bin/python}"
-N_TRAIN="${N_TRAIN:-1500}"; N_HELD="${N_HELD:-300}"
+N_TRAIN="${N_TRAIN:-2800}"; N_HELD="${N_HELD:-300}"; FILE_CAP="${FILE_CAP:-25}"
+# B-3q (2026-11-09): only 478 of 1,500 drills at FAMILIES' weights exercised "a unique anchor while a repeat is in view"
+# (E4B's several-matches failure); ~1,500 such drills are the estimate for several matches ≤ 10 %
+TRAIN_FAMILIES="${TRAIN_FAMILIES:-copy=0.27,anchor=0.18,recover=0.18,stale=0.07,block=0.15,retry=0.15}"
 TRAIN_LIBS="${TRAIN_LIBS:-click,jinja2,attr,anyio,h11,werkzeug,packaging,markdown_it,yaml,dateutil}"
 HELD_LIBS="${HELD_LIBS:-sqlalchemy,tqdm,tenacity,starlette}"; N_BLOCK="${N_BLOCK:-80}"; N_RETRY="${N_RETRY:-80}"
 BLOCK_LIBS="${BLOCK_LIBS:-typer,openai,networkx}"; HELD_BLOCK_LIBS="${HELD_BLOCK_LIBS:-sqlmodel,huggingface_hub,pandas}"
 SYSTEM="${SYSTEM:-scripts/arms/latest_e4b/prompts/system.md}"; DROP_TOOLS="${DROP_TOOLS:-}"
 TOOLS_FROM="${TOOLS_FROM:-$(ls runs/*/traj/*.jsonl runs/*/*/traj/*.jsonl 2>/dev/null | grep -v '\.tools\.jsonl$' | head -1)}"
-OWN="${OWN:-runs/sft/rebenche4b.rendered.jsonl}"; DRILL_SHARE="${DRILL_SHARE:-0.4}"; THINK_SAMPLES="${THINK_SAMPLES:-4}"
+OWN="${OWN:-runs/sft/rebenche4b.rendered.jsonl}"; DRILL_SHARE="${DRILL_SHARE:-0.6}"; THINK_SAMPLES="${THINK_SAMPLES:-4}"
 DQ="${DQ:-runs/dequant/gemma-4-E4B-dq}"; NAME="${NAME:-e4b_drill}"; OUTD="runs/sft_out/$NAME"
 E4B=google/gemma-4-E4B-it-qat-w4a16-ct; ALIAS=gemma-4-e4b-it-qat-w4a16-ct; TOK="${TOK:-$E4B}"
 D=runs/sft/drills; H=runs/sft/drills_heldout; HB=runs/sft/drills_heldout_block; HR=runs/sft/drills_heldout_retry; G=runs/drills
 SFT="--base $DQ --max-len 32768 --epochs ${EPOCHS:-2} --lr ${LR:-3e-5} --warmup 0.05 --accum ${ACCUM:-16} --r ${R:-16} --alpha ${ALPHA:-16} --clip 1.0 --eval-every 25 --seed 0"
 if [ "$KILL_ALL" = 0 ] && [ "$DPORT" = 8000 ]; then echo "KILL_ALL=0 needs DPORT ≠ 8000 (the lanes serve on 8000)"; exit 1; fi
-echo "drills_box $STEP · GPU $GPU · server port $DPORT · stops $([ "$KILL_ALL" = 1 ] && echo 'every vllm serve' || echo "only its own (port $DPORT)") · train $N_TRAIN from $TRAIN_LIBS (block: $BLOCK_LIBS) · held out $N_HELD from $HELD_LIBS (block: $HELD_BLOCK_LIBS) + block slice $N_BLOCK + retry slice $N_RETRY · system $SYSTEM · drop tools [${DROP_TOOLS}] · tools from $TOOLS_FROM · own $OWN · drill share ≤ $DRILL_SHARE · think samples $THINK_SAMPLES · sft: $SFT · name $NAME"
+echo "drills_box $STEP · GPU $GPU · server port $DPORT · stops $([ "$KILL_ALL" = 1 ] && echo 'every vllm serve' || echo "only its own (port $DPORT)") · train $N_TRAIN from $TRAIN_LIBS (block: $BLOCK_LIBS; families $TRAIN_FAMILIES; ≤ $FILE_CAP per file) · held out $N_HELD from $HELD_LIBS (block: $HELD_BLOCK_LIBS) + block slice $N_BLOCK + retry slice $N_RETRY · system $SYSTEM · drop tools [${DROP_TOOLS}] · tools from $TOOLS_FROM · own $OWN · drill share ≤ $DRILL_SHARE · think samples $THINK_SAMPLES · sft: $SFT · name $NAME"
 mkdir -p "$G"
 
 stop_serve() {   # KILL_ALL=1: every vllm serve on the box; 0: only ours (by its port)
@@ -59,7 +63,7 @@ URL="http://127.0.0.1:$DPORT/v1"
 case "$STEP" in
 build)
   [ -f "$TOOLS_FROM" ] || { echo "TOOLS_FROM=$TOOLS_FROM: no traj log"; exit 1; }
-  $PY train/edit_drills.py build --libs "$TRAIN_LIBS" --block-libs "$BLOCK_LIBS" --n "$N_TRAIN" --seed 0 --tools-from "$TOOLS_FROM" \
+  $PY train/edit_drills.py build --libs "$TRAIN_LIBS" --block-libs "$BLOCK_LIBS" --n "$N_TRAIN" --seed 0 --families "$TRAIN_FAMILIES" --file-cap "$FILE_CAP" --tools-from "$TOOLS_FROM" \
     --drop-tools "$DROP_TOOLS" --system "$SYSTEM" --out $D 2>&1 | grep -v LiteLLM | cut -c1-300
   $PY train/edit_drills.py build --libs "$HELD_LIBS" --block-libs "$HELD_BLOCK_LIBS" --n "$N_HELD" --seed 1 --tools-from "$TOOLS_FROM" \
     --drop-tools "$DROP_TOOLS" --system "$SYSTEM" --out $H 2>&1 | grep -v LiteLLM | cut -c1-300
@@ -91,9 +95,13 @@ mix)
     $PY train/render.py $d --tokenizer "$TOK" --pack --sample 100 --out $d.rendered.jsonl > $d.render.log 2>&1
     echo "  $d: $(grep -E '^calls' $d.render.log | cut -c1-120) · $(grep -E '^RESULT' $d.render.log)"
   done
-  python3 - ${D}_native.rendered.jsonl "$OWN" "$DRILL_SHARE" runs/sft/drills_mix.rendered.jsonl <<'PY'
-import json, os, random, sys
+  python3 - ${D}_native.rendered.jsonl "$OWN" "$DRILL_SHARE" runs/sft/drills_mix.rendered.jsonl ${D}_native <<'PY'
+import glob, json, os, random, sys
+from collections import Counter
 drills, own, share, out = sys.argv[1], sys.argv[2], float(sys.argv[3]), sys.argv[4]
+fam = {}
+for f in glob.glob(sys.argv[5] + "/*.json"):
+    r = json.load(open(f)); fam[r["instance_id"]] = r.get("family", "?")
 lab = lambda r: sum(1 for x in r["labels"] if x != -100)
 d = [json.loads(l) for l in open(drills)]
 o = [json.loads(l) for l in open(own)] if os.path.exists(own) else []
@@ -112,6 +120,9 @@ random.Random(1).shuffle(mix)
 with open(out, "w") as w:
     for r in mix: w.write(json.dumps(r) + "\n")
 ld2 = sum(map(lab, d))
+n_all = Counter(fam.values()); n_kept = Counter(fam.get(i, "?") for i in {r["instance_id"] for r in d})
+print("   drills kept by family (of built): " + " · ".join(f"{k} {n_kept[k]}/{n_all[k]}" for k in sorted(n_all))
+      + ("" if ld <= ld2 else f"   ← the {share} cap dropped drills at random: raise DRILL_SHARE to keep them all"))
 print(f"== mix: drills {len(d)} sequences / {ld2} label tokens + own {len(o)} / {lo} → {len(mix)} sequences, "
       f"drill share {ld2 / max(1, ld2 + lo):.2f} (cap {share}) → {out}")
 PY
