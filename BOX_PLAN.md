@@ -700,7 +700,7 @@ held-out **block slice** (80 drills, `runs/sft/drills_heldout_block`), printed a
 cd gemma4-dev-agent && git pull
 bash train/drills_box.sh build                 # 📷 three '== drills' lines (1500 + 300 + 80 block slice) + the 'multi-line … rejected' lines + the tools/sampling line (CPU, ~15–20 min)
 GPU=0 bash train/drills_box.sh gate0           # 📷 E4B without adapter on the held-out drills + the block slice (~12 min; stops every vllm serve)
-GPU=0 bash train/drills_box.sh think           # 📷 E4B's own thoughts for the training drills (temperature 0.7, ~30–60 min)
+GPU=0 bash train/drills_box.sh think           # 📷 E4B's own thoughts for the training drills (temperature 0.7, 4 samples each, ~2–4 h; THINK_SAMPLES=2 halves it)
 ```
 Optional, all 4 cards (~3–5 h), also the data for step 3: E4B's own rollouts on the SWE-rebench tasks of B-3n, every
 trajectory kept (failed tool calls masked), mixed in as an anchor so the drills do not shift when E4B edits:
@@ -725,7 +725,15 @@ no adapter in a matched comparison at any rank (4–64) or lr (8e-6–2e-4); α/
 r32 α32 changed B-3n's behaviour strongly (loops) and fitted the first drills to a validation NLL of 0.035; our 1e-4 canary lost
 thinking in 20 steps; the one E4B paired point (a public kit) used lr 2e-5 at scale 0.5. α = r keeps the scale at 1 so
 the lr is the only strength knob, and a smaller rank leaves the scorer more KV cache (one r16 adapter: 27.7K tokens).
-**Reading gate1:** the gate is unchanged; beside it, the block slice's several-matches rate should fall clearly below
+**Box changes since the first B-3p run (2026-11-08; all in the code, nothing to edit by hand):**
+- `build` makes three sets (training 1500 with ~9 % block drills, held-out 300, block slice 80) and takes ~15–20 min.
+- `think` samples E4B 4× per target and keeps a thought only from a sample whose own call was the checked answer
+  (edit → the intended file, read → the right file); a thought that planned another anchor is never put before the
+  answer. Its new lines `samples: {kept:… dropped:…}` and `calls with a thought by family` go in the photo: a family
+  with few thoughts is one E4B rarely gets right (expected: block, anchor).
+- `gate0` / `gate1` print `answer length (non-block …)` and `(block …)`: the model's old_string lines vs the target's.
+**Reading gate1:** the gate is unchanged; the non-block answer length must not grow clearly over gate0's (≥ 2 lines in
+the median = the block drills pulled every anchor longer); beside it, the block slice's several-matches rate should fall clearly below
 gate0's block slice (the fastapi-like case). If the gate passes but the block slice does not move, the adapter learned
 the easy anchors only — say so in the run log before the A/B.
 **A/B only if gate1 passes** — no adapter vs the adapter `subs` built (`$NAME`), two lanes each, two passes per lane (4 vs 4), 51 tasks:

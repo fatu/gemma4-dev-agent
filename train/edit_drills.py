@@ -55,7 +55,8 @@ must ast.parse; no `return_new x`) · window (the view must show the old lines a
 lines, not truncated) · corrupt · apply. Scope names must be unique in the file.
 Duplicates seen (record field `dup_seen`): when the changed lines occur elsewhere in the file, another copy is always
 in the context: already in the view (in_view), the view widened to the nearest copy (view, DUP_VIEW), or a
-`grep -nF '<first changed line>' <file>` through run_command before the view (grep); none = the lines are unique.
+`grep -nF '<first changed line>' <file>` through run_command right after the view (grep: a uniqueness check, counted in
+`distance`); none = the lines are unique.
 "Elsewhere" also counts the first changed line stripped inside another line (an anchor copied without its indentation
 matches there too).
 Checks: every answer is applied with the harness's edit_file on a copy and must give the intended file (strategy
@@ -93,7 +94,9 @@ from pathlib import Path
 REFUSED_LIBS = {"fastapi", "rich", "requests", "httpx", "httpx2", "pydantic", "pydantic_core"}   # eval repos (+ an httpx fork) + fastapi's core dep
 DEFAULT_SAMPLING = {"temperature": 0.2, "top_p": 0.95, "max_completion_tokens": 6144,
                     "enable_thinking": True, "thinking_token_budget": 4096}             # latest_e4b sampling.yaml
-FAMILIES = (["copy", "anchor", "recover", "stale", "block"], [0.33, 0.1, 0.3, 0.1, 0.17])   # block ≈ 15-20 % of drills (half its tries fail)
+FAMILIES = (["copy", "anchor", "recover", "stale", "block"], [0.42, 0.1, 0.3, 0.1, 0.08])   # block ≈ 8 % of drills ≈ 15 % of
+# label tokens (its answers are long: at 14 % of drills it held 26 % of the label tokens, at 11 % 20 % → a pull toward
+# long anchors everywhere)
 # tool outputs between the view and the edit: E4B's not-found rate is 13 % at 0, 38 % at 2-3, 45 % at 4+ (study E)
 DISTANCES = (list(range(12)), [0.05, 0.07, 0.08, 0.09, 0.1, 0.1, 0.1, 0.1, 0.09, 0.08, 0.07, 0.07])   # tokens p50 ≈ 8K
 GREP_FILLER = 0.5          # share of those outputs that are `grep -rn` results (the rest: read_file of another file)
@@ -105,7 +108,7 @@ RARE_NAME = 6              # grep a name the library uses at most this often (E4
 RARE_SHARE = 0.7           # … this share of the time; else any name (E4B's long tail: p90 3.2K chars, 8 % at the cap)
 # the changed lines occur elsewhere in the file but the view shows no other copy (139 of 1,500 drills at 8507112): then
 # whether a short anchor is unique cannot be learned from the context. Widen the view to the nearest other copy (this
-# share, when the view stays ≤ 150 lines), else a `grep -nF` of the first changed line before the view lists every copy
+# share, when the view stays ≤ 150 lines), else a `grep -nF` of the first changed line right after the view lists every copy
 DUP_VIEW = 0.5
 # E4B's several-matches failures (all-129): 52 of 67 in fastapi, 36 of 55 failed old_strings 3+ lines — whole blocks
 # copy-pasted across sibling classes, where the line that tells the copies apart is far away. Code lines inside a
@@ -841,7 +844,9 @@ class Builder:
             return None
         system = self.system.replace("{problem_description}", instr)
         msgs = [{"role": "system", "content": system}, {"role": "user", "content": self.user(lib, instr, root)}]
-        if dup_seen == "grep":                    # every copy of the first changed line, with line numbers
+        cid, am = self.call("read_file", {"filepath": rel, "start_line": s0, "end_line": e0})
+        msgs += [am, {"role": "tool", "tool_call_id": cid, "content": tool_msg(ws.read_file(ctx, rel, s0, e0))}]
+        if dup_seen == "grep":                    # after the view: every copy of the first changed line (a uniqueness check)
             from swegemma.tools.execution import run_command
             cmd = f"grep -nF -e {shlex.quote(probe)} {rel}"
             res = run_command(_Ctx(root, run=True), cmd)
@@ -851,8 +856,6 @@ class Builder:
                 return None
             cid, am = self.call("run_command", {"command": cmd})
             msgs += [am, {"role": "tool", "tool_call_id": cid, "content": tool_msg(res)}]
-        cid, am = self.call("read_file", {"filepath": rel, "start_line": s0, "end_line": e0})
-        msgs += [am, {"role": "tool", "tool_call_id": cid, "content": tool_msg(ws.read_file(ctx, rel, s0, e0))}]
         if pre:                                   # the first change, done: its diff is the only view of the new text
             cid, am = self.call("edit_file", {"filepath": rel, "new_string": pre[1], "old_string": pre[0]})
             res = ws.edit_file(ctx, rel, pre[0], pre[1])
@@ -873,7 +876,7 @@ class Builder:
         rec = {"instance_id": f"drill_{lib}_{self.a.seed}_{self.n:06d}", "repo": lib, "base_commit": None, "pr": None,
                "patch_sha": None, "source": "edit_drill", "resolved": None, "policy_model": self.model,
                "sampling": dict(self.sampling, max_tool_calls=28, max_time_minutes=7), "env_fingerprint": None,
-               "family": family, "distance": len(others), "fillers": dict(got), "site_line": i + 1, "old_lines": b - a,
+               "family": family, "distance": len(others) + (dup_seen == "grep"), "fillers": dict(got), "site_line": i + 1, "old_lines": b - a,
                "window": [a + 1, b], "dup_seen": dup_seen,
                "mutation": site["kind"], "scope": site["scope"], "verify": verify, "tools": self.tools}
         if pre:
@@ -950,7 +953,7 @@ def build(a):
           f"libraries kept level (one with 60 misses in a row counts as used up) · greps: {RARE_SHARE} a name used ≤ {RARE_NAME}× "
           f"in the library, else any, {EMPTY_GREP} of them a typo that finds "
           f"nothing · repeated changed lines: another copy always in context (view widened to it {DUP_VIEW}, else "
-          f"grep -nF before the view) · block family from {block_libs or 'nothing (no --block-libs): off'}: sites in a "
+          f"grep -nF right after the view) · block family from {block_libs or 'nothing (no --block-libs): off'}: sites in a "
           f"repeated {BLOCK_LINES}-line block, shortest unique span {BLOCK_LINES}-{BLOCK_CAP} lines, {BLOCK_FAIL} first fail "
           f"on the longest repeating span · out {a.out}")
     b = Builder(a)
@@ -1104,55 +1107,70 @@ def decode(a):
     asyncio.run(_decode(a))
 
 
+def drill_file(rec, cache):
+    """the file the answer applies to (stale drills: after the earlier edit in the context), checked against the sha"""
+    from swegemma.edit import apply_replacement
+    v = rec["verify"]
+    if v["path"] not in cache:
+        content = (site_packages() / v["path"]).read_text(encoding="utf-8")
+        if sha(content) != v["file_sha256"]:
+            sys.exit(f"{v['path']}: file differs from the one the drills were built from (sha256) — another venv?")
+        cache[v["path"]] = content
+    content = cache[v["path"]]
+    if v.get("pre_edit"):
+        content = apply_replacement(content, v["pre_edit"]["old"], v["pre_edit"]["new"]).new_content
+    return content
+
+
+def call_outcome(rec, call, m, cache):
+    """one decoded reply against its target → (outcome, the model's edit args or None). Outcomes: intended,
+    applied_other_change, several_matches, not_found, wrong_file, bad_args, other_tool:<name>, same_tool (a read_file
+    target answered by read_file of the right file), no_call, cut_off"""
+    from swegemma.edit import apply_replacement
+    tgt = rec["calls"][call - 1]["target"]["tool_calls"][0]
+    v = rec["verify"]
+    got = (m.get("tool_calls") or [None])[0]
+    if not got:
+        return ("no_call" if m.get("finish_reason") != "length" else "cut_off"), None
+    if got["name"] != tgt["name"]:
+        return f"other_tool:{got['name']}", None
+    try:
+        ga = json.loads(got["args"]) if isinstance(got["args"], str) else got["args"]
+    except (json.JSONDecodeError, TypeError):
+        ga = None
+    if not isinstance(ga, dict):
+        return "bad_args", None
+    if ga.get("filepath", "").removeprefix("/workspace/") != v["path"]:
+        return "wrong_file", None
+    if tgt["name"] != "edit_file":
+        return "same_tool", None
+    if "old_string" not in ga or "new_string" not in ga:
+        return "bad_args", None
+    try:
+        r = apply_replacement(drill_file(rec, cache), ga["old_string"], ga["new_string"])
+        return ("intended" if sha(r.new_content) == v["intended_sha256"] else "applied_other_change"), ga
+    except ValueError as e:
+        msg = str(e)
+        return ("several_matches" if ("times" in msg or "locations" in msg or "multiple" in msg) else "not_found"), ga
+
+
 def score(a):
     """per decoded edit call: parsed, edit_file on the right file, applied exactly once, the intended file — by family
     and distance. The gate reads not-found at distance ≥ 2 and several-matches."""
-    from swegemma.edit import apply_replacement
     recs = load_records(a.records)
-    sp, files, rows = site_packages(), {}, []
+    files, rows = {}, []
     for l in open(a.decoded):
         m = json.loads(l)
         rec = recs.get(m["instance_id"])
         if not rec:
             continue
-        c = rec["calls"][m["call"] - 1]
-        tgt = c["target"]["tool_calls"][0]
-        v = rec["verify"]
-        if v["path"] not in files:
-            content = (sp / v["path"]).read_text(encoding="utf-8")
-            if sha(content) != v["file_sha256"]:
-                sys.exit(f"{v['path']}: file differs from the one the drills were built from (sha256) — another venv?")
-            files[v["path"]] = content
-        content = files[v["path"]]
-        if v.get("pre_edit"):                     # stale drills: the earlier edit in the context is applied first
-            content = apply_replacement(content, v["pre_edit"]["old"], v["pre_edit"]["new"]).new_content
+        tgt = rec["calls"][m["call"] - 1]["target"]["tool_calls"][0]
         row = {"family": rec["family"], "distance": rec["distance"], "call": m["call"], "target": tgt["name"],
                "outcome": None, "repeated": rec.get("dup_seen", "?")}
-        got = (m.get("tool_calls") or [None])[0]
-        if not got:
-            row["outcome"] = "no_call" if m.get("finish_reason") != "length" else "cut_off"
-        elif got["name"] != tgt["name"]:
-            row["outcome"] = f"other_tool:{got['name']}"
-        elif tgt["name"] != "edit_file":
-            row["outcome"] = "same_tool"
-        else:
-            try:
-                ga = json.loads(got["args"]) if isinstance(got["args"], str) else got["args"]
-            except (json.JSONDecodeError, TypeError):
-                ga = None
-            if not isinstance(ga, dict) or "old_string" not in ga or "new_string" not in ga:
-                row["outcome"] = "bad_args"
-            elif ga.get("filepath", "").removeprefix("/workspace/") != v["path"]:
-                row["outcome"] = "wrong_file"
-            else:
-                try:
-                    r = apply_replacement(content, ga["old_string"], ga["new_string"])
-                    row["strategy"] = r.strategy
-                    row["outcome"] = "intended" if sha(r.new_content) == v["intended_sha256"] else "applied_other_change"
-                except ValueError as e:
-                    msg = str(e)
-                    row["outcome"] = "several_matches" if ("times" in msg or "locations" in msg or "multiple" in msg) \
-                        else "not_found"
+        row["outcome"], ga = call_outcome(rec, m["call"], m, files)
+        if ga and isinstance(ga.get("old_string"), str):        # answer length: the model's old_string vs the target's
+            row["old_lines"] = ga["old_string"].count("\n") + 1
+            row["tgt_lines"] = json.loads(tgt["args"])["old_string"].count("\n") + 1
         rows.append(row)
     edits = [r for r in rows if r["target"] == "edit_file"]
     tot = Counter(r["outcome"] for r in edits)
@@ -1177,6 +1195,13 @@ def score(a):
     ok = intended >= 0.80 and nf <= 0.10 and sev <= 0.03 and parsed >= 0.99
     print(f"== gate: intended {100 * intended:.0f}% (≥ 80) · not_found at distance ≥ 2 {100 * nf:.0f}% (≤ 10) · "
           f"several matches {100 * sev:.0f}% (≤ 3) · parsed {100 * parsed:.0f}% (≥ 99) → {'PASS' if ok else 'not yet'}")
+    med = lambda xs: sorted(xs)[len(xs) // 2] if xs else None
+    for lab_, sub in (("non-block", [r for r in edits if r["family"] != "block" and "old_lines" in r]),
+                      ("block", [r for r in edits if r["family"] == "block" and "old_lines" in r])):
+        if sub:
+            print(f"   answer length ({lab_}, edits with an old_string): model median {med([r['old_lines'] for r in sub])} "
+                  f"lines · mean {sum(r['old_lines'] for r in sub) / len(sub):.1f} · target median "
+                  f"{med([r['tgt_lines'] for r in sub])} · mean {sum(r['tgt_lines'] for r in sub) / len(sub):.1f} (n {len(sub)})")
     blk = [r for r in edits if r["family"] == "block"]
     if blk:
         kb = Counter(r["outcome"] for r in blk)
@@ -1185,26 +1210,27 @@ def score(a):
 
 
 def think(a):
-    """E4B's own thought into each target whose sampled action matches it (same tool; for edit_file the same file);
-    the answer stays the checked one, the loss stays on the tool call (label_scope)"""
+    """E4B's own thought into each target, taken only from a sample (decode --samples k) whose own call already was
+    the checked answer (edit_file → the intended file; read_file → the right file). A thought that planned another
+    anchor is never kept before the answer (it would teach "think X, do Y"); targets with no such sample keep an empty
+    thought. The answer stays the checked one, the loss stays on the tool call (label_scope)"""
     recs = load_records(a.records)
-    best = {}
+    best, why, cache = {}, Counter(), {}
     for l in open(a.decoded):
         m = json.loads(l)
         rec = recs.get(m["instance_id"])
-        if not rec or not m.get("reasoning") or len(m["reasoning"]) > a.max_thought_chars:
+        if not rec:
             continue
-        c = rec["calls"][m["call"] - 1]
-        tgt, got = c["target"]["tool_calls"][0], (m.get("tool_calls") or [None])[0]
-        if not got or got["name"] != tgt["name"]:
+        key = (m["instance_id"], m["call"])
+        if not m.get("reasoning") or len(m["reasoning"]) > a.max_thought_chars:
+            why["no_or_long_thought"] += 1
             continue
-        if tgt["name"] == "edit_file":
-            try:
-                if json.loads(got["args"]).get("filepath", "").removeprefix("/workspace/") != rec["verify"]["path"]:
-                    continue
-            except (json.JSONDecodeError, TypeError, AttributeError):
-                continue
-        best.setdefault((m["instance_id"], m["call"]), m["reasoning"])
+        out_, _ = call_outcome(rec, m["call"], m, cache)
+        if out_ in ("intended", "same_tool"):     # the thought led to the checked answer itself (read: same file)
+            best.setdefault(key, m["reasoning"])
+            why["kept:" + out_] += 1
+        else:                                     # a thought planning another anchor must not sit before the answer
+            why["dropped:" + out_.split(":")[0]] += 1
     out = Path(a.out)
     if out.exists():
         shutil.rmtree(out)
@@ -1227,8 +1253,13 @@ def think(a):
                     hist[-1]["reasoning_content"] = th
             c["label_scope"] = "tool_call"
         json.dump(rec, open(out / f"{iid}.json", "w"), ensure_ascii=False)
+    fam = Counter(rec["family"] for iid, rec in recs.items() for c in rec["calls"] if (iid, c["call"]) in best)
+    tot = Counter(rec["family"] for rec in recs.values() for c in rec["calls"])
+    print(f"   samples: {dict(sorted(why.items()))}")
+    print(f"   calls with a thought by family: " + " · ".join(f"{k} {fam[k]}/{tot[k]}" for k in sorted(tot)))
     print(f"== think: {st['native']} / {st['calls']} target calls got E4B's own thought ({a.decoded}, ≤ "
-          f"{a.max_thought_chars} chars, matching action); the rest keep an empty thought · {len(recs)} records → {out}")
+          f"{a.max_thought_chars} chars, only from a sample whose own call was the checked answer: edit → the intended "
+          f"file, read → the right file); the rest keep an empty thought · {len(recs)} records → {out}")
 
 
 def main():
