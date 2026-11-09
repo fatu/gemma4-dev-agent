@@ -33,6 +33,15 @@ Families (record field `family`, weights FAMILIES):
            fastapi's), from --block-libs; the shortest unique span is 3-25 lines (BLOCK_LINES, BLOCK_CAP). BLOCK_FAIL of
            them first copy the longest span that still repeats ("occurs N times", corruption block_nonunique), then
            target 1 reads again and target 2 is the edit
+  retry    E4B's real retry loops (all-129: after a failed edit E4B retried straight away 103 of 147 times, ok 14 %;
+           it resent the identical old_string 48 times, 0 ok; 31B re-reads first and is ok 81 %). Context: copy + a
+           failed edit_file whose error is drawn by RETRY_ERRORS from E4B's real not-found / several-matches causes
+           (a misremembered line copied into old AND new · a line altered in old only · text from before an earlier
+           edit of the file, stale_text · invented lines · a skipped line · too short an anchor) and a loop state by
+           RETRY_STATES: once (one failure) · resent (the identical call failed twice) · reread_resent (failed, read the
+           lines again, resent the identical call, failed again). Targets: once / resent → target 1 reads the lines
+           again, target 2 is the correct edit; reread_resent → the correct edit (the fresh view is in context). score
+           counts edits that resend a failed old_string from the context (`resend`)
   stale    the task asks for two changes; the first is already done in the context (edit_file ok, with its diff) and
            changed a line within 3 lines of the second site; the answer window covers that line, so copying the first
            view fails (checked) and the old_string has to come from the edit's own output (verify.pre_edit: score
@@ -94,7 +103,7 @@ from pathlib import Path
 REFUSED_LIBS = {"fastapi", "rich", "requests", "httpx", "httpx2", "pydantic", "pydantic_core"}   # eval repos (+ an httpx fork) + fastapi's core dep
 DEFAULT_SAMPLING = {"temperature": 0.2, "top_p": 0.95, "max_completion_tokens": 6144,
                     "enable_thinking": True, "thinking_token_budget": 4096}             # latest_e4b sampling.yaml
-FAMILIES = (["copy", "anchor", "recover", "stale", "block"], [0.42, 0.1, 0.3, 0.1, 0.08])   # block ≈ 8 % of drills ≈ 15 % of
+FAMILIES = (["copy", "anchor", "recover", "stale", "block", "retry"], [0.37, 0.1, 0.2, 0.1, 0.08, 0.15])   # block ≈ 8 % of drills ≈ 15 % of
 # label tokens (its answers are long: at 14 % of drills it held 26 % of the label tokens, at 11 % 20 % → a pull toward
 # long anchors everywhere)
 # tool outputs between the view and the edit: E4B's not-found rate is 13 % at 0, 38 % at 2-3, 45 % at 4+ (study E)
@@ -123,6 +132,12 @@ BLOCK_FAIL = 0.5
 # syntax / JSON wrapper 11 % → the recover corruptions, drawn by weight before the site is chosen
 CORRUPTIONS = (["token_change", "dropped_line", "reformat", "short_nonunique", "json_wrapper", "quote_wrap",
                 "trailing_backslash"], [30, 8, 7, 40, 6, 6, 3])
+# retry family: the failed edit's cause by E4B's real failed edits that were followed by a retry (all-129: not found 126 =
+# a misremembered line in old and new 49 · altered in old only 21 · stale text 29 · invented 17 · skipped line 9; several
+# matches 67), and the loop state before the target (retried straight away 103 / re-read 44 of 147; identical resends 48)
+RETRY_ERRORS = (["misquote_both", "token_change", "stale_text", "invented", "dropped_line", "short_nonunique"],
+                [49, 21, 29, 17, 9, 67])
+RETRY_STATES = (["once", "resent", "reread_resent"], [0.4, 0.35, 0.25])
 
 
 def sha(s):
@@ -566,27 +581,49 @@ class Src:
         return out
 
 
-def corrupt(kind, old, new, core, core_new, content, lines, a, b, rng):
+def token_change(line, rng):
+    """one identifier shortened/pluralised or one bracket/colon swapped (E4B's copy errors) → the line or None"""
+    toks = list(re.finditer(r"[A-Za-z_]\w+|\d+|[\[\]():]", line))
+    if not toks:
+        return None
+    t = rng.choice(toks)
+    g = t.group(0)
+    rep = {"(": "[", ")": "]", "[": "(", "]": ")", ":": ""}.get(g, g[:-1] + ("s" if not g.endswith("s") else ""))
+    return line[:t.start()] + rep + line[t.end():]
+
+
+def corrupt(kind, old, new, core, core_new, content, lines, a, b, rng, site=None):
     """one E4B-style failed edit of the given kind → (bad old_string, its new_string) or None. Kept only if the full
     matcher really fails on it (not found), or for short_nonunique really reports several matches. short_nonunique
     is the changed lines alone (`core`, which then must occur more than once) with their own new text, the way E4B
     anchors too short; the others corrupt a 1-5-line span around the site (E4B's own attempts: median 4 lines) and keep
-    the full new_string."""
+    the full new_string. misquote_both (retry): an unchanged line of the span altered the same way in old AND new (E4B
+    misremembers a context line and copies it into both); invented (retry): every line altered"""
     if kind == "short_nonunique":
         return (core, core_new) if core.strip() and n_matches(content, core) > 1 else None
     a, b = max(0, a - rng.randint(0, 2)), min(len(lines), b + rng.randint(0, 2))
     old = "\n".join(lines[a:b])
     for _ in range(12):
-        ol, bad = old.split("\n"), None
+        ol, bad, bad_new = old.split("\n"), None, new
         if kind == "token_change":
             j = rng.randrange(len(ol))
-            toks = list(re.finditer(r"[A-Za-z_]\w+|\d+|[\[\]():]", ol[j]))
-            if toks:
-                t = rng.choice(toks)
-                g = t.group(0)
-                rep = {"(": "[", ")": "]", "[": "(", "]": ")", ":": ""}.get(g, g[:-1] + ("s" if not g.endswith("s") else ""))
-                ol[j] = ol[j][:t.start()] + rep + ol[j][t.end():]
+            alt = token_change(ol[j], rng)
+            if alt:
+                ol[j] = alt
                 bad = "\n".join(ol)
+        elif kind == "misquote_both" and site:
+            keep = [j for j in range(len(ol)) if ol[j].strip() and not site["l0"] <= a + j < site["l1"]]
+            if keep:
+                j = rng.choice(keep)
+                alt = token_change(ol[j], rng)
+                if alt:
+                    ol[j] = alt
+                    bad = "\n".join(ol)
+                    bad_new = "\n".join(ol[:site["l0"] - a] + site["new_lines"] + ol[site["l1"] - a:])
+        elif kind == "invented":
+            alts = [token_change(x, rng) if x.strip() else x for x in ol]
+            if all(x is not None for x in alts):
+                bad = "\n".join(alts)
         elif kind == "quote_wrap":
             bad = '"' + old + '"'
         elif kind == "dropped_line" and len(ol) >= 3:
@@ -599,7 +636,7 @@ def corrupt(kind, old, new, core, core_new, content, lines, a, b, rng):
         elif kind == "json_wrapper":
             bad = old + '", "start_line": %d, "end_line": %d, "total_lines": %d, "is_truncated": false}' % (a + 1, b, len(lines))
         if bad and bad != old and n_matches(content, bad) == 0:
-            return bad, new
+            return bad, bad_new
     return None
 
 
@@ -758,7 +795,8 @@ class Builder:
         src, cand = self.analyse(rel, content), code_lines(content)
         if not src or not cand:
             return None
-        ckind = rng.choices(*CORRUPTIONS)[0] if family == "recover" else None
+        ckind = rng.choices(*CORRUPTIONS)[0] if family == "recover" else \
+            rng.choices(*RETRY_ERRORS)[0] if family == "retry" else None
         if family == "block":
             ckind = "block_nonunique" if rng.random() < BLOCK_FAIL else None
             cand = sorted(set(cand) & set(src.block_lines))
@@ -767,7 +805,7 @@ class Builder:
                 return None
         repeat = family in ("anchor", "block") or ckind == "short_nonunique"
         pre = None                                # stale: (old, new, site) of the earlier edit, applied first
-        if family == "stale":
+        if family == "stale" or ckind == "stale_text":   # retry stale_text: the stale set-up, then the failed copy
             k1 = rng.choice(["operator", "logic", "constant", "number", "string"])
             p1 = self.pick(src, content, lines, cand, False, k1, False)
             if not p1 or p1[0]["l1"] - p1[0]["l0"] != 1 or len(p1[0]["new_lines"]) != 1:
@@ -889,8 +927,10 @@ class Builder:
                 if sp_ and sp_[1] - sp_[0] >= BLOCK_LINES and sp_[0] <= site["l0"] and site["l1"] <= sp_[1]:
                     c = ("\n".join(lines[sp_[0]:sp_[1]]),
                          "\n".join(lines[sp_[0]:site["l0"]] + site["new_lines"] + lines[site["l1"]:sp_[1]]))
+            elif ckind == "stale_text":            # the first view's text (before the earlier edit), with the change
+                c = ("\n".join(lines[a:b]), "\n".join(lines[a:site["l0"]] + site["new_lines"] + lines[site["l1"]:b]))
             else:
-                c = corrupt(ckind, old, new, core, "\n".join(site["new_lines"]), content, lines, a, b, rng)
+                c = corrupt(ckind, old, new, core, "\n".join(site["new_lines"]), content, lines, a, b, rng, site)
             if not c:
                 self.why = "corrupt"
                 return None
@@ -904,10 +944,23 @@ class Builder:
             msgs += [am, {"role": "tool", "tool_call_id": cid, "content": tool_msg(err)}]
             rs, re_ = max(1, a + 1 - 4), min(len(lines), b + 4)
             reread = {"id": None, "name": "read_file", "args": json.dumps({"filepath": rel, "start_line": rs, "end_line": re_})}
-            cid, am = self.call("read_file", {"filepath": rel, "start_line": rs, "end_line": re_})
-            msgs2 = msgs + [am, {"role": "tool", "tool_call_id": cid, "content": tool_msg(ws.read_file(ctx, rel, rs, re_))}]
+            state = rng.choices(*RETRY_STATES)[0] if family == "retry" else None
+            if state in ("resent", "reread_resent"):  # the loop: (read again,) the identical call, the same error
+                if state == "reread_resent":
+                    cid, am = self.call("read_file", {"filepath": rel, "start_line": rs, "end_line": re_})
+                    msgs += [am, {"role": "tool", "tool_call_id": cid, "content": tool_msg(ws.read_file(ctx, rel, rs, re_))}]
+                cid, am = self.call("edit_file", {"filepath": rel, "new_string": bad_new, "old_string": bad})
+                msgs += [am, {"role": "tool", "tool_call_id": cid, "content": tool_msg(ws.edit_file(ctx, rel, bad, bad_new))}]
             rec["corruption"] = ckind
-            rec["calls"] = [one(1, msgs, reread), one(2, msgs2, edit)]
+            rec["failed_old"] = bad
+            if state:
+                rec["retry_state"] = state
+            if state == "reread_resent":          # the fresh view is already in context: the correct edit
+                rec["calls"] = [one(1, msgs, edit)]
+            else:
+                cid, am = self.call("read_file", {"filepath": rel, "start_line": rs, "end_line": re_})
+                msgs2 = msgs + [am, {"role": "tool", "tool_call_id": cid, "content": tool_msg(ws.read_file(ctx, rel, rs, re_))}]
+                rec["calls"] = [one(1, msgs, reread), one(2, msgs2, edit)]
         else:
             rec["calls"] = [one(1, msgs, edit)]
         # the answer through the REAL edit_file on the workspace copy (stale: after the first change) must give the
@@ -955,7 +1008,8 @@ def build(a):
           f"nothing · repeated changed lines: another copy always in context (view widened to it {DUP_VIEW}, else "
           f"grep -nF right after the view) · block family from {block_libs or 'nothing (no --block-libs): off'}: sites in a "
           f"repeated {BLOCK_LINES}-line block, shortest unique span {BLOCK_LINES}-{BLOCK_CAP} lines, {BLOCK_FAIL} first fail "
-          f"on the longest repeating span · out {a.out}")
+          f"on the longest repeating span · retry errors by weight {dict(zip(*RETRY_ERRORS))} · retry loop states "
+          f"{dict(zip(*RETRY_STATES))} · out {a.out}")
     b = Builder(a)
     print(f"  tools {b.tool_names} · sampling {b.sampling} · policy model {b.model} · family weights "
           f"{a.families or dict(zip(*FAMILIES))}")
@@ -1036,6 +1090,8 @@ def build(a):
             span[min(rec["old_lines"], 6)] += 1
             if rec.get("corruption"):
                 st[f"corrupt_{rec['corruption']}"] += 1
+            if rec.get("retry_state"):
+                st[f"retry_{rec['retry_state']}"] += 1
             json.dump(rec, open(out / f"{rec['instance_id']}.json", "w"), ensure_ascii=False)
     print(json.dumps({**dict(sorted(st.items())), "old_lines (answer lines; 6 = 6+)": dict(sorted(span.items()))}))
     ok_all = sum(span.values()) or 1
@@ -1168,6 +1224,8 @@ def score(a):
         row = {"family": rec["family"], "distance": rec["distance"], "call": m["call"], "target": tgt["name"],
                "outcome": None, "repeated": rec.get("dup_seen", "?")}
         row["outcome"], ga = call_outcome(rec, m["call"], m, files)
+        if rec.get("failed_old") is not None and tgt["name"] == "edit_file":   # a failed old_string sent again
+            row["resend"] = bool(ga) and ga.get("old_string") == rec["failed_old"]
         if ga and isinstance(ga.get("old_string"), str):        # answer length: the model's old_string vs the target's
             row["old_lines"] = ga["old_string"].count("\n") + 1
             row["tgt_lines"] = json.loads(tgt["args"])["old_string"].count("\n") + 1
@@ -1187,6 +1245,12 @@ def score(a):
     rr = [r for r in rows if r["target"] == "read_file"]
     if rr:
         print(f"  recover call 1 (target read_file): same tool {sum(r['outcome'] == 'same_tool' for r in rr)} / {len(rr)}")
+    rs_ = [r for r in edits if "resend" in r]
+    if rs_:
+        print(f"   resend (edit targets after a failed edit in context: the model's old_string is the failed one): "
+              f"{sum(r['resend'] for r in rs_)} / {len(rs_)} · " + " · ".join(
+                  f"{f} {sum(r['resend'] for r in rs_ if r['family'] == f)}/{sum(r['family'] == f for r in rs_)}"
+                  for f in sorted({r['family'] for r in rs_})))
     far = [r for r in edits if r["distance"] >= 2]
     nf = sum(r["outcome"] == "not_found" for r in far) / (len(far) or 1)
     sev = tot["several_matches"] / n
