@@ -687,7 +687,13 @@ B-3p's two runs did not pass gate 1 (B-3p below: kept as the record, **do not ru
   still improving at epoch 2). Every epoch's adapter goes through gate1.
 - **E4B's rollouts are reused** (`runs/sft/rebenche4b.rendered.jsonl` from B-3p's step 4): no new rollouts.
 
-### B-3r · The drills rebuilt so that every answer can be decided from the context (2026-11-10) — START HERE, one step at a time, 📷 after each
+### B-3r · The drills rebuilt so that every answer can be decided from the context (2026-11-10) — ⏸ HOLD: do not start step 1 yet
+
+**⏸ Hold (2026-11-10, laptop audit of the built drills):** in 78 % of the block check drills the failed old_string in the
+context is the longest span that still repeats, so the answer is that span plus exactly one line — the edit after the
+check can be learned without reading the check's output. The builder is to be changed before the box builds (the
+build and everything after it would have to be redone). This line is removed when the fix is pushed; nothing below
+runs until then.
 
 **Why.** B-3q's readouts (all on this box, 2026-11-10):
 - In 82 % of the block drills and 41 % of the anchor drills the lines shown did not let the model know how long the
