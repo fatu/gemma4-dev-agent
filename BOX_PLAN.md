@@ -689,11 +689,12 @@ B-3p's two runs did not pass gate 1 (B-3p below: kept as the record, **do not ru
 
 ### B-3r · The drills rebuilt so that every answer can be decided from the context (2026-11-10) — ⏸ HOLD: do not start step 1 yet
 
-**⏸ Hold (2026-11-10, laptop audit of the built drills):** in 78 % of the block check drills the failed old_string in the
-context is the longest span that still repeats, so the answer is that span plus exactly one line — the edit after the
-check can be learned without reading the check's output. The builder is to be changed before the box builds (the
-build and everything after it would have to be redone). This line is removed when the fix is pushed; nothing below
-runs until then.
+**⏸ Hold (2026-11-10, laptop audit of the built drills):** the edit after the check can be right without reading the
+check's output. Taking one more line above and one below the failed old_string gives a unique match in 100 % of the
+block check drills (three more lines each side: 94–99 % in every family). In E4B's real runs the same move — more lines
+after "occurs N times" — worked 4 of 31 times. The check drills are far easier than the real case, so neither the
+training nor the gate could tell whether the grep was used. The builder is to be changed before the box builds; this
+line is removed when the fix is pushed, and nothing below runs until then.
 
 **Why.** B-3q's readouts (all on this box, 2026-11-10):
 - In 82 % of the block drills and 41 % of the anchor drills the lines shown did not let the model know how long the
