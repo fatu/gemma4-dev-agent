@@ -20,7 +20,7 @@
 # held-out retry slice: E4B's failed-edit loops, read with its `resend` line) · TRAIN_LIBS ·
 # HELD_LIBS · BLOCK_LIBS / HELD_BLOCK_LIBS (the block family's repetitive libraries) · SYSTEM (the arm's system.md)
 # · THINK_SAMPLES (4) · DROP_TOOLS (for a tools6 arm) · TOOLS_FROM (a traj log; default the first runs/*/traj/*.jsonl) · OWN (rebenche4b
-# rendered file) · DRILL_SHARE (0.6: the drills keep at most this share of the mix's label tokens; 0.4 until B-3q) · TRAIN_PY (.venv-train/bin/python) · DQ (bf16 base) · EPOCHS LR ACCUM R ALPHA ·
+# rendered file) · DRILL_SHARE (0.6: the drills keep at most this share of the mix's label tokens; 0.4 until B-3q) · TRAIN_PY (.venv-train/bin/python) · DQ (bf16 base) · EPOCHS LR ACCUM R ALPHA · EVAL_EVERY (100 steps; 25 until B-3q: the held-out eval then cost as much as training) ·
 # NAME (e4b_drill) · EPOCH (subs: default the gate1 winner, else the lower held-out NLL).
 # LoRA defaults r16 α16 (scale 1, lr the only strength knob; 2026-11-08, from the Kaggle survey in the private notes:
 # α/r 2 looped, rank 4–64 made no difference, a smaller rank leaves the scorer more KV cache). Train two NAMEs with
@@ -43,7 +43,7 @@ OWN="${OWN:-runs/sft/rebenche4b.rendered.jsonl}"; DRILL_SHARE="${DRILL_SHARE:-0.
 DQ="${DQ:-runs/dequant/gemma-4-E4B-dq}"; NAME="${NAME:-e4b_drill}"; OUTD="runs/sft_out/$NAME"
 E4B=google/gemma-4-E4B-it-qat-w4a16-ct; ALIAS=gemma-4-e4b-it-qat-w4a16-ct; TOK="${TOK:-$E4B}"
 D=runs/sft/drills; H=runs/sft/drills_heldout; HB=runs/sft/drills_heldout_block; HR=runs/sft/drills_heldout_retry; G=runs/drills
-SFT="--base $DQ --max-len 32768 --epochs ${EPOCHS:-2} --lr ${LR:-3e-5} --warmup 0.05 --accum ${ACCUM:-16} --r ${R:-16} --alpha ${ALPHA:-16} --clip 1.0 --eval-every 25 --seed 0"
+SFT="--base $DQ --max-len 32768 --epochs ${EPOCHS:-2} --lr ${LR:-3e-5} --warmup 0.05 --accum ${ACCUM:-16} --r ${R:-16} --alpha ${ALPHA:-16} --clip 1.0 --eval-every ${EVAL_EVERY:-100} --seed 0"
 if [ "$KILL_ALL" = 0 ] && [ "$DPORT" = 8000 ]; then echo "KILL_ALL=0 needs DPORT ≠ 8000 (the lanes serve on 8000)"; exit 1; fi
 echo "drills_box $STEP · GPU $GPU · server port $DPORT · stops $([ "$KILL_ALL" = 1 ] && echo 'every vllm serve' || echo "only its own (port $DPORT)") · train $N_TRAIN from $TRAIN_LIBS (block: $BLOCK_LIBS; families $TRAIN_FAMILIES; ≤ $FILE_CAP per file) · held out $N_HELD from $HELD_LIBS (block: $HELD_BLOCK_LIBS) + block slice $N_BLOCK + retry slice $N_RETRY · system $SYSTEM · drop tools [${DROP_TOOLS}] · tools from $TOOLS_FROM · own $OWN · drill share ≤ $DRILL_SHARE · think samples $THINK_SAMPLES · sft: $SFT · name $NAME"
 mkdir -p "$G"
@@ -63,6 +63,9 @@ URL="http://127.0.0.1:$DPORT/v1"
 case "$STEP" in
 build)
   [ -f "$TOOLS_FROM" ] || { echo "TOOLS_FROM=$TOOLS_FROM: no traj log"; exit 1; }
+  # a new training set: an earlier build's thoughts, mix and gate0 no longer belong to it
+  rm -rf ${D}_native ${D}_native.rendered.jsonl ${D}_native.render.log runs/sft/drills_mix.rendered.jsonl $G/gate0*.out.jsonl $G/gate0*.sum.json
+  echo "  removed the earlier build's ${D}_native, drills_mix and gate0 outcomes (think, mix and gate0 run again on the new sets)"
   $PY train/edit_drills.py build --libs "$TRAIN_LIBS" --block-libs "$BLOCK_LIBS" --n "$N_TRAIN" --seed 0 --families "$TRAIN_FAMILIES" --file-cap "$FILE_CAP" --tools-from "$TOOLS_FROM" \
     --drop-tools "$DROP_TOOLS" --system "$SYSTEM" --out $D 2>&1 | grep -v LiteLLM | cut -c1-300
   $PY train/edit_drills.py build --libs "$HELD_LIBS" --block-libs "$HELD_BLOCK_LIBS" --n "$N_HELD" --seed 1 --tools-from "$TOOLS_FROM" \
@@ -91,6 +94,12 @@ think)
   stop_serve
   echo "📷 the '== think' line, the 'samples:' and 'calls with a thought by family' lines and the two score lines" ;;
 mix)
+  [ -d ${D}_native ] || { echo "no ${D}_native: run think first (on this build)"; exit 1; }
+  python3 -c "
+import glob, os, sys
+a = {os.path.basename(f) for f in glob.glob(sys.argv[1] + '/*.json')}; b = {os.path.basename(f) for f in glob.glob(sys.argv[2] + '/*.json')}
+print(f'  think set vs build: {len(a & b)} of {len(a)} drills in both')
+sys.exit(0 if a == b else 1)" $D ${D}_native || { echo "${D}_native is not this build's drills (an earlier think?): run think again"; exit 1; }
   for d in ${D}_native $H; do
     $PY train/render.py $d --tokenizer "$TOK" --pack --sample 100 --out $d.rendered.jsonl > $d.render.log 2>&1
     echo "  $d: $(grep -E '^calls' $d.render.log | cut -c1-120) · $(grep -E '^RESULT' $d.render.log)"

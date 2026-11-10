@@ -132,6 +132,8 @@ DUP_VIEW = 0.5
 BLOCK_LINES = 3
 BLOCK_CAP = 25
 BLOCK_FAIL = 0.5
+SAME_LINE_CAP = 5          # drills per identical (stripped) changed line of one library: boilerplate repeated across a
+# library (openai's `extra_headers: … = None,` in every method: 76 of 392 block drills at B-3q's first build) is one site
 REREAD_MARGIN = (0, 25)    # lines read again around the failed span + the answer, each side drawn uniformly (≤ 150 lines)
 # E4B's failed edits (study E, 170): copied wrong 36 % · several matches 32 % · stale 13 % (own family) · call
 # syntax / JSON wrapper 11 % → the recover corruptions, drawn by weight before the site is chosen
@@ -1176,7 +1178,8 @@ def build(a):
     libs = [x for x in a.libs.split(",") if x]
     block_libs = [x for x in a.block_libs.split(",") if x and x not in libs]
     sp = site_packages()
-    print(f"edit_drills build · libs {libs} from {sp} · n {a.n} · seed {a.seed} · families {dict(zip(*FAMILIES))} · "
+    print(f"edit_drills build · libs {libs} from {sp} · n {a.n} · seed {a.seed} · families {a.families or dict(zip(*FAMILIES))} · "
+          f"≤ {a.file_cap} per file · ≤ {SAME_LINE_CAP} per identical site line of a library · "
           f"distances {dict(zip(*DISTANCES))} · libraries equally often, files ∝ √size, code lines only · system {a.system} ({len(Path(a.system).read_text())} chars) · "
           f"tools from {a.tools_from} minus [{a.drop_tools}] · min file lines {a.min_lines} · multi-line share (copy/recover) {a.multi} · "
           f"instructions name scope + first token, never a whole line · one-line kinds by weight {dict(zip(*LINE_KINDS))} · "
@@ -1219,7 +1222,7 @@ def build(a):
         weights.update({lib: [len(block_lines(c.split("\n"))) ** 0.5 for _, c in files[lib]] for lib in block_ok})
         b.lib_words = {lib: Counter(re.findall(r"\b[a-z_][a-z0-9_]{4,}\b", "\n".join(c for _, c in files[lib])))
                        for lib in libs_ok + block_ok}
-        per_file, per_lib, wins, misses = Counter(), Counter(), {}, Counter()
+        per_file, per_lib, wins, misses, same_line = Counter(), Counter(), {}, Counter(), Counter()
         for x in load_records(a.exclude).values() if a.exclude else []:   # another set's answer windows stay out
             wins.setdefault(x["verify"]["path"], []).append(tuple(x["window"]))
             seen.add((x["verify"]["path"], x["site_line"], x["mutation"]))
@@ -1265,6 +1268,11 @@ def build(a):
             if any(w0 <= y and x <= w1 for x, y in wins.get(rel, [])):
                 st[f"rejected_{fam}:overlap"] += 1            # the same lines as an earlier drill of this file
                 continue
+            lk = (lib, c.split("\n")[rec["site_line"] - 1].strip())
+            if same_line[lk] >= SAME_LINE_CAP:
+                st[f"rejected_{fam}:same_line"] += 1
+                continue
+            same_line[lk] += 1
             seen.add(key)
             wins.setdefault(rel, []).append((w0, w1))
             misses[lib] = 0
@@ -1290,6 +1298,8 @@ def build(a):
     ok_n = sum(v for k, v in st.items() if k.startswith("ok_")) or 1
     print(f"  multi-line old_string {sum(v for k, v in span.items() if k >= 2)} / {ok_n} · rejected: "
           + " · ".join(f"{k} {v}" for k, v in sorted(Counter(k.split(':')[1] for k in st.elements() if k.startswith('rejected_')).items())))
+    print("   families built: " + " · ".join(f"{k[3:]} {v}" for k, v in sorted(st.items()) if k.startswith("ok_"))
+          + f" · weights {a.families or 'default'} · ≤ {a.file_cap} per file · same-line cap {SAME_LINE_CAP}")
     print(f"== drills: {sum(v for k, v in st.items() if k.startswith('ok_'))} records in {out} "
           f"({st['tried']} tried; every answer applied by edit_file, every corruption failing every matcher tier)")
 
@@ -1539,6 +1549,10 @@ def tier(a):
     rt = json.load(open(a.retry)) if a.retry else None
     if "base" not in m:
         sys.exit(f"{a.main}: scored without --baseline (gate0): no paired comparison")
+    for nm, x in (("main", m), ("block", blk), ("retry", rt)):
+        if x and x.get("paired_n") != x["n"]:
+            sys.exit(f"tier {a.name}: the {nm} set pairs {x.get('paired_n')} of {x['n']} edit calls with gate0 — gate0 is from "
+                     "another build of the held-out drills: run gate0 again on these sets")
     t, ok = TIER_AB, []
     chk = lambda name, cond, txt: ok.append(bool(cond)) or print(f"   {'✓' if cond else '✗'} {name}: {txt}")
     print(f"edit_drills tier · {a.name} · A/B tier {TIER_AB} · stretch {TIER_STRETCH}")
