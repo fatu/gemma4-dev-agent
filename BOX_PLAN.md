@@ -41,13 +41,44 @@ dropped too.
 
 ---
 
-## B-4 · Token-level distillation 31B → E4B, step S0: does the 31B point at E4B's own errors? (2026-11-10) — ✓ S0 done 2026-11-10 · ▶ next: S0b below (two commands, ~10 min, no training; locator rewritten 2026-11-10 after a review)
+## B-4 · Token-level distillation 31B → E4B, step S0: does the 31B point at E4B's own errors? (2026-11-10) — ✓ S0 and S0b done 2026-11-10 (S0b: no verdict, 17 determined births) · ▶ next: S0c below (more rollouts, pooled)
 
 **Status (2026-11-10).** S0 ran: of 88 not-found edits 56 were locatable; the 31B's top-1 continued the source at the first wrong
 token in 2 % (call) and 12 % (thought) → "stop" by S0's rule. But most measured positions repeat a wrong text that is already
 in the context (48 of 56 calls; 39 of 48 thoughts), where any model copies; only 9 were where the text is first written.
 
-### S0b · the same check where each wrong text is FIRST written, plus E4B's own scores (2026-11-10; locator rewritten the same day) — START HERE
+### S0c · a second scored set, pooled with S0's (2026-11-10) — START HERE (about 3–4 h of all cards, then ~15 min)
+
+**Why.** S0b ran (2026-11-10): every check passed, but only 17 determined births (19 measured) in 201 rollouts — under
+the rule's 20, so no verdict. Point values: corrected 47 %, prefers 47 %, flagged 47 % against 1.5 % on the 1,032
+control tokens. More of E4B's own rollouts on the same tasks, scored the same way and pooled, give the rule its n
+(about 6 births a pass → 8 passes ≈ 50 more). The rule and its thresholds do not change.
+
+```bash
+# 0. code, inputs, cards (📷). Needs the rebench task environment on THIS box; if a path is missing → stop, send the photo
+cd gemma4-dev-agent && git pull && git log --oneline -1
+ls runs/rebench/tasks.jsonl runs/rebench/ok.txt && ls runs/rebench/site | wc -l && ls runs/opd/s0/t31_*.npz runs/opd/s0/s_*.npz | wc -l
+nvidia-smi --query-gpu=index,memory.used --format=csv,noheader; df -h . | tail -1
+# 1. eight more passes of E4B (no adapter) on the rebench tasks, one per card (~3–4 h; progress: tail -2 runs/rebench_lane*.log)
+E4B=google/gemma-4-E4B-it-qat-w4a16-ct
+GPUS="0 1 2 3 4 5 6 7" PASSES=8 LATEST=e4b ADAPTER= MODEL=$E4B TOK=$E4B ARM=base GTAG=f KEEP=all SFT=runs/sft/rebenche4b_f \
+  SRC=e4b_onpolicy POLICY=gemma-4-e4b-it-qat-w4a16-ct bash scripts/rebench_gen.sh gen          # 📷 the 8 pass lines
+# 2. when all 8 lanes have ended: rows, the 31B's scores, E4B's scores for the new set (its own directory: S0's files stay)
+export OUTD=runs/opd/s0x RUNS="$(echo runs/dev33_base_f{1..8})" TASKS=runs/rebench/tasks.jsonl
+bash train/opd_box.sh s0data                                             # 📷 every line
+nohup bash train/opd_box.sh score > runs/opd_score_x.log 2>&1 &          # ~10 min; 📷 the == lines when it ends
+nohup bash train/opd_box.sh student > runs/opd_student_x.log 2>&1 &      # AFTER score has ended (~3 min); 📷 the == lines
+# 3. the pooled readout: 📷 every line from the first 'counts:' line down
+POOL="runs/opd/s0 runs/opd/s0x" bash train/opd_box.sh probe
+unset OUTD RUNS TASKS
+```
+
+**Reading.** The same `== S0b verdict` line, now on both sets. Lines b / c will no longer equal the S0 photo (two sets).
+Stop and send the photo on: a missing path in step 0, a lane that ends without its results, `render` not PASS, a shard
+with no result, `STUDENT … FAIL`, a `locator check` below the measured births. Nothing is deleted; `runs/opd/s0` is not
+touched (`s0data` only clears its own `OUTD`). The new rollouts are also S1's training data if the verdict is go.
+
+### S0b · the same check where each wrong text is FIRST written, plus E4B's own scores (2026-11-10; locator rewritten the same day) — ✓ ran 2026-11-10: no verdict (n 17 < 20), see S0c
 
 Needs the code whose `kd_probe.py` has `--selftest`, and S0's files on the box (`runs/opd/s0/`: rows.jsonl, recs_*,
 t31_*.npz — the 31B scores are reused, nothing is rescored by the 31B). **Do not run `s0data` again with the default
