@@ -49,6 +49,19 @@ in the context (48 of 56 calls; 39 of 48 thoughts), where any model copies; only
 
 ### S0b · the same check where each wrong text is FIRST written, plus E4B's own scores (2026-11-10) — START HERE
 
+**⚠ Review note (2026-11-10 13:40, laptop; code not changed yet).** Step 1 (`student`) is fine to run. Step 2's
+**verdict line must not be acted on yet**: send the photo and wait. Found on the laptop's test data: (1) the model is
+shown file content with JSON escapes (a literal backslash-n, backslash-quote) and often writes them; the harness's
+matcher un-escapes such strings, so an escape is not why an edit is "not found", but the probe compares against the
+decoded text and takes the first literal backslash as the first wrong character: 14 of 37 measured cases sat there (in
+one read in full the real error is 1,839 characters later; in another the edit was stale); (2) when the wrong character
+is not the first character of E4B's token, a teacher top-1 that stops before it is counted as "corrected" (the oracle
+check does not catch it); (3) there is no control line at correctly copied positions, and no rule for "between" or
+n < 20. Also decided by the user: before S1, measure the teacher's probability mass outside its top-20 from the stored
+scores (a `TAIL` line, not in the probe yet); K stays 20 if it is small, else 100–200; never the whole vocabulary.
+Additional check for step 1's photo: on every span E4B's NLL of its own tokens must be below the 31B's, else the
+scoring model is not the sampling model → stop.
+
 Needs the code with `opd_box.sh student` and S0's files on the box (`runs/opd/s0/`: rows.jsonl, recs_*, t31_*.npz — the 31B
 scores are reused, nothing is rescored by the 31B). **Do not run `s0data` again: it deletes the 31B scores.** All cards free
 for step 1.
