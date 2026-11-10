@@ -99,6 +99,7 @@ import subprocess
 import sys
 import sysconfig
 import tempfile
+import time
 import tokenize
 import types
 from collections import Counter
@@ -1322,27 +1323,36 @@ async def _decode(a):
         jobs = [(r, c) for r, c in jobs if not c["target"].get("reasoning")]
     if a.limit:
         jobs = jobs[:a.limit]
-    print(f"edit_drills decode · {len(jobs)} target calls from {a.records} · model openai/{a.model} at {a.url} · "
-          f"temperature {a.temperature} · samples {a.samples} · concurrency {a.conc} · only targets without a thought "
+    urls = [u.strip().rstrip("/") for u in a.url.split(",") if u.strip()]      # one server per card
+    print(f"edit_drills decode · {len(jobs)} target calls from {a.records} · model openai/{a.model} at {len(urls)} "
+          f"server(s) {' '.join(urls)} · temperature {a.temperature} · samples {a.samples} · concurrency {a.conc} per "
+          f"server ({a.conc * len(urls)} in all) · retries on another server {a.retries} · only targets without a thought "
           f"{a.only_empty} · out {a.out}")
-    sem, done, errs = asyncio.Semaphore(a.conc), [0], Counter()
+    sems, done, errs, per_url = [asyncio.Semaphore(a.conc) for _ in urls], [0], Counter(), Counter()
     Path(a.out).parent.mkdir(parents=True, exist_ok=True)
     fout = open(a.out, "w")
+    t0 = time.time()
 
-    async def one(rec, c, k):
+    async def one(rec, c, k, j):        # j: the job's server (all samples of one prompt on one server: its prefix cache)
         s = rec.get("sampling") or DEFAULT_SAMPLING
         extra = {"chat_template_kwargs": {"enable_thinking": s.get("enable_thinking", True)}}
         if s.get("thinking_token_budget"):
             extra["thinking_token_budget"] = s["thinking_token_budget"]
-        async with sem:
-            try:
-                r = await litellm.acompletion(model=f"openai/{a.model}", api_base=a.url, api_key="EMPTY",
-                                              messages=c["input_messages"], tools=rec["tools"],
-                                              temperature=a.temperature, top_p=s.get("top_p"),
-                                              max_completion_tokens=s.get("max_completion_tokens"), extra_body=extra)
-            except Exception as e:                       # one failed request never stops the pass
-                errs[type(e).__name__] += 1
-                return
+        r = None
+        for t in range(a.retries + 1):                   # a failed request is tried again on the next server
+            u = (j + t) % len(urls)
+            async with sems[u]:
+                try:
+                    r = await litellm.acompletion(model=f"openai/{a.model}", api_base=urls[u], api_key="EMPTY",
+                                                  messages=c["input_messages"], tools=rec["tools"],
+                                                  temperature=a.temperature, top_p=s.get("top_p"),
+                                                  max_completion_tokens=s.get("max_completion_tokens"), extra_body=extra)
+                    per_url[u] += 1
+                    break
+                except Exception as e:                   # one failed request never stops the pass
+                    errs[f"{type(e).__name__}@{u}"] += 1
+        if r is None:
+            return
         ch = r.choices[0]
         md = ch.message.model_dump() if hasattr(ch.message, "model_dump") else dict(ch.message)
         reasoning = md.get("reasoning_content") or md.get("reasoning") or \
@@ -1354,11 +1364,15 @@ async def _decode(a):
                                "content": md.get("content"), "tool_calls": tcs}, ensure_ascii=False) + "\n")
         done[0] += 1
         if done[0] % 100 == 0:
-            print(f"  {done[0]} / {len(jobs) * a.samples}", flush=True)
+            el = time.time() - t0
+            print(f"  {done[0]} / {len(jobs) * a.samples} · {el / 60:.1f} min · {done[0] / el:.2f} calls/s · eta "
+                  f"{(len(jobs) * a.samples - done[0]) * el / done[0] / 60:.0f} min", flush=True)
 
-    await asyncio.gather(*(one(r, c, k) for r, c in jobs for k in range(a.samples)))
+    await asyncio.gather(*(one(r, c, k, j % len(urls)) for j, (r, c) in enumerate(jobs) for k in range(a.samples)))
     fout.close()
-    print(f"== decoded {done[0]} / {len(jobs) * a.samples} → {a.out} · request errors {dict(errs) or 0}")
+    el = time.time() - t0
+    print(f"== decoded {done[0]} / {len(jobs) * a.samples} → {a.out} · {el / 60:.1f} min ({done[0] / max(el, 1e-9):.2f} calls/s) · "
+          f"per server {' · '.join(str(per_url[u]) for u in range(len(urls)))} · request errors (type@server) {dict(errs) or 0}")
 
 
 def decode(a):
@@ -1683,10 +1697,12 @@ def main():
     d = sub.add_parser("decode")
     d.add_argument("records")
     d.add_argument("--model", required=True, help="served model or LoRA name")
-    d.add_argument("--url", default="http://127.0.0.1:8000/v1")
+    d.add_argument("--url", default="http://127.0.0.1:8000/v1", help="one server, or a comma list (one per card): the "
+                   "target calls are spread over them, --conc each")
+    d.add_argument("--retries", type=int, default=2, help="a failed request is sent again, to the next server")
     d.add_argument("--temperature", type=float, default=0.0)
     d.add_argument("--samples", type=int, default=1)
-    d.add_argument("--conc", type=int, default=16)
+    d.add_argument("--conc", type=int, default=16, help="concurrent requests per server")
     d.add_argument("--limit", type=int, default=0)
     d.add_argument("--only-empty", action="store_true", help="decode only targets whose thought is still empty")
     d.add_argument("--out", required=True)

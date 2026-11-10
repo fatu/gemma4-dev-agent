@@ -14,11 +14,19 @@
 #   GPU=0 bash train/drills_box.sh gate1    # each epoch's adapter on the held-out drills, paired against gate0's per-drill
 #                                           # outcomes (McNemar), verdict by tier (edit_drills.py TIER_AB / TIER_STRETCH)
 #   bash train/drills_box.sh subs           # the chosen epoch → runs/adapters/$NAME + a build check
-# gate0 / think / gate1 start their own server on $GPU and stop every `vllm serve` first: run them when no lane runs —
+# Several cards (B-3q, 2026-11-09): GPUS=0,1,2,3 (default: GPU if set, else every card nvidia-smi lists).
+#   gate0 / think / think31   one server per card (ports DPORT, DPORT+1, …); decode spreads the target calls over them
+#                             (DCONC requests per server), one output file as before → time ÷ cards
+#   train                     ONE adapter on all of GPUS: one sft_lora.py process per card, the step's 16 sequences
+#                             dealt to them, gradients summed (the single-card update) → time ÷ ~cards. Two adapters
+#                             side by side: two calls with disjoint GPUS (8 cards: 0,1,2,3 and 4,5,6,7)
+#   gate1                     NAMES="a b" gates several adapters in one call: every epoch of every name is mounted
+#                             on every server, adapter j is decoded on server j mod cards, all at once
+# gate0 / think / gate1 start their own servers on $GPUS and stop every `vllm serve` first: run them when no lane runs —
 # or, beside running lanes (e.g. E4B's rollouts on GPUs 1-3), with KILL_ALL=0 DPORT=8010: then only this script's own
 # server (vllm serve … --port $DPORT) is started and stopped, and the lanes keep theirs. Start the lanes FIRST
 # (rebench_gen.sh gen stops every vllm serve when it starts).
-# Knobs (every one printed): GPU · N_TRAIN (3600) · TRAIN_FAMILIES (the training set's family weights: more anchor / block
+# Knobs (every one printed): GPU / GPUS (cards) · DCONC (16 concurrent requests per server) · NAMES (gate1: default NAME) · DIST_PORT (train: the ranks' port, default 29500 + the first card) · N_TRAIN (3600) · TRAIN_FAMILIES (the training set's family weights: more anchor / block
 # / retry than the held-out sets, which keep edit_drills.py's FAMILIES) · FILE_CAP (30 drills per training file) · N_HELD (300) · N_BLOCK (80, the held-out block slice) · N_RETRY (80, the
 # held-out retry slice: E4B's failed-edit loops, read with its `resend` line) · TRAIN_LIBS ·
 # HELD_LIBS · BLOCK_LIBS / HELD_BLOCK_LIBS (the block family's repetitive libraries) · SYSTEM (the arm's system.md)
@@ -26,7 +34,7 @@
 # rendered file) · DRILL_SHARE (0.6: the drills keep at most this share of the mix's label tokens; 0.4 until B-3q) · TRAIN_PY (.venv-train/bin/python) · DQ (bf16 base) · EPOCHS LR ACCUM R ALPHA · EVAL_EVERY (100 steps; 25 until B-3q: the held-out eval then cost as much as training) ·
 # NATIVE (the drills with thoughts that mix renders: runs/sft/drills_native) · MIX (mix's output = train's data:
 # runs/sft/drills_mix.rendered.jsonl) · THINK31_SAMPLES (2) · THINK31_MAX_CHARS (3000) · THINK31_SCOPE (full) ·
-# NAME (e4b_drill) · EPOCH (subs: default the gate1 winner, else the lower held-out NLL).
+# SFT_EXTRA (extra sft_lora.py arguments, e.g. '--max-steps 3' for a smoke run of the multi-card path) · NAME (e4b_drill) · EPOCH (subs: default the gate1 winner, else the lower held-out NLL).
 # LoRA defaults r16 α16 (scale 1, lr the only strength knob; 2026-11-08, from the Kaggle survey in the private notes:
 # α/r 2 looped, rank 4–64 made no difference, a smaller rank leaves the scorer more KV cache). Train two NAMEs with
 # LR=1e-5 and LR=3e-5 on two cards (BOX_PLAN B-3p) and let gate1 pick.
@@ -34,7 +42,9 @@ set -uo pipefail
 cd "$(dirname "$0")/.."
 STEP="${1:?build|gate0|think|think31|mix|train|gate1|subs}"; T0=$(date +%s)
 say() { echo "== $(date '+%T') [$(( $(date +%s) - T0 ))s] $*"; }
-GPU="${GPU:-0}"; KILL_ALL="${KILL_ALL:-1}"; DPORT="${DPORT:-8000}"; PY=.venv-eval/bin/python; TRAIN_PY="${TRAIN_PY:-.venv-train/bin/python}"
+ALLGPUS=$(nvidia-smi --query-gpu=index --format=csv,noheader 2>/dev/null | paste -sd, -)
+GPUS="${GPUS:-${GPU:-${ALLGPUS:-0}}}"; IFS=, read -r -a GL <<< "$GPUS"; NG=${#GL[@]}; GPU="${GL[0]}"; DCONC="${DCONC:-16}"
+KILL_ALL="${KILL_ALL:-1}"; DPORT="${DPORT:-8000}"; PY=.venv-eval/bin/python; TRAIN_PY="${TRAIN_PY:-.venv-train/bin/python}"
 N_TRAIN="${N_TRAIN:-3600}"; N_HELD="${N_HELD:-300}"; FILE_CAP="${FILE_CAP:-30}"
 # B-3q (2026-11-09): only 478 of 1,500 drills at FAMILIES' weights exercised "a unique anchor while a repeat is in view"
 # (E4B's several-matches failure); ~1,500 such drills are the estimate for several matches ≤ 10 %: 3,600 drills at
@@ -46,28 +56,42 @@ BLOCK_LIBS="${BLOCK_LIBS:-typer,openai,networkx}"; HELD_BLOCK_LIBS="${HELD_BLOCK
 SYSTEM="${SYSTEM:-scripts/arms/latest_e4b/prompts/system.md}"; DROP_TOOLS="${DROP_TOOLS:-}"
 TOOLS_FROM="${TOOLS_FROM:-$(ls runs/*/traj/*.jsonl runs/*/*/traj/*.jsonl 2>/dev/null | grep -v '\.tools\.jsonl$' | head -1)}"
 OWN="${OWN:-runs/sft/rebenche4b.rendered.jsonl}"; DRILL_SHARE="${DRILL_SHARE:-0.6}"; THINK_SAMPLES="${THINK_SAMPLES:-4}"
-DQ="${DQ:-runs/dequant/gemma-4-E4B-dq}"; NAME="${NAME:-e4b_drill}"; OUTD="runs/sft_out/$NAME"
+DQ="${DQ:-runs/dequant/gemma-4-E4B-dq}"; NAME="${NAME:-e4b_drill}"; OUTD="runs/sft_out/$NAME"; NAMES="${NAMES:-$NAME}"; DIST_PORT="${DIST_PORT:-$((29500 + GPU))}"
 E4B=google/gemma-4-E4B-it-qat-w4a16-ct; ALIAS=gemma-4-e4b-it-qat-w4a16-ct; TOK="${TOK:-$E4B}"
 E31=google/gemma-4-31B-it-qat-w4a16-ct; ALIAS31=gemma-4-31b-it-qat-w4a16-ct
 THINK31_SAMPLES="${THINK31_SAMPLES:-2}"; THINK31_MAX_CHARS="${THINK31_MAX_CHARS:-3000}"; THINK31_SCOPE="${THINK31_SCOPE:-full}"
 NATIVE="${NATIVE:-runs/sft/drills_native}"; MIX="${MIX:-runs/sft/drills_mix.rendered.jsonl}"
 D=runs/sft/drills; H=runs/sft/drills_heldout; HB=runs/sft/drills_heldout_block; HR=runs/sft/drills_heldout_retry; G=runs/drills
-SFT="--base $DQ --max-len 32768 --epochs ${EPOCHS:-2} --lr ${LR:-3e-5} --warmup 0.05 --accum ${ACCUM:-16} --r ${R:-16} --alpha ${ALPHA:-16} --clip 1.0 --eval-every ${EVAL_EVERY:-100} --seed 0"
+SFT="--base $DQ --max-len 32768 --epochs ${EPOCHS:-2} --lr ${LR:-3e-5} --warmup 0.05 --accum ${ACCUM:-16} --r ${R:-16} --alpha ${ALPHA:-16} --clip 1.0 --eval-every ${EVAL_EVERY:-100} --seed 0 ${SFT_EXTRA:-}"
 if [ "$KILL_ALL" = 0 ] && [ "$DPORT" = 8000 ]; then echo "KILL_ALL=0 needs DPORT ≠ 8000 (the lanes serve on 8000)"; exit 1; fi
-echo "drills_box $STEP · GPU $GPU · server port $DPORT · stops $([ "$KILL_ALL" = 1 ] && echo 'every vllm serve' || echo "only its own (port $DPORT)") · train $N_TRAIN from $TRAIN_LIBS (block: $BLOCK_LIBS; families $TRAIN_FAMILIES; ≤ $FILE_CAP per file) · held out $N_HELD from $HELD_LIBS (block: $HELD_BLOCK_LIBS) + block slice $N_BLOCK + retry slice $N_RETRY · system $SYSTEM · drop tools [${DROP_TOOLS}] · tools from $TOOLS_FROM · own $OWN · drill share ≤ $DRILL_SHARE · think samples $THINK_SAMPLES · think31 samples $THINK31_SAMPLES ≤ $THINK31_MAX_CHARS chars scope $THINK31_SCOPE · native $NATIVE · mix $MIX · sft: $SFT · name $NAME"
+echo "drills_box $STEP · cards $GPUS ($NG; the box has ${ALLGPUS:-?}) · server ports ${DPORT}-$((DPORT + NG - 1)) · $DCONC requests per server · gate1 names [$NAMES] · train ranks port $DIST_PORT · stops $([ "$KILL_ALL" = 1 ] && echo 'every vllm serve' || echo "only its own (ports from $DPORT)") · train $N_TRAIN from $TRAIN_LIBS (block: $BLOCK_LIBS; families $TRAIN_FAMILIES; ≤ $FILE_CAP per file) · held out $N_HELD from $HELD_LIBS (block: $HELD_BLOCK_LIBS) + block slice $N_BLOCK + retry slice $N_RETRY · system $SYSTEM · drop tools [${DROP_TOOLS}] · tools from $TOOLS_FROM · own $OWN · drill share ≤ $DRILL_SHARE · think samples $THINK_SAMPLES · think31 samples $THINK31_SAMPLES ≤ $THINK31_MAX_CHARS chars scope $THINK31_SCOPE · native $NATIVE · mix $MIX · sft: $SFT · name $NAME"
 mkdir -p "$G"
 
-stop_serve() {   # KILL_ALL=1: every vllm serve on the box; 0: only ours (by its port)
-  if [ "$KILL_ALL" = 1 ]; then pkill -f "[v]llm serve"; else pkill -f "[v]llm serve.*--port $DPORT"; fi
+stop_serve() {   # KILL_ALL=1: every vllm serve on the box; 0: only ours (by their ports)
+  if [ "$KILL_ALL" = 1 ]; then pkill -f "[v]llm serve"; else for i in "${!GL[@]}"; do pkill -f "[v]llm serve.*--port $((DPORT + i))( |\$)"; done; fi
 }
+URL=""        # the servers that came up, comma list: decode spreads its calls over them
+URLS=()       # the same, one per card (gate1 pins one adapter to one server)
 serve() {   # $1 = a dir with adapters/<name>/ to mount, or "" for none; $2 = the model (default E4B); stop_serve first
   stop_serve; sleep 5
-  SUBMISSION="${1:-harness/sample_submission}" MODEL=${2:-$E4B} TP=1 GPU_UTIL=0.85 CUDA_VISIBLE_DEVICES=$GPU PORT=$DPORT \
-    nohup bash scripts/serve_vllm.sh > $G/vllm.log 2>&1 &
-  for i in $(seq 1 180); do curl -s --max-time 2 http://127.0.0.1:$DPORT/v1/models >/dev/null 2>&1 && break; sleep 5; done
-  echo "  server up after ~$((i * 5)) s: $(curl -s http://127.0.0.1:$DPORT/v1/models | python3 -c 'import json,sys; print([m["id"] for m in json.load(sys.stdin)["data"]])' 2>/dev/null || echo 'NOT UP — tail '$G/vllm.log)"
+  for i in "${!GL[@]}"; do      # one server per card, all loading at once
+    SUBMISSION="${1:-harness/sample_submission}" MODEL=${2:-$E4B} TP=1 GPU_UTIL=0.85 CUDA_VISIBLE_DEVICES=${GL[$i]} PORT=$((DPORT + i)) \
+      nohup bash scripts/serve_vllm.sh > $G/vllm_$i.log 2>&1 &
+  done
+  local up=0 t
+  for t in $(seq 1 180); do
+    up=0; for i in "${!GL[@]}"; do curl -s --max-time 2 http://127.0.0.1:$((DPORT + i))/v1/models >/dev/null 2>&1 && up=$((up + 1)); done
+    [ $up = $NG ] && break; sleep 5
+  done
+  URL=""; URLS=()
+  for i in "${!GL[@]}"; do
+    if curl -s --max-time 2 http://127.0.0.1:$((DPORT + i))/v1/models >/dev/null 2>&1; then
+      URLS+=("http://127.0.0.1:$((DPORT + i))/v1"); URL="${URL:+$URL,}http://127.0.0.1:$((DPORT + i))/v1"
+    else echo "  card ${GL[$i]} (port $((DPORT + i))): server NOT UP — left out; tail $G/vllm_$i.log"; fi
+  done
+  echo "  servers up: ${#URLS[@]} of $NG after ~$((t * 5)) s (cards $GPUS): $(curl -s "${URLS[0]:-http://127.0.0.1:$DPORT/v1}/models" | python3 -c 'import json,sys; print([m["id"] for m in json.load(sys.stdin)["data"]])' 2>/dev/null || echo 'NONE UP')"
+  [ ${#URLS[@]} -gt 0 ] || { echo "no server came up: stop"; stop_serve; exit 1; }
 }
-URL="http://127.0.0.1:$DPORT/v1"
 
 case "$STEP" in
 build)
@@ -86,18 +110,18 @@ build)
   echo "📷 the four '== drills' lines and the tools / sampling line" ;;
 gate0)
   serve ""
-  $PY train/edit_drills.py decode $H --url $URL --model $ALIAS --temperature 0 --out $G/heldout_base_t0.jsonl 2>&1 | grep -E "^==|^edit_drills"
+  $PY train/edit_drills.py decode $H --url $URL --conc $DCONC --model $ALIAS --temperature 0 --out $G/heldout_base_t0.jsonl 2>&1 | grep -E "^==|^edit_drills"
   $PY train/edit_drills.py score $H $G/heldout_base_t0.jsonl --outcomes $G/gate0.out.jsonl --summary $G/gate0.sum.json 2>&1 | grep -v LiteLLM | tee $G/gate0.txt
-  $PY train/edit_drills.py decode $HB --url $URL --model $ALIAS --temperature 0 --out $G/heldblock_base_t0.jsonl 2>&1 | grep -E "^==|^edit_drills"
+  $PY train/edit_drills.py decode $HB --url $URL --conc $DCONC --model $ALIAS --temperature 0 --out $G/heldblock_base_t0.jsonl 2>&1 | grep -E "^==|^edit_drills"
   echo "-- block slice"; $PY train/edit_drills.py score $HB $G/heldblock_base_t0.jsonl --outcomes $G/gate0_block.out.jsonl --summary $G/gate0_block.sum.json 2>&1 | grep -v LiteLLM | tee $G/gate0_block.txt | grep -E "edit outcomes|block slice"
-  $PY train/edit_drills.py decode $HR --url $URL --model $ALIAS --temperature 0 --out $G/heldretry_base_t0.jsonl 2>&1 | grep -E "^==|^edit_drills"
+  $PY train/edit_drills.py decode $HR --url $URL --conc $DCONC --model $ALIAS --temperature 0 --out $G/heldretry_base_t0.jsonl 2>&1 | grep -E "^==|^edit_drills"
   echo "-- retry slice"; $PY train/edit_drills.py score $HR $G/heldretry_base_t0.jsonl --outcomes $G/gate0_retry.out.jsonl --summary $G/gate0_retry.sum.json 2>&1 | grep -v LiteLLM | tee $G/gate0_retry.txt | grep -E "edit outcomes|resend|recover call 1"
   stop_serve
   echo "  per-drill outcomes kept for gate1's paired comparison: $G/gate0*.out.jsonl"
   echo "📷 everything from 'edit_drills score' down, the '-- block slice' and '-- retry slice' lines" ;;
 think)
   serve ""
-  $PY train/edit_drills.py decode $D --url $URL --model $ALIAS --temperature 0.7 --samples "$THINK_SAMPLES" --out $G/train_think_t07.jsonl 2>&1 | grep -E "^==|^edit_drills"
+  $PY train/edit_drills.py decode $D --url $URL --conc $DCONC --model $ALIAS --temperature 0.7 --samples "$THINK_SAMPLES" --out $G/train_think_t07.jsonl 2>&1 | grep --line-buffered -E "^==|^edit_drills|^  [0-9]+000 /"
   $PY train/edit_drills.py think $D $G/train_think_t07.jsonl --out ${D}_native 2>&1 | grep -E "^==|^   (samples|calls with)"
   $PY train/edit_drills.py score $D $G/train_think_t07.jsonl 2>&1 | grep -E "edit outcomes|^== gate"   # E4B on its own training drills
   stop_serve
@@ -105,7 +129,7 @@ think)
 think31)
   [ -d ${D}_native ] || { echo "no ${D}_native: run think first (the 31B fills only what E4B left empty)"; exit 1; }
   serve "" $E31
-  $PY train/edit_drills.py decode ${D}_native --only-empty --url $URL --model $ALIAS31 --temperature 0.7 --samples "$THINK31_SAMPLES" --out $G/train_think31_t07.jsonl 2>&1 | grep -E "^==|^edit_drills"
+  $PY train/edit_drills.py decode ${D}_native --only-empty --url $URL --conc $DCONC --model $ALIAS31 --temperature 0.7 --samples "$THINK31_SAMPLES" --out $G/train_think31_t07.jsonl 2>&1 | grep --line-buffered -E "^==|^edit_drills|^  [0-9]+000 /"
   $PY train/edit_drills.py think ${D}_native $G/train_think31_t07.jsonl --fill --source 31b --scope "$THINK31_SCOPE" --max-thought-chars "$THINK31_MAX_CHARS" --out ${D}_native31 2>&1 | grep -E "^==|^   (samples|calls with|thought source)"
   stop_serve
   echo "📷 the decode line, '== think', 'samples:', 'thought source by family'" ;;
@@ -116,8 +140,10 @@ import glob, os, sys
 a = {os.path.basename(f) for f in glob.glob(sys.argv[1] + '/*.json')}; b = {os.path.basename(f) for f in glob.glob(sys.argv[2] + '/*.json')}
 print(f'  think set vs build: {len(a & b)} of {len(a)} drills in both')
 sys.exit(0 if a == b else 1)" $D $NATIVE || { echo "$NATIVE is not this build's drills (an earlier think?): run think again"; exit 1; }
+  RP=(); for d in $NATIVE $H; do      # the two renders side by side (CPU)
+    $PY train/render.py $d --tokenizer "$TOK" --pack --sample 100 --out $d.rendered.jsonl > $d.render.log 2>&1 & RP+=($!)
+  done; wait "${RP[@]}"
   for d in $NATIVE $H; do
-    $PY train/render.py $d --tokenizer "$TOK" --pack --sample 100 --out $d.rendered.jsonl > $d.render.log 2>&1
     echo "  $d: $(grep -E '^calls' $d.render.log | cut -c1-120) · $(grep -E '^RESULT' $d.render.log)"
   done
   python3 - $NATIVE.rendered.jsonl "$OWN" "$DRILL_SHARE" $MIX $NATIVE <<'PY'
@@ -155,24 +181,48 @@ PY
 train)
   [ -s $MIX ] || { echo "run mix first"; exit 1; }
   [ -f "$DQ/config.json" ] || { echo "no bf16 base in $DQ: GPU=$GPU bash train/train_box.sh env dequant"; exit 1; }
-  rm -rf "$OUTD"
-  CUDA_VISIBLE_DEVICES=$GPU $TRAIN_PY train/sft_lora.py $SFT --data $MIX \
-    --eval $H.rendered.jsonl --out "$OUTD" 2>&1 | grep -v Warning | tee runs/sft_$NAME.log | cut -c1-250
-  echo "📷 the schedule line, the 'eval[...]' lines and both '== epoch' lines" ;;
+  rm -rf "$OUTD"; PIDS=()
+  for i in "${!GL[@]}"; do [ $i = 0 ] && continue      # ranks 1…: one process per card; rank 0 runs in front and logs
+    CUDA_VISIBLE_DEVICES=${GL[$i]} $TRAIN_PY train/sft_lora.py $SFT --data $MIX --eval $H.rendered.jsonl --out "$OUTD" \
+      --world $NG --rank $i --dist-port $DIST_PORT > runs/sft_$NAME.rank$i.log 2>&1 &
+    PIDS+=($!)
+  done
+  if [ $NG -gt 1 ]; then      # a rank that dies would leave the others waiting for it: stop them all
+    ( while sleep 20; do for q in "${PIDS[@]}"; do
+        if ! kill -0 $q 2>/dev/null; then
+          sleep 30      # after a normal end rank 0 is gone by now too
+          pgrep -f "sft_lora.py.*--out $OUTD --world $NG --rank 0 " >/dev/null && { echo "  a rank of $NAME ended early (see runs/sft_$NAME.rank*.log): stopping the others"; pkill -f "sft_lora.py.*--out $OUTD --world"; }
+          exit
+        fi; done; done ) & WATCH=$!
+  fi
+  CUDA_VISIBLE_DEVICES=${GL[0]} $TRAIN_PY train/sft_lora.py $SFT --data $MIX --eval $H.rendered.jsonl --out "$OUTD" \
+    --world $NG --rank 0 --dist-port $DIST_PORT 2>&1 | grep -v Warning | tee runs/sft_$NAME.log | cut -c1-250
+  if [ $NG -gt 1 ]; then      # rank 0 is done (or failed): the other ranks end with it
+    { kill $WATCH; wait $WATCH; } 2>/dev/null; sleep 10; pkill -f "sft_lora.py.*--out $OUTD --world" && echo "  stopped ranks still running after rank 0 ended"
+    wait "${PIDS[@]}" 2>/dev/null; for f in runs/sft_$NAME.rank*.log; do echo "  $f: $(tail -n 1 $f | cut -c1-160)"; done
+  fi
+  [ -f "$OUTD/train_summary.json" ] || echo "  TRAIN FAILED: no $OUTD/train_summary.json (rank 0: runs/sft_$NAME.log; the others: runs/sft_$NAME.rank*.log)"
+  echo "📷 the schedule line (cards for this adapter), one 'step' line (×speed-up, gradient sync), the 'eval[...]' lines, every '== epoch' line and the 'parameter checksum' line" ;;
 gate1)
   [ -s $G/gate0.out.jsonl ] && [ -s $G/gate0_block.out.jsonl ] && [ -s $G/gate0_retry.out.jsonl ] || { echo "run gate0 first (on these held-out sets): gate1 is read against it, paired"; exit 1; }
   rm -rf runs/drill_serve; mkdir -p runs/drill_serve/adapters
-  for e in $OUTD/epoch*/; do k=$(basename "$e"); [ -f "$e/adapter_model.safetensors" ] && cp -r "$e" "runs/drill_serve/adapters/${NAME}_$k"; done
+  for nm in $NAMES; do for e in runs/sft_out/$nm/epoch*/; do k=$(basename "$e"); [ -f "$e/adapter_model.safetensors" ] && cp -r "$e" "runs/drill_serve/adapters/${nm}_$k"; done; done
+  AD=($(ls runs/drill_serve/adapters)); [ ${#AD[@]} -gt 0 ] || { echo "no epoch adapters under runs/sft_out/{$NAMES}"; exit 1; }
   serve runs/drill_serve
-  for a in $(ls runs/drill_serve/adapters); do
-    $PY train/edit_drills.py decode $H --url $URL --model "$a" --temperature 0 --out $G/heldout_${a}_t0.jsonl 2>&1 | grep -E "^=="
-    echo "-- $a"; $PY train/edit_drills.py score $H $G/heldout_${a}_t0.jsonl --baseline $G/gate0.out.jsonl --summary $G/gate1_$a.sum.json 2>&1 | grep -v LiteLLM | tee $G/gate1_$a.txt | grep -E "edit outcomes|^== gate|answer length"
-    $PY train/edit_drills.py decode $HB --url $URL --model "$a" --temperature 0 --out $G/heldblock_${a}_t0.jsonl 2>&1 | grep -E "^=="
+  echo "  ${#AD[@]} adapters on ${#URLS[@]} servers, all decoded at once: adapter j on server j mod ${#URLS[@]} ($DCONC requests each)"
+  gate_one() {   # $1 adapter, $2 its server: the three held-out sets, scored paired against gate0, then the tier
+    local a=$1 u=$2
+    $PY train/edit_drills.py decode $H --url $u --conc $DCONC --model "$a" --temperature 0 --out $G/heldout_${a}_t0.jsonl 2>&1 | grep -E "^=="
+    echo "-- $a (server $u)"; $PY train/edit_drills.py score $H $G/heldout_${a}_t0.jsonl --baseline $G/gate0.out.jsonl --summary $G/gate1_$a.sum.json 2>&1 | grep -v LiteLLM | tee $G/gate1_$a.txt | grep -E "edit outcomes|^== gate|answer length"
+    $PY train/edit_drills.py decode $HB --url $u --conc $DCONC --model "$a" --temperature 0 --out $G/heldblock_${a}_t0.jsonl 2>&1 | grep -E "^=="
     $PY train/edit_drills.py score $HB $G/heldblock_${a}_t0.jsonl --baseline $G/gate0_block.out.jsonl --summary $G/gate1_block_$a.sum.json 2>&1 | grep -v LiteLLM | tee $G/gate1_block_$a.txt >/dev/null
-    $PY train/edit_drills.py decode $HR --url $URL --model "$a" --temperature 0 --out $G/heldretry_${a}_t0.jsonl 2>&1 | grep -E "^=="
+    $PY train/edit_drills.py decode $HR --url $u --conc $DCONC --model "$a" --temperature 0 --out $G/heldretry_${a}_t0.jsonl 2>&1 | grep -E "^=="
     $PY train/edit_drills.py score $HR $G/heldretry_${a}_t0.jsonl --baseline $G/gate0_retry.out.jsonl --summary $G/gate1_retry_$a.sum.json 2>&1 | grep -v LiteLLM | tee $G/gate1_retry_$a.txt >/dev/null
     $PY train/edit_drills.py tier --main $G/gate1_$a.sum.json --block $G/gate1_block_$a.sum.json --retry $G/gate1_retry_$a.sum.json --name "$a" 2>&1 | grep -v LiteLLM | tee $G/tier_$a.txt
-  done
+  }
+  GP=()      # wait for these only: a bare `wait` would also wait for the servers
+  for j in "${!AD[@]}"; do gate_one "${AD[$j]}" "${URLS[$((j % ${#URLS[@]}))]}" > $G/gate1_run_${AD[$j]}.log 2>&1 & GP+=($!); done; wait "${GP[@]}"
+  for a in "${AD[@]}"; do cat $G/gate1_run_$a.log; done
   echo "-- no adapter (gate0)"; grep -E "edit outcomes|^== gate|block slice|answer length|resend" $G/gate0.txt $G/gate0_block.txt $G/gate0_retry.txt 2>/dev/null || echo "  (no gate0 yet)"
   stop_serve
   echo "📷 each adapter's '-- <name>' block: edit outcomes, gate, answer length, and the whole 'edit_drills tier' block (✓/✗ lines + '== tier'); full scores in $G/gate1_*.txt" ;;
