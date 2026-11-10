@@ -673,7 +673,7 @@ python3 scripts/compare_runs.py runs/dev33_base_p{1,2,3,4} | head -8            
 (passes of one arm differ by up to 5–6 tasks on these 51). Next on the laptop either way: step 2 (an edit-skill LoRA
 on short, checked edit exercises, no whole 31B trajectories) and, later, step 3 (31B relabels E4B's own states).
 
-## B-3q · The edit-skill LoRA again: drills rebuilt from E4B's real failures, gate in tiers ▶ steps 1–2 done, step 3 next (on 8 cards ~5–7 h to gate1, on 4 cards ~8–12 h; one card ~15–25 h; then ~4 h A/B)
+## B-3q · The edit-skill LoRA again: drills rebuilt from E4B's real failures, gate in tiers ▶ steps 1–6 done 2026-11-10: gate 1 not passed (epoch 1: 6 of 8 lines) → "after gate 1" below; nothing else runs until the laptop says so
 
 B-3p's two runs did not pass gate 1 (B-3p below: kept as the record, **do not run its steps**). What changed for B-3q, all in the code:
 - **Drills:** a `retry` family from E4B's real failure loops (a failed edit by E4B's real causes, the identical call resent,
@@ -686,6 +686,34 @@ B-3p's two runs did not pass gate 1 (B-3p below: kept as the record, **do not ru
 - **Training:** one learning rate, 1e-5, four epochs (in B-3p 3e-5 made the block slice worse with every epoch; 1e-5 was
   still improving at epoch 2). Every epoch's adapter goes through gate1.
 - **E4B's rollouts are reused** (`runs/sft/rebenche4b.rendered.jsonl` from B-3p's step 4): no new rollouts.
+
+### B-3q after gate 1 (2026-11-10) — two read-only commands, 📷, then wait
+
+Where it stands (steps 0–6 ran 2026-11-09 → 11-10, 8 cards):
+- **gate 1, adapter A:** no epoch passed the A/B tier. Epoch 1 passed 6 of the 8 lines (hit 60 → 67 %, several matches
+  21 → 14 %, both significant); the two missed lines are the 80-drill slices (block several −8 against −12, retry hit +3
+  against +10). Later epochs are worse (several back to 20 %, answers back from 3 lines to 2).
+- **adapter B:** not trained. The 31B gave a usable thought for 9.7 % of the targets E4B left empty; of its samples with a
+  usable thought, 62 % called another tool instead of the edit.
+- **several-card training** worked: 4 cards, ×3.8–3.9 of one card, identical weights on every rank, 6.3 h.
+
+**1. Pull.** The box's local patch (`serve ""` mounted the sample submission, whose adapter is the 31B's) is in the repo
+now: `serve ""` mounts the empty `runs/noadapter` and prints a `mounted:` line. Drop the local copy first:
+```bash
+cd gemma4-dev-agent && git checkout train/drills_box.sh && git pull && git log --oneline -1
+```
+
+**2. What the 31B (and E4B) did instead of the edit** — no GPU, reads the decodes that are already there, writes nothing
+but the two text files. A minute or two each:
+```bash
+.venv-eval/bin/python train/edit_drills.py why runs/sft/drills_native runs/drills/train_think31_t07.jsonl 2>&1 | grep -v LiteLLM | tee runs/drills/why_think31.txt
+.venv-eval/bin/python train/edit_drills.py why runs/sft/drills runs/drills/train_think_t07.jsonl --max-thought-chars 12000 2>&1 | grep -v LiteLLM | tee runs/drills/why_think.txt
+```
+📷 both outputs whole (from `edit_drills why` down to `== why done`). They show: thoughts missing / over the cap / usable,
+the outcome by thought state, how many targets a higher cap would fill, which tool was called instead of the edit (a
+read of the same lines again, of other lines, the whole file, a grep …), and all of it by family.
+
+**3. Stop.** No `subs`, no A/B, no retraining, no `think31` rerun and nothing deleted until the laptop answers.
 
 ### B-3q run order on the box (2026-11-09, code ≥ `614dc93` for steps 3–6: several cards) — one step at a time, 📷 after each
 
