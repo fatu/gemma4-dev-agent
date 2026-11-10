@@ -13,6 +13,9 @@
 #   GPU=0 bash train/drills_box.sh train    # the LoRA (one card)
 #   GPU=0 bash train/drills_box.sh gate1    # each epoch's adapter on the held-out drills, paired against gate0's per-drill
 #                                           # outcomes (McNemar), verdict by tier (edit_drills.py TIER_AB / TIER_STRETCH)
+#   NAME=e4b_drill_q EPOCH=1 bash train/drills_box.sh histtest   # B-3q-T, no training: the held-out drills with thoughts on the
+#                                           # earlier turns (template · written by the base model) against the original
+#                                           # format, no adapter vs that epoch → is the gain tied to thought-free histories?
 #   bash train/drills_box.sh subs           # the chosen epoch → runs/adapters/$NAME + a build check
 # B-3r (2026-11-10): SET=_r in front of every stage → this build's drills live in runs/sft/drills_r*, its decodes and
 #   gate files in runs/drills_r (an earlier build stays). The builder now makes every answer decidable from the context
@@ -43,7 +46,7 @@
 # LR=1e-5 and LR=3e-5 on two cards (BOX_PLAN B-3p) and let gate1 pick.
 set -uo pipefail
 cd "$(dirname "$0")/.."
-STEP="${1:?build|gate0|think|think31|mix|train|gate1|subs}"; T0=$(date +%s)
+STEP="${1:?build|gate0|think|think31|mix|train|gate1|histtest|subs}"; T0=$(date +%s)
 say() { echo "== $(date '+%T') [$(( $(date +%s) - T0 ))s] $*"; }
 ALLGPUS=$(nvidia-smi --query-gpu=index --format=csv,noheader 2>/dev/null | paste -sd, -)
 GPUS="${GPUS:-${GPU:-${ALLGPUS:-0}}}"; IFS=, read -r -a GL <<< "$GPUS"; NG=${#GL[@]}; GPU="${GL[0]}"; DCONC="${DCONC:-16}"
@@ -240,6 +243,37 @@ gate1)
   echo "-- no adapter (gate0)"; grep -E "edit outcomes|^== gate|block slice|check after|answer length|resend" $G/gate0.txt $G/gate0_block.txt $G/gate0_retry.txt 2>/dev/null || echo "  (no gate0 yet)"
   stop_serve
   echo "📷 each adapter's '-- <name>' block: edit outcomes, gate, answer length, and the whole 'edit_drills tier' block (✓/✗ lines + '== tier'); full scores in $G/gate1_*.txt" ;;
+histtest)   # B-3q-T: is the adapter's gain on the drills tied to histories without thoughts? (no training)
+  # the same held-out drills in three history formats — orig (earlier turns are bare calls), template (a plain sentence
+  # before each), written (the served base model writes it) — decoded with no adapter and with ONE adapter epoch
+  EP="${EPOCH:-1}"; AD="${NAME}_epoch$EP"; SRC="runs/sft_out/$NAME/epoch$EP"; X=$G/hist; HIST_WRITTEN="${HIST_WRITTEN:-1}"
+  FM="orig template"; [ "$HIST_WRITTEN" = 1 ] && FM="$FM written"
+  echo "  histtest: adapter $AD from $SRC · formats [$FM] (HIST_WRITTEN=$HIST_WRITTEN) · sets main=$H block=$HB retry=$HR · files ${X}_*"
+  [ -f "$SRC/adapter_model.safetensors" ] || { echo "no $SRC/adapter_model.safetensors (NAME / EPOCH?)"; exit 1; }
+  for d in $H $HB $HR; do [ -d $d ] || { echo "no $d: the held-out drills of this build are needed"; exit 1; }; done
+  rm -rf runs/drill_serve; mkdir -p runs/drill_serve/adapters; cp -r "$SRC" "runs/drill_serve/adapters/$AD"
+  for s in main:$H block:$HB retry:$HR; do
+    $PY train/edit_drills.py histthink ${s#*:} --mode template --out ${s#*:}_ht 2>&1 | grep -E "^==|^edit_drills" | cut -c1-330
+  done
+  serve runs/drill_serve
+  if [ "$HIST_WRITTEN" = 1 ]; then
+    for s in main:$H block:$HB retry:$HR; do
+      $PY train/edit_drills.py histthink ${s#*:} --mode written --url $URL --conc $DCONC --model $ALIAS --out ${s#*:}_hw 2>&1 | grep -E "^==|^edit_drills" | cut -c1-330
+    done
+  fi
+  for s in main:$H block:$HB retry:$HR; do k=${s%%:*}; d=${s#*:}
+    for f in $FM; do
+      case $f in orig) R=$d ;; template) R=${d}_ht ;; written) R=${d}_hw ;; esac
+      for m in base:$ALIAS ad:$AD; do
+        $PY train/edit_drills.py decode $R --url $URL --conc $DCONC --model "${m#*:}" --temperature 0 --out ${X}_${k}_${f}_${m%%:*}.jsonl 2>&1 | grep -E "^==" | sed "s/^== decoded/   $k $f ${m%%:*}: decoded/" | cut -c1-330
+      done
+      $PY train/edit_drills.py score $R ${X}_${k}_${f}_base.jsonl --outcomes ${X}_${k}_${f}_base.out.jsonl > ${X}_${k}_${f}_base.txt 2>&1
+      $PY train/edit_drills.py score $R ${X}_${k}_${f}_ad.jsonl --outcomes ${X}_${k}_${f}_ad.out.jsonl --baseline ${X}_${k}_${f}_base.out.jsonl > ${X}_${k}_${f}_ad.txt 2>&1
+    done
+  done
+  stop_serve
+  $PY train/edit_drills.py histcmp --prefix $X --sets main,block,retry --formats "${FM// /,}" 2>&1 | grep -v LiteLLM
+  echo "📷 the histthink lines, the 'decoded' lines (their prompt tokens must be higher for template / written than for orig) and the whole histcmp block" ;;
 subs)
   BEST=$(python3 - "$G" "$NAME" <<'PY'
 import glob, re, sys

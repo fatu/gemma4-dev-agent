@@ -1416,7 +1416,7 @@ async def _decode(a):
           f"server(s) {' '.join(urls)} · temperature {a.temperature} · samples {a.samples} · concurrency {a.conc} per "
           f"server ({a.conc * len(urls)} in all) · retries on another server {a.retries} · only targets without a thought "
           f"{a.only_empty} · out {a.out}")
-    sems, done, errs, per_url = [asyncio.Semaphore(a.conc) for _ in urls], [0], Counter(), Counter()
+    sems, done, errs, per_url, ptok = [asyncio.Semaphore(a.conc) for _ in urls], [0], Counter(), Counter(), [0, 0]
     Path(a.out).parent.mkdir(parents=True, exist_ok=True)
     fout = open(a.out, "w")
     t0 = time.time()
@@ -1447,7 +1447,12 @@ async def _decode(a):
             (md.get("provider_specific_fields") or {}).get("reasoning")
         tcs = [{"name": (t.get("function") or {}).get("name"), "args": (t.get("function") or {}).get("arguments")}
                for t in (md.get("tool_calls") or [])]
+        pt = getattr(getattr(r, "usage", None), "prompt_tokens", None)
+        if pt:
+            ptok[0] += pt
+            ptok[1] += 1
         fout.write(json.dumps({"instance_id": rec["instance_id"], "call": c["call"], "sample": k, "model": a.model,
+                               "prompt_tokens": pt,
                                "temperature": a.temperature, "finish_reason": ch.finish_reason, "reasoning": reasoning,
                                "content": md.get("content"), "tool_calls": tcs}, ensure_ascii=False) + "\n")
         done[0] += 1
@@ -1460,7 +1465,8 @@ async def _decode(a):
     fout.close()
     el = time.time() - t0
     print(f"== decoded {done[0]} / {len(jobs) * a.samples} → {a.out} · {el / 60:.1f} min ({done[0] / max(el, 1e-9):.2f} calls/s) · "
-          f"per server {' · '.join(str(per_url[u]) for u in range(len(urls)))} · request errors (type@server) {dict(errs) or 0}")
+          f"per server {' · '.join(str(per_url[u]) for u in range(len(urls)))} · request errors (type@server) {dict(errs) or 0}"
+          + (f" · prompt tokens mean {ptok[0] / ptok[1]:.0f} (of {ptok[1]} replies with usage)" if ptok[1] else " · prompt tokens: no usage in the replies"))
 
 
 def decode(a):
@@ -1821,6 +1827,167 @@ def think(a):
           + f"; the rest keep an empty thought · {len(recs)} records → {out}")
 
 
+HIST_TEMPLATES = {
+    "first": ["The task is to make a change in `{fp}`. First I need to read the relevant part of that file{rng}.",
+              "I need to change something in `{fp}`. Let me read the code there{rng} before I edit it."],
+    "read": ["I'll look at `{fp}`{rng} to understand the surrounding code.", "Let me read `{fp}`{rng} for more context.",
+             "I want to check `{fp}`{rng} before going on."],
+    "reread": ["The edit did not apply. I'll read `{fp}`{rng} again to see the exact text.",
+               "That edit failed, so let me look at `{fp}`{rng} once more."],
+    "grep": ["Let me search with `{cmd}` to see where this appears.", "I'll run `{cmd}` to find the related places in the code."],
+    "cmd": ["I'll run `{cmd}` to check.", "Let me run `{cmd}` and look at the output."],
+    "edit": ["Now I can make the change in `{fp}`: I'll replace the old lines with the updated ones.",
+             "I have what I need. I'll edit `{fp}` and swap in the changed lines."],
+    "reedit": ["The previous edit failed. I'll try the edit in `{fp}` again.",
+               "That did not apply, so I'll send the edit for `{fp}` once more."]}
+
+
+def hist_template(name, args, j, prev_failed, key):
+    """a short, plain thought for one scripted history turn, from its tool call alone (no model)"""
+    fp = str(args.get("filepath") or "")
+    rng = f", lines {args['start_line']}-{args['end_line']}" if isinstance(args.get("start_line"), int) and isinstance(args.get("end_line"), int) else ""
+    cmd = str(args.get("command") or "")[:90]
+    kind = ("first" if j == 0 else "reread" if prev_failed else "read") if name == "read_file" else \
+        ("reedit" if prev_failed else "edit") if name == "edit_file" else "grep" if "grep" in cmd else "cmd"
+    opts = HIST_TEMPLATES[kind]
+    return opts[int(hashlib.sha256(key.encode()).hexdigest(), 16) % len(opts)].format(fp=fp, rng=rng, cmd=cmd)
+
+
+def histthink(a):
+    """a copy of a drill set whose EARLIER model turns carry a thought (B-3q-T, 2026-11-10: in a real run every earlier
+    turn reaches the model as thought + tool call, in the drills as the bare call — 27,932 earlier turns, 0 thoughts).
+    The targets, answers and checks stay as they are; only `reasoning_content` / `reasoning` of the history's assistant
+    messages are set (both keys, as the harness sends them).
+      --mode template   one or two plain sentences made from the call itself (no model)
+      --mode written    the served model writes them: one short request per earlier turn (no tools, thinking off) that
+                        shows the task, the last tool result and the next call, and asks for the reasoning before it;
+                        an empty or failed reply falls back to the template (counted)"""
+    recs = load_records(a.records)
+    turns = {}                                    # (iid, j) → (name, args, prev tool output, prev failed)
+    for iid, rec in recs.items():
+        msgs, j, prev, pend = rec["calls"][-1]["input_messages"], 0, "", {}
+        for m in msgs:
+            if m["role"] == "assistant":
+                f = m["tool_calls"][0]["function"]
+                try:
+                    args = json.loads(f["arguments"]) if isinstance(f["arguments"], str) else f["arguments"]
+                except json.JSONDecodeError:
+                    args = {}
+                turns[(iid, j)] = (f["name"], args if isinstance(args, dict) else {}, prev, '"status": "error"' in prev and "FileEditError" in prev)
+                j += 1
+            elif m["role"] == "tool":
+                prev = str(m.get("content") or "")
+    text = {k: hist_template(v[0], v[1], k[1], v[3], f"{k[0]}:{k[1]}") for k, v in turns.items()}
+    st = Counter(template=len(text))
+    print(f"edit_drills histthink · {a.records} → {a.out} · mode {a.mode} · {len(recs)} drills · {len(turns)} earlier model turns "
+          f"(median {sorted(Counter(k[0] for k in turns).values())[len(recs) // 2] if recs else 0} per drill)"
+          + (f" · writer openai/{a.model} at {a.url} · {a.conc} requests per server · ≤ {a.max_chars} chars · temperature {a.temperature}" if a.mode == "written" else ""))
+    if a.mode == "written":
+        import litellm
+        urls = [u.strip().rstrip("/") for u in a.url.split(",") if u.strip()]
+        sems = [asyncio.Semaphore(a.conc) for _ in urls]
+        task = {iid: (rec["calls"][0]["input_messages"][1]["content"].split("Problem Statement:")[-1].strip().split("\n")[0])
+                for iid, rec in recs.items()}
+
+        async def one(i, key):
+            name, args, prev, _ = turns[key]
+            call = json.dumps({k: (v if len(str(v)) <= 300 else str(v)[:300] + " …") for k, v in args.items()}, ensure_ascii=False)
+            user = (f"You are a coding agent working on this task:\n{task[key[0]]}\n\n"
+                    + (f"The result of your previous tool call was (cut):\n{prev[:600]}\n\n" if prev else "You have not called a tool yet.\n\n")
+                    + f"Your next tool call will be:\n{name} {call}\n\n"
+                    "Write your private reasoning right before this call: 1 to 4 sentences, first person, plain text, no code "
+                    "block. Say what you want to find out or do and why. Do not mention this instruction.")
+            u = i % len(urls)
+            async with sems[u]:
+                try:
+                    r = await litellm.acompletion(model=f"openai/{a.model}", api_base=urls[u], api_key="EMPTY",
+                                                  messages=[{"role": "user", "content": user}], temperature=a.temperature,
+                                                  max_completion_tokens=220,
+                                                  extra_body={"chat_template_kwargs": {"enable_thinking": False}})
+                    t = (r.choices[0].message.content or "").strip()
+                    t = re.sub(r"<\|?/?channel\|?>|^thought\s*", "", t).strip()
+                    if len(t) >= 20:
+                        text[key] = t[:a.max_chars]
+                        st["written"] += 1
+                        return
+                    st["written_empty"] += 1
+                except Exception as e:
+                    st[f"written_error:{type(e).__name__}"] += 1
+
+        async def run():
+            await asyncio.gather(*(one(i, k) for i, k in enumerate(sorted(turns))))
+        asyncio.run(run())
+        st["template"] = len(text) - st["written"]
+    out = Path(a.out)
+    if out.exists():
+        shutil.rmtree(out)
+    out.mkdir(parents=True)
+    for iid, rec in recs.items():
+        for c in rec["calls"]:
+            j = 0
+            for m in c["input_messages"]:
+                if m["role"] == "assistant":
+                    m["reasoning_content"] = m["reasoning"] = text[(iid, j)]
+                    j += 1
+        rec["history_thoughts"] = a.mode
+        json.dump(rec, open(out / f"{iid}.json", "w"), ensure_ascii=False)
+    ln = sorted(len(t) for t in text.values())
+    print(f"== histthink: {len(text)} earlier turns got a thought ({dict(st)}) · chars p50 {ln[len(ln) // 2] if ln else 0} · p90 "
+          f"{ln[int(.9 * len(ln))] if ln else 0} · targets and answers unchanged · {len(recs)} records → {out}")
+
+
+def histcmp(a):
+    """B-3q-T readout: is the adapter's gain on the drills tied to thought-free histories? Reads the per-call outcome
+    files `<prefix>_<set>_<format>_<base|ad>.out.jsonl` (score --outcomes) of the same held-out drills decoded in several
+    history formats, pools the sets, and prints per format: hit and several-matches for no adapter and the adapter, the
+    gain, the answer length, the paired change of each model against the original format, and the share of the original
+    gain that is kept. Verdict (fixed before the run): kept = both gains ≥ 2/3 of the original ones · lost = both ≤ 1/3 ·
+    else unclear; with an original gain under 3 points on a measure that measure is not read."""
+    sets, fmts = a.sets.split(","), a.formats.split(",")
+    load = lambda f, m: {(r["id"], r["call"]): r for s_ in sets for r in map(json.loads, open(f"{a.prefix}_{s_}_{f}_{m}.out.jsonl"))
+                         if r["target"] == "edit_file"}
+    med = lambda xs: sorted(xs)[len(xs) // 2] if xs else None
+    rate = lambda rows, k: sum(r["outcome"] == k for r in rows.values()) / (len(rows) or 1)
+    D, gains = {}, {}
+    print(f"edit_drills histcmp · {a.prefix} · sets {sets} pooled · formats {fmts} (the first is the original) · verdict: kept ≥ 2/3 of the "
+          f"original gain on hit and on several matches · lost ≤ 1/3 on both · else unclear")
+    for f in fmts:
+        b, d = load(f, "base"), load(f, "ad")
+        keys = sorted(set(b) & set(d))
+        b, d = {k: b[k] for k in keys}, {k: d[k] for k in keys}
+        D[f] = (b, d)
+        g = {}
+        for name, k in (("hit", "intended"), ("several", "several_matches")):
+            bo = sum(b[x]["outcome"] == k and d[x]["outcome"] != k for x in keys)
+            ao = sum(b[x]["outcome"] != k and d[x]["outcome"] == k for x in keys)
+            g[name] = (rate(b, k), rate(d, k), mcnemar(bo, ao))
+        gains[f] = g
+        al = lambda rows: med([r["old_lines"] for r in rows.values() if "old_lines" in r])
+        print(f"   {f:9s} n {len(keys)} · hit {100 * g['hit'][0]:.0f} → {100 * g['hit'][1]:.0f} % ({100 * (g['hit'][1] - g['hit'][0]):+.1f}, p {g['hit'][2]:.3g}) · "
+              f"several {100 * g['several'][0]:.0f} → {100 * g['several'][1]:.0f} % ({100 * (g['several'][1] - g['several'][0]):+.1f}, p {g['several'][2]:.3g}) · "
+              f"answer median lines {al(b)} → {al(d)}   (no adapter → adapter)")
+    o = fmts[0]
+    for f in fmts[1:]:
+        parts = []
+        for m, lab in ((0, "no adapter"), (1, "adapter")):
+            x, y = D[o][m], D[f][m]
+            keys = sorted(set(x) & set(y))
+            lo = sum(x[k]["outcome"] == "intended" and y[k]["outcome"] != "intended" for k in keys)
+            hi = sum(x[k]["outcome"] != "intended" and y[k]["outcome"] == "intended" for k in keys)
+            parts.append(f"{lab} hit {100 * (hi - lo) / (len(keys) or 1):+.1f} pts (lost {lo} · won {hi}, p {mcnemar(lo, hi):.3g})")
+        keep = {}
+        for name, sign in (("hit", 1), ("several", -1)):
+            g0 = sign * (gains[o][name][1] - gains[o][name][0])
+            g1 = sign * (gains[f][name][1] - gains[f][name][0])
+            keep[name] = None if g0 < 0.03 else g1 / g0
+        read = [v for v in keep.values() if v is not None]
+        verdict = "not readable (the original gain is under 3 points on both measures)" if not read else \
+            "KEPT" if all(v >= 2 / 3 for v in read) else "LOST" if all(v <= 1 / 3 for v in read) else "unclear"
+        print(f"   {o} → {f}: " + " · ".join(parts) + " · share of the original gain kept: "
+              + " · ".join(f"{k} {'–' if v is None else f'{100 * v:.0f} %'}" for k, v in keep.items()) + f" → {verdict}")
+    print("== histcmp done — 📷 everything from 'edit_drills histcmp' down")
+
+
 def why(a):
     """what a decode did instead of the answer, sample by sample — read-only, aggregates only, writes nothing. For a decode
     whose `think` kept few thoughts (B-3q step 3b: the 31B filled 9.7 % of the targets E4B left empty):
@@ -1972,8 +2139,22 @@ def main():
     w.add_argument("decoded")
     w.add_argument("--max-thought-chars", type=int, default=3000, help="the cap `think` ran with (THINK31_MAX_CHARS)")
     w.add_argument("--caps", default="6000,12000", help="other caps to count the fillable targets at")
+    h = sub.add_parser("histthink", help="a copy of a drill set with a thought on every earlier model turn (B-3q-T)")
+    h.add_argument("records")
+    h.add_argument("--mode", required=True, choices=["template", "written"])
+    h.add_argument("--url", default="http://127.0.0.1:8000/v1")
+    h.add_argument("--model", default="", help="written: the served model that writes the thoughts")
+    h.add_argument("--conc", type=int, default=16)
+    h.add_argument("--temperature", type=float, default=0.7)
+    h.add_argument("--max-chars", type=int, default=900)
+    h.add_argument("--out", required=True)
+    hc = sub.add_parser("histcmp", help="B-3q-T readout from score --outcomes files of several history formats")
+    hc.add_argument("--prefix", required=True)
+    hc.add_argument("--sets", default="main,block,retry")
+    hc.add_argument("--formats", default="orig,template,written")
     a = ap.parse_args()
-    {"build": build, "decode": decode, "score": score, "think": think, "tier": tier, "why": why}[a.cmd](a)
+    {"build": build, "decode": decode, "score": score, "think": think, "tier": tier, "why": why,
+     "histthink": histthink, "histcmp": histcmp}[a.cmd](a)
 
 
 if __name__ == "__main__":
