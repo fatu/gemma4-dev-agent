@@ -1318,10 +1318,13 @@ async def _decode(a):
     import litellm
     recs = load_records(a.records)
     jobs = [(r, c) for r in recs.values() for c in r["calls"] if c.get("target")]
+    if a.only_empty:                              # only the targets that have no thought yet (a second model fills them)
+        jobs = [(r, c) for r, c in jobs if not c["target"].get("reasoning")]
     if a.limit:
         jobs = jobs[:a.limit]
     print(f"edit_drills decode · {len(jobs)} target calls from {a.records} · model openai/{a.model} at {a.url} · "
-          f"temperature {a.temperature} · samples {a.samples} · concurrency {a.conc} · out {a.out}")
+          f"temperature {a.temperature} · samples {a.samples} · concurrency {a.conc} · only targets without a thought "
+          f"{a.only_empty} · out {a.out}")
     sem, done, errs = asyncio.Semaphore(a.conc), [0], Counter()
     Path(a.out).parent.mkdir(parents=True, exist_ok=True)
     fout = open(a.out, "w")
@@ -1592,7 +1595,10 @@ def think(a):
     """E4B's own thought into each target, taken only from a sample (decode --samples k) whose own call already was
     the checked answer (edit_file → the intended file; read_file → the right file). A thought that planned another
     anchor is never kept before the answer (it would teach "think X, do Y"); targets with no such sample keep an empty
-    thought. The answer stays the checked one, the loss stays on the tool call (label_scope)"""
+    thought. The answer stays the checked one, the loss stays on the tool call (label_scope).
+    --fill --source 31b --scope full (B-3q's second adapter): the records already carry E4B's thoughts; a second decode
+    (the 31B on the targets still empty, `decode --only-empty`) fills only those, by the same rule, and those calls
+    get label scope full: the thought is trained too, since E4B cannot write it yet"""
     recs = load_records(a.records)
     best, why, cache = {}, Counter(), {}
     for l in open(a.decoded):
@@ -1614,14 +1620,21 @@ def think(a):
     if out.exists():
         shutil.rmtree(out)
     out.mkdir(parents=True)
-    st = Counter()
+    st, src_fam = Counter(), Counter()
+    scope = "tool_call" if a.scope == "tool_call" else "full"
     for iid, rec in recs.items():
         for k, c in enumerate(rec["calls"]):
-            th = best.get((iid, c["call"]))
             st["calls"] += 1
+            if a.fill and c["target"].get("reasoning"):   # --fill: an earlier think's thought stays as it is
+                st["kept_earlier"] += 1
+                src_fam[(rec["family"], c.get("thought_source"))] += 1
+                continue
+            th = best.get((iid, c["call"]))
             if th:
-                c["target"]["reasoning"], c["thought_source"] = th, "native"
+                c["target"]["reasoning"], c["thought_source"] = th, a.source
+                c["label_scope"] = scope            # tool_call: the thought is context · full: the thought is trained too
                 st["native"] += 1
+                src_fam[(rec["family"], a.source)] += 1
                 if k + 1 < len(rec["calls"]):     # the next call's history re-sends this reply with its thought,
                     tc = c["target"]["tool_calls"][0]   # as the harness does (keeps the segment's prefix property)
                     hist = [m for m in rec["calls"][k + 1]["input_messages"] if m.get("role") == "assistant" and
@@ -1630,15 +1643,22 @@ def think(a):
                     if not hist:
                         sys.exit(f"{iid}: call {c['call']}'s reply not found in call {c['call'] + 1}'s history")
                     hist[-1]["reasoning_content"] = th
-            c["label_scope"] = "tool_call"
+            else:
+                c["label_scope"] = "tool_call"
+                src_fam[(rec["family"], "none")] += 1
         json.dump(rec, open(out / f"{iid}.json", "w"), ensure_ascii=False)
     fam = Counter(rec["family"] for iid, rec in recs.items() for c in rec["calls"] if (iid, c["call"]) in best)
     tot = Counter(rec["family"] for rec in recs.values() for c in rec["calls"])
     print(f"   samples: {dict(sorted(why.items()))}")
     print(f"   calls with a thought by family: " + " · ".join(f"{k} {fam[k]}/{tot[k]}" for k in sorted(tot)))
-    print(f"== think: {st['native']} / {st['calls']} target calls got E4B's own thought ({a.decoded}, ≤ "
-          f"{a.max_thought_chars} chars, only from a sample whose own call was the checked answer: edit → the intended "
-          f"file, read → the right file); the rest keep an empty thought · {len(recs)} records → {out}")
+    srcs = sorted({k[1] for k in src_fam}, key=str)
+    print("   thought source by family: " + " · ".join(
+        f"{f} " + "/".join(f"{x} {src_fam[(f, x)]}" for x in srcs if src_fam[(f, x)]) for f in sorted({k[0] for k in src_fam})))
+    print(f"== think: {st['native']} / {st['calls']} target calls got a thought from this decode (source {a.source}, label "
+          f"scope {scope}: {'the thought is context only' if scope == 'tool_call' else 'the thought is trained too'}; "
+          f"{a.decoded}, ≤ {a.max_thought_chars} chars, only from a sample whose own call was the checked answer: edit → "
+          f"the intended file, read → the right file)" + (f" · {st['kept_earlier']} kept from an earlier think (--fill)" if a.fill else "")
+          + f"; the rest keep an empty thought · {len(recs)} records → {out}")
 
 
 def main():
@@ -1668,6 +1688,7 @@ def main():
     d.add_argument("--samples", type=int, default=1)
     d.add_argument("--conc", type=int, default=16)
     d.add_argument("--limit", type=int, default=0)
+    d.add_argument("--only-empty", action="store_true", help="decode only targets whose thought is still empty")
     d.add_argument("--out", required=True)
     s = sub.add_parser("score")
     s.add_argument("records")
@@ -1684,6 +1705,10 @@ def main():
     t.add_argument("records")
     t.add_argument("decoded")
     t.add_argument("--max-thought-chars", type=int, default=12000)
+    t.add_argument("--fill", action="store_true", help="keep thoughts the records already have; fill only the empty ones")
+    t.add_argument("--source", default="native", help="thought_source written for this decode's thoughts (e.g. 31b)")
+    t.add_argument("--scope", default="tool_call", choices=["tool_call", "full"],
+                   help="label scope of the calls this decode fills: tool_call = thought is context, full = thought trained too")
     t.add_argument("--out", required=True)
     a = ap.parse_args()
     {"build": build, "decode": decode, "score": score, "think": think, "tier": tier}[a.cmd](a)

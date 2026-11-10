@@ -6,6 +6,9 @@
 #   GPU=0 bash train/drills_box.sh gate0    # E4B, no adapter, on the held-out drills (temperature 0) → the baseline gate
 #   GPU=0 bash train/drills_box.sh think    # E4B's own thoughts into the training drills (temperature 0.7, THINK_SAMPLES
 #                                           # samples; a thought is kept only from a sample whose own call was the answer)
+#   GPU=1 bash train/drills_box.sh think31  # optional (B-3q adapter B): the 31B's thoughts for the targets E4B left
+#                                           # empty, trained too (label scope full) → runs/sft/drills_native31; then
+#                                           # NATIVE=runs/sft/drills_native31 MIX=runs/sft/drills_mix31.rendered.jsonl … mix / train
 #   bash train/drills_box.sh mix            # render + mix with runs/sft/rebenche4b (drills ≤ DRILL_SHARE of label tokens)
 #   GPU=0 bash train/drills_box.sh train    # the LoRA (one card)
 #   GPU=0 bash train/drills_box.sh gate1    # each epoch's adapter on the held-out drills, paired against gate0's per-drill
@@ -21,13 +24,15 @@
 # HELD_LIBS · BLOCK_LIBS / HELD_BLOCK_LIBS (the block family's repetitive libraries) · SYSTEM (the arm's system.md)
 # · THINK_SAMPLES (4) · DROP_TOOLS (for a tools6 arm) · TOOLS_FROM (a traj log; default the first runs/*/traj/*.jsonl) · OWN (rebenche4b
 # rendered file) · DRILL_SHARE (0.6: the drills keep at most this share of the mix's label tokens; 0.4 until B-3q) · TRAIN_PY (.venv-train/bin/python) · DQ (bf16 base) · EPOCHS LR ACCUM R ALPHA · EVAL_EVERY (100 steps; 25 until B-3q: the held-out eval then cost as much as training) ·
+# NATIVE (the drills with thoughts that mix renders: runs/sft/drills_native) · MIX (mix's output = train's data:
+# runs/sft/drills_mix.rendered.jsonl) · THINK31_SAMPLES (2) · THINK31_MAX_CHARS (3000) · THINK31_SCOPE (full) ·
 # NAME (e4b_drill) · EPOCH (subs: default the gate1 winner, else the lower held-out NLL).
 # LoRA defaults r16 α16 (scale 1, lr the only strength knob; 2026-11-08, from the Kaggle survey in the private notes:
 # α/r 2 looped, rank 4–64 made no difference, a smaller rank leaves the scorer more KV cache). Train two NAMEs with
 # LR=1e-5 and LR=3e-5 on two cards (BOX_PLAN B-3p) and let gate1 pick.
 set -uo pipefail
 cd "$(dirname "$0")/.."
-STEP="${1:?build|gate0|think|mix|train|gate1|subs}"; T0=$(date +%s)
+STEP="${1:?build|gate0|think|think31|mix|train|gate1|subs}"; T0=$(date +%s)
 say() { echo "== $(date '+%T') [$(( $(date +%s) - T0 ))s] $*"; }
 GPU="${GPU:-0}"; KILL_ALL="${KILL_ALL:-1}"; DPORT="${DPORT:-8000}"; PY=.venv-eval/bin/python; TRAIN_PY="${TRAIN_PY:-.venv-train/bin/python}"
 N_TRAIN="${N_TRAIN:-2800}"; N_HELD="${N_HELD:-300}"; FILE_CAP="${FILE_CAP:-25}"
@@ -42,18 +47,21 @@ TOOLS_FROM="${TOOLS_FROM:-$(ls runs/*/traj/*.jsonl runs/*/*/traj/*.jsonl 2>/dev/
 OWN="${OWN:-runs/sft/rebenche4b.rendered.jsonl}"; DRILL_SHARE="${DRILL_SHARE:-0.6}"; THINK_SAMPLES="${THINK_SAMPLES:-4}"
 DQ="${DQ:-runs/dequant/gemma-4-E4B-dq}"; NAME="${NAME:-e4b_drill}"; OUTD="runs/sft_out/$NAME"
 E4B=google/gemma-4-E4B-it-qat-w4a16-ct; ALIAS=gemma-4-e4b-it-qat-w4a16-ct; TOK="${TOK:-$E4B}"
+E31=google/gemma-4-31B-it-qat-w4a16-ct; ALIAS31=gemma-4-31b-it-qat-w4a16-ct
+THINK31_SAMPLES="${THINK31_SAMPLES:-2}"; THINK31_MAX_CHARS="${THINK31_MAX_CHARS:-3000}"; THINK31_SCOPE="${THINK31_SCOPE:-full}"
+NATIVE="${NATIVE:-runs/sft/drills_native}"; MIX="${MIX:-runs/sft/drills_mix.rendered.jsonl}"
 D=runs/sft/drills; H=runs/sft/drills_heldout; HB=runs/sft/drills_heldout_block; HR=runs/sft/drills_heldout_retry; G=runs/drills
 SFT="--base $DQ --max-len 32768 --epochs ${EPOCHS:-2} --lr ${LR:-3e-5} --warmup 0.05 --accum ${ACCUM:-16} --r ${R:-16} --alpha ${ALPHA:-16} --clip 1.0 --eval-every ${EVAL_EVERY:-100} --seed 0"
 if [ "$KILL_ALL" = 0 ] && [ "$DPORT" = 8000 ]; then echo "KILL_ALL=0 needs DPORT ≠ 8000 (the lanes serve on 8000)"; exit 1; fi
-echo "drills_box $STEP · GPU $GPU · server port $DPORT · stops $([ "$KILL_ALL" = 1 ] && echo 'every vllm serve' || echo "only its own (port $DPORT)") · train $N_TRAIN from $TRAIN_LIBS (block: $BLOCK_LIBS; families $TRAIN_FAMILIES; ≤ $FILE_CAP per file) · held out $N_HELD from $HELD_LIBS (block: $HELD_BLOCK_LIBS) + block slice $N_BLOCK + retry slice $N_RETRY · system $SYSTEM · drop tools [${DROP_TOOLS}] · tools from $TOOLS_FROM · own $OWN · drill share ≤ $DRILL_SHARE · think samples $THINK_SAMPLES · sft: $SFT · name $NAME"
+echo "drills_box $STEP · GPU $GPU · server port $DPORT · stops $([ "$KILL_ALL" = 1 ] && echo 'every vllm serve' || echo "only its own (port $DPORT)") · train $N_TRAIN from $TRAIN_LIBS (block: $BLOCK_LIBS; families $TRAIN_FAMILIES; ≤ $FILE_CAP per file) · held out $N_HELD from $HELD_LIBS (block: $HELD_BLOCK_LIBS) + block slice $N_BLOCK + retry slice $N_RETRY · system $SYSTEM · drop tools [${DROP_TOOLS}] · tools from $TOOLS_FROM · own $OWN · drill share ≤ $DRILL_SHARE · think samples $THINK_SAMPLES · think31 samples $THINK31_SAMPLES ≤ $THINK31_MAX_CHARS chars scope $THINK31_SCOPE · native $NATIVE · mix $MIX · sft: $SFT · name $NAME"
 mkdir -p "$G"
 
 stop_serve() {   # KILL_ALL=1: every vllm serve on the box; 0: only ours (by its port)
   if [ "$KILL_ALL" = 1 ]; then pkill -f "[v]llm serve"; else pkill -f "[v]llm serve.*--port $DPORT"; fi
 }
-serve() {   # $1 = a dir with adapters/<name>/ to mount, or "" for none; stop_serve first
+serve() {   # $1 = a dir with adapters/<name>/ to mount, or "" for none; $2 = the model (default E4B); stop_serve first
   stop_serve; sleep 5
-  SUBMISSION="${1:-harness/sample_submission}" MODEL=$E4B TP=1 GPU_UTIL=0.85 CUDA_VISIBLE_DEVICES=$GPU PORT=$DPORT \
+  SUBMISSION="${1:-harness/sample_submission}" MODEL=${2:-$E4B} TP=1 GPU_UTIL=0.85 CUDA_VISIBLE_DEVICES=$GPU PORT=$DPORT \
     nohup bash scripts/serve_vllm.sh > $G/vllm.log 2>&1 &
   for i in $(seq 1 180); do curl -s --max-time 2 http://127.0.0.1:$DPORT/v1/models >/dev/null 2>&1 && break; sleep 5; done
   echo "  server up after ~$((i * 5)) s: $(curl -s http://127.0.0.1:$DPORT/v1/models | python3 -c 'import json,sys; print([m["id"] for m in json.load(sys.stdin)["data"]])' 2>/dev/null || echo 'NOT UP — tail '$G/vllm.log)"
@@ -64,7 +72,7 @@ case "$STEP" in
 build)
   [ -f "$TOOLS_FROM" ] || { echo "TOOLS_FROM=$TOOLS_FROM: no traj log"; exit 1; }
   # a new training set: an earlier build's thoughts, mix and gate0 no longer belong to it
-  rm -rf ${D}_native ${D}_native.rendered.jsonl ${D}_native.render.log runs/sft/drills_mix.rendered.jsonl $G/gate0*.out.jsonl $G/gate0*.sum.json
+  rm -rf ${D}_native ${D}_native.rendered.jsonl ${D}_native.render.log ${D}_native31 ${D}_native31.rendered.jsonl ${D}_native31.render.log runs/sft/drills_mix.rendered.jsonl runs/sft/drills_mix31.rendered.jsonl $G/gate0*.out.jsonl $G/gate0*.sum.json
   echo "  removed the earlier build's ${D}_native, drills_mix and gate0 outcomes (think, mix and gate0 run again on the new sets)"
   $PY train/edit_drills.py build --libs "$TRAIN_LIBS" --block-libs "$BLOCK_LIBS" --n "$N_TRAIN" --seed 0 --families "$TRAIN_FAMILIES" --file-cap "$FILE_CAP" --tools-from "$TOOLS_FROM" \
     --drop-tools "$DROP_TOOLS" --system "$SYSTEM" --out $D 2>&1 | grep -v LiteLLM | cut -c1-300
@@ -93,18 +101,25 @@ think)
   $PY train/edit_drills.py score $D $G/train_think_t07.jsonl 2>&1 | grep -E "edit outcomes|^== gate"   # E4B on its own training drills
   stop_serve
   echo "📷 the '== think' line, the 'samples:' and 'calls with a thought by family' lines and the two score lines" ;;
+think31)
+  [ -d ${D}_native ] || { echo "no ${D}_native: run think first (the 31B fills only what E4B left empty)"; exit 1; }
+  serve "" $E31
+  $PY train/edit_drills.py decode ${D}_native --only-empty --url $URL --model $ALIAS31 --temperature 0.7 --samples "$THINK31_SAMPLES" --out $G/train_think31_t07.jsonl 2>&1 | grep -E "^==|^edit_drills"
+  $PY train/edit_drills.py think ${D}_native $G/train_think31_t07.jsonl --fill --source 31b --scope "$THINK31_SCOPE" --max-thought-chars "$THINK31_MAX_CHARS" --out ${D}_native31 2>&1 | grep -E "^==|^   (samples|calls with|thought source)"
+  stop_serve
+  echo "📷 the decode line, '== think', 'samples:', 'thought source by family'" ;;
 mix)
-  [ -d ${D}_native ] || { echo "no ${D}_native: run think first (on this build)"; exit 1; }
+  [ -d $NATIVE ] || { echo "no $NATIVE: run think first (on this build)"; exit 1; }
   python3 -c "
 import glob, os, sys
 a = {os.path.basename(f) for f in glob.glob(sys.argv[1] + '/*.json')}; b = {os.path.basename(f) for f in glob.glob(sys.argv[2] + '/*.json')}
 print(f'  think set vs build: {len(a & b)} of {len(a)} drills in both')
-sys.exit(0 if a == b else 1)" $D ${D}_native || { echo "${D}_native is not this build's drills (an earlier think?): run think again"; exit 1; }
-  for d in ${D}_native $H; do
+sys.exit(0 if a == b else 1)" $D $NATIVE || { echo "$NATIVE is not this build's drills (an earlier think?): run think again"; exit 1; }
+  for d in $NATIVE $H; do
     $PY train/render.py $d --tokenizer "$TOK" --pack --sample 100 --out $d.rendered.jsonl > $d.render.log 2>&1
     echo "  $d: $(grep -E '^calls' $d.render.log | cut -c1-120) · $(grep -E '^RESULT' $d.render.log)"
   done
-  python3 - ${D}_native.rendered.jsonl "$OWN" "$DRILL_SHARE" runs/sft/drills_mix.rendered.jsonl ${D}_native <<'PY'
+  python3 - $NATIVE.rendered.jsonl "$OWN" "$DRILL_SHARE" $MIX $NATIVE <<'PY'
 import glob, json, os, random, sys
 from collections import Counter
 drills, own, share, out = sys.argv[1], sys.argv[2], float(sys.argv[3]), sys.argv[4]
@@ -137,10 +152,10 @@ print(f"== mix: drills {len(d)} sequences / {ld2} label tokens + own {len(o)} / 
 PY
   echo "📷 the two render lines and the '== mix' line" ;;
 train)
-  [ -s runs/sft/drills_mix.rendered.jsonl ] || { echo "run mix first"; exit 1; }
+  [ -s $MIX ] || { echo "run mix first"; exit 1; }
   [ -f "$DQ/config.json" ] || { echo "no bf16 base in $DQ: GPU=$GPU bash train/train_box.sh env dequant"; exit 1; }
   rm -rf "$OUTD"
-  CUDA_VISIBLE_DEVICES=$GPU $TRAIN_PY train/sft_lora.py $SFT --data runs/sft/drills_mix.rendered.jsonl \
+  CUDA_VISIBLE_DEVICES=$GPU $TRAIN_PY train/sft_lora.py $SFT --data $MIX \
     --eval $H.rendered.jsonl --out "$OUTD" 2>&1 | grep -v Warning | tee runs/sft_$NAME.log | cut -c1-250
   echo "📷 the schedule line, the 'eval[...]' lines and both '== epoch' lines" ;;
 gate1)
