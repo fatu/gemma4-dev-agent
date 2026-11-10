@@ -687,6 +687,57 @@ B-3p's two runs did not pass gate 1 (B-3p below: kept as the record, **do not ru
   still improving at epoch 2). Every epoch's adapter goes through gate1.
 - **E4B's rollouts are reused** (`runs/sft/rebenche4b.rendered.jsonl` from B-3p's step 4): no new rollouts.
 
+### B-3q-T · Is the adapter's gain on the drills tied to histories without thoughts? (2026-11-10) — START HERE: one command, about 15 min, no training
+
+**Why.** In a real run every earlier model turn reaches the model as a thought followed by its tool call (E4B's run on
+the 129 tasks: 1,899 of 1,906 earlier thoughts are in the rendered prompt at its edit calls). In the drills every earlier
+turn is the bare call: 27,932 earlier turns, no thought. In B-3q's training mix 88 % of the sequences were such drills and
+the rest E4B's own rollouts with thoughts, so the history format tells the two apart. If the adapter learned "drill
+behaviour when the history has no thoughts", its gate-1 gain cannot carry over to real tasks — and the gate, which
+decodes in the drill format, cannot see it.
+
+**The test.** B-3q's three held-out sets, as they are on the box, in three history formats: `orig` (as built),
+`template` (one or two plain sentences before each earlier call, made from the call itself), `written` (the served E4B,
+no adapter, writes one to four sentences before each earlier call). Targets, answers and checks do not change. Each
+format is decoded at temperature 0 with no adapter and with `e4b_drill_q` epoch 1, and scored as in gate 1.
+
+Needs code ≥ `ebe850e`, all cards free, B-3q's files (nothing is rebuilt, nothing is deleted; new files:
+`runs/sft/drills_heldout*_ht`, `*_hw`, `runs/drills/hist_*`, about 100 MB).
+
+```bash
+cd gemma4-dev-agent && git status --short train/ && git pull && git log --oneline -1
+ls -d runs/sft/drills_heldout runs/sft/drills_heldout_block runs/sft/drills_heldout_retry runs/sft_out/e4b_drill_q/epoch1/adapter_model.safetensors && df -h . | tail -1
+GPUS=0,1,2,3,4,5,6,7 NAME=e4b_drill_q EPOCH=1 bash train/drills_box.sh histtest 2>&1 | tee runs/drills_histtest.log
+grep -E "^== gate|^   (intended|several_matches):" runs/drills/hist_main_orig_ad.txt        # the sanity line below
+```
+(4 cards: `GPUS=0,1,2,3`. Do not put `SET=` in front: this test runs on B-3q's sets.)
+
+**📷** the `mounted:` line, the six `histthink` lines, the 18 `decoded` lines, the whole `edit_drills histcmp` block, and
+the sanity lines of the last command.
+
+**Three checks before the result is read** (stop and 📷 if one fails):
+1. `mounted:` names `e4b_drill_q_epoch1`.
+2. In the `decoded` lines, `prompt tokens mean` is higher for `template` and `written` than for `orig` of the same set
+   (by roughly 150–600 tokens). Equal numbers mean the server did not put the thoughts into the prompt: the test says
+   nothing then.
+3. The sanity lines repeat gate 1 for epoch 1 on the main set: hit 60 → 67 %, several matches 21 → 14 % (same drills,
+   same temperature; a point or two of difference is fine).
+Also read the `written` histthink lines: `written` should be most of the turns. If most fell back to `template`
+(`written_empty` or `written_error` large), say so in the photo's caption; the `template` format still counts.
+
+**How it is read** (fixed before the run; printed by `histcmp` as the last word of each `orig → …` line):
+- **KEPT** — with thoughts in the history the adapter keeps at least two thirds of its original gain, on hit and on
+  several matches. The history format is not what stops a transfer; the drill rebuild goes on without it.
+- **LOST** — at most one third is kept on both. The gain belongs to the drill format: drills need thoughts on the
+  earlier turns before any further training, and B-3q's epoch-1 A/B is not worth its two hours.
+- **unclear** — in between, or the two measures disagree. The pooled 460 drills give each gain a noise of about ± 2
+  points and the original gain is about 5–7, so this can happen; then `written` counts more than `template` (it is
+  closer to a real history), and the answer-length column is read as well (the adapter moved the median from 1 line
+  to 3 in the original format: does it still?).
+
+**Then stop.** Append the lines to `runs/B3Q_RUN_LOG.md`. B-3r below stays on hold; the epoch-1 A/B (B-3q after gate 1,
+step 3) still only on the user's word.
+
 ### B-3r · The drills rebuilt so that every answer can be decided from the context (2026-11-10) — ⏸ HOLD: do not start step 1 yet
 
 **⏸ Hold (2026-11-10, laptop audit of the built drills):** the edit after the check can be right without reading the
