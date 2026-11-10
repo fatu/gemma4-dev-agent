@@ -673,7 +673,7 @@ python3 scripts/compare_runs.py runs/dev33_base_p{1,2,3,4} | head -8            
 (passes of one arm differ by up to 5–6 tasks on these 51). Next on the laptop either way: step 2 (an edit-skill LoRA
 on short, checked edit exercises, no whole 31B trajectories) and, later, step 3 (31B relabels E4B's own states).
 
-## B-3q · The edit-skill LoRA again: drills rebuilt from E4B's real failures, gate in tiers ▶ steps 1–6 done 2026-11-10: gate 1 not passed (epoch 1: 6 of 8 lines) → "after gate 1" below; nothing else runs until the laptop says so
+## B-3q · The edit-skill LoRA again: drills rebuilt from E4B's real failures, gate in tiers ▶ steps 1–6 done 2026-11-10: gate 1 not passed (epoch 1: 6 of 8 lines) → rebuilt as **B-3r** (first subsection below: start there)
 
 B-3p's two runs did not pass gate 1 (B-3p below: kept as the record, **do not run its steps**). What changed for B-3q, all in the code:
 - **Drills:** a `retry` family from E4B's real failure loops (a failed edit by E4B's real causes, the identical call resent,
@@ -687,7 +687,102 @@ B-3p's two runs did not pass gate 1 (B-3p below: kept as the record, **do not ru
   still improving at epoch 2). Every epoch's adapter goes through gate1.
 - **E4B's rollouts are reused** (`runs/sft/rebenche4b.rendered.jsonl` from B-3p's step 4): no new rollouts.
 
-### B-3q after gate 1 (2026-11-10) — START HERE: steps 1–2 now (read-only), 📷, then step 3 only on the user's word
+### B-3r · The drills rebuilt so that every answer can be decided from the context (2026-11-10) — START HERE, one step at a time, 📷 after each
+
+**Why.** B-3q's readouts (all on this box, 2026-11-10):
+- In 82 % of the block drills and 41 % of the anchor drills the lines shown did not let the model know how long the
+  old_string had to be: the context held one copy of the repeated line and at most the bare line of the other copy,
+  while the answer's length depends on the lines **around** the other copy. The 31B did not edit there either (49 % of
+  its samples grepped or read other lines first); E4B guessed (block: 4 % right).
+- In E4B's real runs (all 129 tasks) 148 of 205 failed edits are further tries after a first failure. After "occurs N
+  times" it edited again at once 49 of 67 times (38 several again) and grepped once.
+- Thoughts and trained calls did not agree: a thought was kept when the sample's own call gave the right file, but the
+  trained call stayed the builder's answer.
+
+**What changed (code ≥ `cccbce0`; nothing to patch on the box):**
+- **Builder:** around every other copy of the changed line, the lines that sit where the answer sits are in the context
+  before an edit target: in the view, in a view widened to them, or in a `grep -nF -C 5` of the line. Sites that cannot
+  be shown that way are rejected (`check_span`, `check_many`, `check_quote` in the build's `rejected:` line).
+- **New two-step drill:** after a several-matches failure with the copies out of sight, target 1 is that grep (the
+  check) and target 2 the edit, with the grep's output in its context. Before, target 1 read the same lines again.
+- **Gate:** the block slice's line is now the check — after a several-matches failure, a check (or the right edit at
+  once) ≥ +20 points over gate 0 — and its several-matches rate may not rise. The other lines are unchanged.
+- **think:** an edit target takes the call of the sample its thought comes from (`THINK_LABEL=own`, printed).
+- **Families:** `copy=0.22,anchor=0.08,recover=0.19,stale=0.05,block=0.27,retry=0.19` (fewer first-try anchor drills, more
+  drills that start after a failure).
+- **Checked on the laptop:** on the four sets built with these commands, the shortest span that is unique among the
+  lines shown is unique in the file in 98 % of the block drills (16 % in B-3q), 100 % of the anchor drills (55 %) and
+  99.9–100 % of the others; scoring, the tier, `think` and the render pass on synthetic decodes; gate0 and think ran end
+  to end on fake servers with `SET`. Not run on a GPU: everything from step 2 on.
+- **`SET=_r` on every command:** this build's files go to `runs/sft/drills_r*` and `runs/drills_r/`; B-3q's files and
+  its adapter `e4b_drill_q` stay where they are.
+
+```bash
+ALL=0,1,2,3,4,5,6,7                      # 8 cards.  4 cards: ALL=0,1,2,3
+```
+
+**Step 0 · pull and check**
+```bash
+cd gemma4-dev-agent && git status --short train/ && git pull && git log --oneline -1
+grep -c "CHECK_CONTEXT" train/edit_drills.py && ls runs/sft/rebenche4b.rendered.jsonl runs/dequant/gemma-4-E4B-dq/config.json && df -h . | tail -1
+```
+Go if: the pull is clean, the grep prints a number ≥ 1, both files exist, ≥ 8 GB free.
+
+**Step 1 · build** (CPU, one process, about 1–1.5 h)
+```bash
+SET=_r nohup bash train/drills_box.sh build > runs/drills_r_build.log 2>&1 &
+grep -cE "^== drills" runs/drills_r_build.log            # progress: 4 when done
+grep -E "families built|^== drills|rejected:" runs/drills_r_build.log | cut -c1-400    # 📷 these
+grep -oE '"(check_chain|dup_seen_[a-z_]+)": [0-9]+' runs/drills_r_build.log | paste -sd' ' -   # 📷 and this
+```
+Go if: four `== drills` lines with 3600 · 300 · 80 · 80 records. The laptop's build of the same commands gave, for
+comparison (the box's library files differ a little): training anchor 231 · block 383 · copy 1,270 · recover 791 ·
+retry 773 · stale 152 with 419 two-step check drills (5,023 targets: 3,600 edits · 1,004 re-reads · 419 checks); held-out
+300 with 23 check drills, block slice 80 with 35, retry slice 80 with 10. The training build's line "block libraries used
+up after ~380 block drills; the rest without them" is expected. Stop and 📷 only if a `== drills` line shows fewer records
+than asked, or `check_chain` is 0 in the training set or the block slice.
+
+**Step 2 · gate 0** (all cards, a few minutes)
+```bash
+SET=_r GPUS=$ALL bash train/drills_box.sh gate0 2>&1 | tee runs/drills_r_gate0.log
+```
+📷 from `edit_drills score` down, with the `check after a several-matches failure` lines (main set and block slice).
+
+**Step 3 · E4B's thoughts** (all cards, about 25 min)
+```bash
+SET=_r GPUS=$ALL nohup bash train/drills_box.sh think > runs/drills_r_think.log 2>&1 &
+tail -8 runs/drills_r_think.log
+```
+📷 the decode line, `samples:`, `calls with a thought by family`, the `== think` line (it now says how many edit targets
+carry the sample's own call) and the two score lines.
+
+**Step 4 · mix** (CPU, 2 min)
+```bash
+SET=_r bash train/drills_box.sh mix
+```
+📷 the render lines, `drills kept by family`, `== mix`. Stop if a render is not PASS.
+
+**Step 5 · train** (all cards; 2 epochs — in B-3q epoch 1 was the best and later ones worse)
+```bash
+SET=_r GPUS=$ALL LR=1e-5 EPOCHS=2 NAME=e4b_drill_r nohup bash train/drills_box.sh train > runs/drills_r_train.log 2>&1 &
+sleep 600; grep -hE "ranks joined|schedule|step +[0-9]+/" runs/drills_r_train.log | tail -5
+```
+10-minute check, 📷: `N ranks joined` with N = the number of cards, and the step lines' speed-up. 8 ranks have not run on
+real cards yet (4 did: ×3.8–3.9). Speed-up below ×5 on 8 cards, a Traceback, or a checksum WARNING → stop it
+(`pkill -f sft_lora.py`) and start it again with `GPUS=0,1,2,3`. Estimate: 1.5–2.5 h on 8 cards, 3–3.5 h on 4.
+At the end 📷 the summary lines (time, held-out NLL per epoch, checksum line, export check).
+
+**Step 6 · gate 1** (all cards, about 10 min)
+```bash
+SET=_r GPUS=$ALL NAMES=e4b_drill_r bash train/drills_box.sh gate1 2>&1 | tee runs/drills_r_gate1.log
+grep -E "^== tier" runs/drills_r_gate1.log
+```
+📷 each epoch's block, the `block slice` lines with `check after a several-matches failure`, and the whole tier block.
+
+**Step 7 · stop, 📷.** The A/B (which adapters, how many passes) is decided on the laptop from gate 1. Do not run `subs`,
+an A/B or anything on B-3q's files without a new line here. Append every step to `runs/B3R_RUN_LOG.md` as before.
+
+### B-3q after gate 1 (2026-11-10) — steps 1–2 done 2026-11-10; step 3 (the epoch-1 A/B) still only on the user's word; B-3r above comes first
 
 Where it stands (steps 0–6 ran 2026-11-09 → 11-10, 8 cards):
 - **gate 1, adapter A:** no epoch passed the A/B tier. Epoch 1 passed 6 of the 8 lines (hit 60 → 67 %, several matches
