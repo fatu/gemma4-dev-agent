@@ -41,6 +41,46 @@ dropped too.
 
 ---
 
+## B-4 · Token-level distillation 31B → E4B, step S0: does the 31B point at E4B's own errors? (2026-11-10) — no training, ~1–1.5 h
+
+**Idea.** E4B runs tasks itself; the 31B gives its top-20 next-token distribution at every token E4B wrote (thought, text,
+tool call); a LoRA is then trained toward it (reverse KL on E4B's own tokens: no format gap, the thought gets a signal
+too). Before any training code: does the 31B, at the first wrong token of E4B's failed `old_string` (in the call and in
+the thought where E4B first wrote it), rank E4B's token low and the right text first? No → the line stops. Inputs: E4B's
+own rebench rollouts from B-3p step 4 (`runs/dev33_base_e1..e3`, failed tasks included) and `runs/rebench/tasks.jsonl`.
+Nothing else may use the cards during `score` (it takes every card; run B-3q-T before or after, not at the same time).
+
+```bash
+# 0. code, cards, disk, inputs (📷): the 31B QAT (~22 GB) must be in the HF cache or downloadable
+cd gemma4-dev-agent && git pull && git log --oneline -1 && ls train/opd_box.sh
+nvidia-smi --query-gpu=index,memory.used --format=csv,noheader; df -h . | tail -1
+ls ~/.cache/huggingface/hub | grep -i 31b; ls -d runs/dev33_base_e[123]/traj runs/rebench/tasks.jsonl
+# 1. records + rows (CPU, ~5–10 min) 📷 every line from 'opd_box s0data' down
+bash train/opd_box.sh s0data
+# 2. the 31B scores every E4B reply token, one process per card (~20–40 min; progress: tail -2 runs/opd/s0/score_0.log)
+nohup bash train/opd_box.sh score > runs/opd_score.log 2>&1 &
+tail -25 runs/opd_score.log            # when it ends: 📷 the '== teacher_score' lines and the '== score' line
+# 3. the readout (CPU, ~5 min) 📷 every line from the first 'counts:' line down
+bash train/opd_box.sh probe
+```
+
+**Stop and send the photo** on: a missing input in step 0, less than ~30 GB free while the 31B is not cached (the user
+decides what to delete), `render` not PASS, a card in use, a shard with no result, or a `b/c check` line where the oracle
+count differs from the cases (the measurement itself is broken).
+
+**Reading rule (written before the data).** `b` = the first wrong token in the CALL of a not-found edit, `c` = the same
+wrong text where it first appears in the THOUGHT (`born here` = not in an earlier thought). "corrected" = the 31B's top-1
+token continues the text the tool output showed.
+- **go to S1** (training code, then two adapters + an A/B): corrected ≥ 50 % in `b` overall AND ≥ 50 % in `c born here`
+  (if `c born here` has n < 20, `b` alone decides);
+- **stop the line**: corrected < 30 % in both `b` and `c` (the 31B follows E4B's wrong text instead of the source);
+- in between: the laptop decides from the photo.
+- `d` (closing a too-short old_string), `e` (tool choice: how often the 31B would pick another tool) and `f` (where the
+  31B would end the thought) are not go/stop lines: they set S1's choices (which tokens get the loss).
+Nothing is pushed from the box. Append each step's lines to `runs/B4_RUN_LOG.md`.
+
+---
+
 ## B-1 · One-time setup (~20 min) ✅ 2026-10-21
 
 ```bash
