@@ -61,6 +61,7 @@ E4B=google/gemma-4-E4B-it-qat-w4a16-ct; ALIAS=gemma-4-e4b-it-qat-w4a16-ct; TOK="
 E31=google/gemma-4-31B-it-qat-w4a16-ct; ALIAS31=gemma-4-31b-it-qat-w4a16-ct
 THINK31_SAMPLES="${THINK31_SAMPLES:-2}"; THINK31_MAX_CHARS="${THINK31_MAX_CHARS:-3000}"; THINK31_SCOPE="${THINK31_SCOPE:-full}"
 NATIVE="${NATIVE:-runs/sft/drills_native}"; MIX="${MIX:-runs/sft/drills_mix.rendered.jsonl}"
+NOAD=runs/noadapter      # what serve "" mounts: an empty dir (no adapter)
 D=runs/sft/drills; H=runs/sft/drills_heldout; HB=runs/sft/drills_heldout_block; HR=runs/sft/drills_heldout_retry; G=runs/drills
 SFT="--base $DQ --max-len 32768 --epochs ${EPOCHS:-2} --lr ${LR:-3e-5} --warmup 0.05 --accum ${ACCUM:-16} --r ${R:-16} --alpha ${ALPHA:-16} --clip 1.0 --eval-every ${EVAL_EVERY:-100} --seed 0 ${SFT_EXTRA:-}"
 if [ "$KILL_ALL" = 0 ] && [ "$DPORT" = 8000 ]; then echo "KILL_ALL=0 needs DPORT ≠ 8000 (the lanes serve on 8000)"; exit 1; fi
@@ -74,8 +75,9 @@ URL=""        # the servers that came up, comma list: decode spreads its calls o
 URLS=()       # the same, one per card (gate1 pins one adapter to one server)
 serve() {   # $1 = a dir with adapters/<name>/ to mount, or "" for none; $2 = the model (default E4B); stop_serve first
   stop_serve; sleep 5
+  mkdir -p "$NOAD"      # "" → an empty dir: until 2026-11-10 it fell back to harness/sample_submission, whose adapter is the 31B's
   for i in "${!GL[@]}"; do      # one server per card, all loading at once
-    SUBMISSION="${1:-harness/sample_submission}" MODEL=${2:-$E4B} TP=1 GPU_UTIL=0.85 CUDA_VISIBLE_DEVICES=${GL[$i]} PORT=$((DPORT + i)) \
+    SUBMISSION="${1:-$NOAD}" MODEL=${2:-$E4B} TP=1 GPU_UTIL=0.85 CUDA_VISIBLE_DEVICES=${GL[$i]} PORT=$((DPORT + i)) \
       nohup bash scripts/serve_vllm.sh > $G/vllm_$i.log 2>&1 &
   done
   local up=0 t
@@ -90,6 +92,7 @@ serve() {   # $1 = a dir with adapters/<name>/ to mount, or "" for none; $2 = th
     else echo "  card ${GL[$i]} (port $((DPORT + i))): server NOT UP — left out; tail $G/vllm_$i.log"; fi
   done
   echo "  servers up: ${#URLS[@]} of $NG after ~$((t * 5)) s (cards $GPUS): $(curl -s "${URLS[0]:-http://127.0.0.1:$DPORT/v1}/models" | python3 -c 'import json,sys; print([m["id"] for m in json.load(sys.stdin)["data"]])' 2>/dev/null || echo 'NONE UP')"
+  echo "  mounted: ${1:-none ($NOAD, empty)} ·$(grep -m1 -o ' lora: [^·]*' $G/vllm_0.log 2>/dev/null || echo ' lora line not in the log')"
   [ ${#URLS[@]} -gt 0 ] || { echo "no server came up: stop"; stop_serve; exit 1; }
 }
 

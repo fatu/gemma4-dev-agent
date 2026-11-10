@@ -21,6 +21,7 @@ drills teach only where old_string comes from.
   $PY train/edit_drills.py score … adapter_t0.jsonl --baseline g0.out.jsonl --summary g1.sum.json   # gate1, paired (McNemar)
   $PY train/edit_drills.py tier --main g1.sum.json --block g1_block.sum.json --retry g1_retry.sum.json   # 📷 the tier block
   $PY train/edit_drills.py think runs/sft/drills runs/drills/think_t07.jsonl --out runs/sft/drills_native
+  $PY train/edit_drills.py why runs/sft/drills_native runs/drills/train_think31_t07.jsonl   # read-only: what the decode did instead
 
 Families (record field `family`, weights FAMILIES):
   copy     a read_file view of the site, then 0-9 other tool outputs (distance; DISTANCES) → the edit with the shortest
@@ -1675,6 +1676,98 @@ def think(a):
           + f"; the rest keep an empty thought · {len(recs)} records → {out}")
 
 
+def why(a):
+    """what a decode did instead of the answer, sample by sample — read-only, aggregates only, writes nothing. For a decode
+    whose `think` kept few thoughts (B-3q step 3b: the 31B filled 9.7 % of the targets E4B left empty):
+      thought        none / over --max-thought-chars / usable (think drops the first two before it looks at the call)
+      outcomes       by thought state
+      targets        how many would get a thought at other caps (--caps) — what raising the cap can and cannot reach
+      another tool   target tool → the tool called instead; a read_file sent instead of the edit: the drill's file or
+                     another, a range or the whole file, whether the range covers the answer's lines, its length;
+                     a run_command: the command's first word
+      by family      outcome shares (all samples, and the usable-thought ones)"""
+    recs = load_records(a.records)
+    caps = sorted({int(x) for x in a.caps.split(",") if x.strip()} | {a.max_thought_chars})
+    cache, n, lens = {}, 0, []
+    state, out_by, pair, rd, cmd, rng_len = Counter(), {}, Counter(), Counter(), Counter(), []
+    fam_all, fam_use, right_len = {}, {}, {}
+    for l in open(a.decoded):
+        m = json.loads(l)
+        rec = recs.get(m["instance_id"])
+        if not rec:
+            continue
+        n += 1
+        th = m.get("reasoning") or ""
+        st = "none" if not th else "over the cap" if len(th) > a.max_thought_chars else "usable"
+        if th:
+            lens.append(len(th))
+        out_, _ = call_outcome(rec, m["call"], m, cache)
+        key = out_.split(":")[0]
+        state[st] += 1
+        out_by.setdefault(key, Counter())[st] += 1
+        fam_all.setdefault(rec["family"], Counter())[key] += 1
+        if st == "usable":
+            fam_use.setdefault(rec["family"], Counter())[key] += 1
+        tk = (m["instance_id"], m["call"])
+        right_len.setdefault(tk, None)
+        if key in ("intended", "same_tool") and th:        # think's rule, without the cap: the shortest such thought
+            right_len[tk] = min(len(th), right_len[tk] or len(th))
+        if key != "other_tool":
+            continue
+        tgt = rec["calls"][m["call"] - 1]["target"]["tool_calls"][0]
+        got = m["tool_calls"][0]
+        pair[f"{tgt['name']} → {got['name']}"] += 1
+        try:
+            ga = json.loads(got["args"]) if isinstance(got["args"], str) else got["args"]
+        except (json.JSONDecodeError, TypeError):
+            ga = None
+        ga = ga if isinstance(ga, dict) else {}
+        if got["name"] == "read_file" and tgt["name"] == "edit_file":
+            if str(ga.get("filepath", "")).removeprefix("/workspace/") != rec["verify"]["path"]:
+                rd["another file"] += 1
+            elif not isinstance(ga.get("start_line"), int) or not isinstance(ga.get("end_line"), int):
+                rd["the drill's file, whole"] += 1
+            else:
+                old = json.loads(tgt["args"])["old_string"]
+                content = drill_file(rec, cache)
+                i = content.find(old)
+                t0 = content[:i].count("\n") + 1 if i >= 0 else None
+                covers = t0 is not None and ga["start_line"] <= t0 and ga["end_line"] >= t0 + old.count("\n")
+                rd["the drill's file, a range that covers the answer's lines" if covers else
+                   "the drill's file, a range elsewhere"] += 1
+                rng_len.append(ga["end_line"] - ga["start_line"] + 1)
+        elif "command" in ga:
+            w = str(ga["command"]).split("&&")[-1].split()
+            cmd[w[0] if w else "(empty)"] += 1
+
+    def q(v, f):
+        v = sorted(v)
+        return v[min(len(v) - 1, int(f * len(v)))] if v else 0
+    sh = lambda c, k, tot: f"{k} {c[k]} ({100 * c[k] / max(tot, 1):.0f} %)"
+    print(f"edit_drills why · {a.decoded} on {a.records} · {n} samples of {len(right_len)} targets · thought cap "
+          f"{a.max_thought_chars} chars (--max-thought-chars) · other caps tried {a.caps}")
+    print("   thought: " + " · ".join(sh(state, k, n) for k in ("none", "over the cap", "usable"))
+          + f" · length of the non-empty ones p50 {q(lens, .5)} · p90 {q(lens, .9)} · max {max(lens, default=0)} chars")
+    print("   outcome (thought none / over the cap / usable):")
+    for k, c in sorted(out_by.items(), key=lambda x: -sum(x[1].values())):
+        print(f"      {k:22s} {sum(c.values()):5d} ({100 * sum(c.values()) / max(n, 1):.0f} %) = {c['none']} / {c['over the cap']} / {c['usable']}")
+    print("   targets with a thought before the right call, by cap: " + " · ".join(
+        f"≤ {c} chars {sum(1 for v in right_len.values() if v and v <= c)}" for c in caps)
+        + f" · any length {sum(1 for v in right_len.values() if v)} · of {len(right_len)} targets")
+    no = sum(pair.values())
+    print(f"   another tool {no}: " + (" · ".join(f"{k} {v}" for k, v in pair.most_common()) or "–"))
+    nr = sum(rd.values())
+    print(f"   read_file instead of the edit {nr}: " + (" · ".join(sh(rd, k, nr) for k, _ in rd.most_common()) or "–")
+          + f" · range length p50 {q(rng_len, .5)} · p90 {q(rng_len, .9)} lines")
+    print(f"   run_command, first word ({sum(cmd.values())}): " + (" · ".join(f"{k} {v}" for k, v in cmd.most_common(8)) or "–"))
+    for name, fam in (("all samples", fam_all), ("usable-thought samples", fam_use)):
+        print(f"   by family, {name}:")
+        for f_, c in sorted(fam.items()):
+            tot = sum(c.values())
+            print(f"      {f_:8s} {tot:5d}: " + " · ".join(f"{k} {100 * v / tot:.0f} %" for k, v in c.most_common(5)))
+    print("== why done (read-only) — 📷 everything from 'edit_drills why' down")
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -1726,8 +1819,13 @@ def main():
     t.add_argument("--scope", default="tool_call", choices=["tool_call", "full"],
                    help="label scope of the calls this decode fills: tool_call = thought is context, full = thought trained too")
     t.add_argument("--out", required=True)
+    w = sub.add_parser("why", help="read-only: what a decode did instead of the answer (thought state, outcome, the other tool)")
+    w.add_argument("records")
+    w.add_argument("decoded")
+    w.add_argument("--max-thought-chars", type=int, default=3000, help="the cap `think` ran with (THINK31_MAX_CHARS)")
+    w.add_argument("--caps", default="6000,12000", help="other caps to count the fillable targets at")
     a = ap.parse_args()
-    {"build": build, "decode": decode, "score": score, "think": think, "tier": tier}[a.cmd](a)
+    {"build": build, "decode": decode, "score": score, "think": think, "tier": tier, "why": why}[a.cmd](a)
 
 
 if __name__ == "__main__":
