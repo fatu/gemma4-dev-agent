@@ -799,8 +799,8 @@ def retry_fail(kind, content, lines, site, a, b, vs, ve, rng):
                 if 0 <= ni < nk <= len(nl):
                     nl = nl[:ni] + esc(nl[ni:nk]) + nl[nk:]
         bad, bad_new = "\n".join(ol), "\n".join(nl)
-        if bad != "\n".join(old_l) and bad.strip() and n_matches(content, bad) == 0:
-            return bad, bad_new, (a2, b2)
+        if bad != "\n".join(old_l) and bad.strip() and bad != bad_new and n_matches(content, bad) == 0:
+            return bad, bad_new, (a2, b2)             # bad == bad_new: the harness says "identical", not "not found"
     return None
 
 

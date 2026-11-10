@@ -18,8 +18,8 @@
 # or, beside running lanes (e.g. E4B's rollouts on GPUs 1-3), with KILL_ALL=0 DPORT=8010: then only this script's own
 # server (vllm serve … --port $DPORT) is started and stopped, and the lanes keep theirs. Start the lanes FIRST
 # (rebench_gen.sh gen stops every vllm serve when it starts).
-# Knobs (every one printed): GPU · N_TRAIN (2800) · TRAIN_FAMILIES (the training set's family weights: more anchor / block
-# / retry than the held-out sets, which keep edit_drills.py's FAMILIES) · FILE_CAP (25 drills per training file) · N_HELD (300) · N_BLOCK (80, the held-out block slice) · N_RETRY (80, the
+# Knobs (every one printed): GPU · N_TRAIN (3600) · TRAIN_FAMILIES (the training set's family weights: more anchor / block
+# / retry than the held-out sets, which keep edit_drills.py's FAMILIES) · FILE_CAP (30 drills per training file) · N_HELD (300) · N_BLOCK (80, the held-out block slice) · N_RETRY (80, the
 # held-out retry slice: E4B's failed-edit loops, read with its `resend` line) · TRAIN_LIBS ·
 # HELD_LIBS · BLOCK_LIBS / HELD_BLOCK_LIBS (the block family's repetitive libraries) · SYSTEM (the arm's system.md)
 # · THINK_SAMPLES (4) · DROP_TOOLS (for a tools6 arm) · TOOLS_FROM (a traj log; default the first runs/*/traj/*.jsonl) · OWN (rebenche4b
@@ -35,10 +35,11 @@ cd "$(dirname "$0")/.."
 STEP="${1:?build|gate0|think|think31|mix|train|gate1|subs}"; T0=$(date +%s)
 say() { echo "== $(date '+%T') [$(( $(date +%s) - T0 ))s] $*"; }
 GPU="${GPU:-0}"; KILL_ALL="${KILL_ALL:-1}"; DPORT="${DPORT:-8000}"; PY=.venv-eval/bin/python; TRAIN_PY="${TRAIN_PY:-.venv-train/bin/python}"
-N_TRAIN="${N_TRAIN:-2800}"; N_HELD="${N_HELD:-300}"; FILE_CAP="${FILE_CAP:-25}"
+N_TRAIN="${N_TRAIN:-3600}"; N_HELD="${N_HELD:-300}"; FILE_CAP="${FILE_CAP:-30}"
 # B-3q (2026-11-09): only 478 of 1,500 drills at FAMILIES' weights exercised "a unique anchor while a repeat is in view"
-# (E4B's several-matches failure); ~1,500 such drills are the estimate for several matches ≤ 10 %
-TRAIN_FAMILIES="${TRAIN_FAMILIES:-copy=0.27,anchor=0.18,recover=0.18,stale=0.07,block=0.15,retry=0.15}"
+# (E4B's several-matches failure); ~1,500 such drills are the estimate for several matches ≤ 10 %: 3,600 drills at
+# these weights hold 1,489 of them (2,800 at milder weights: 1,139)
+TRAIN_FAMILIES="${TRAIN_FAMILIES:-copy=0.22,anchor=0.2,recover=0.18,stale=0.06,block=0.19,retry=0.15}"
 TRAIN_LIBS="${TRAIN_LIBS:-click,jinja2,attr,anyio,h11,werkzeug,packaging,markdown_it,yaml,dateutil}"
 HELD_LIBS="${HELD_LIBS:-sqlalchemy,tqdm,tenacity,starlette}"; N_BLOCK="${N_BLOCK:-80}"; N_RETRY="${N_RETRY:-80}"
 BLOCK_LIBS="${BLOCK_LIBS:-typer,openai,networkx}"; HELD_BLOCK_LIBS="${HELD_BLOCK_LIBS:-sqlmodel,huggingface_hub,pandas}"

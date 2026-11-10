@@ -673,12 +673,12 @@ python3 scripts/compare_runs.py runs/dev33_base_p{1,2,3,4} | head -8            
 (passes of one arm differ by up to 5–6 tasks on these 51). Next on the laptop either way: step 2 (an edit-skill LoRA
 on short, checked edit exercises, no whole 31B trajectories) and, later, step 3 (31B relabels E4B's own states).
 
-## B-3q · The edit-skill LoRA again: drills rebuilt from E4B's real failures, gate in tiers ▶ next (~0.7 h build + ~15 min gate0 + ~4–8 h think + ~6–10 h train + ~1 h gate1, then ~4 h A/B)
+## B-3q · The edit-skill LoRA again: drills rebuilt from E4B's real failures, gate in tiers ▶ next (~1 h build + ~15 min gate0 + ~5–10 h think + ~8–13 h train + ~1 h gate1, then ~4 h A/B)
 
 B-3p's two runs did not pass gate 1 (B-3p below: kept as the record, **do not run its steps**). What changed for B-3q, all in the code:
 - **Drills:** a `retry` family from E4B's real failure loops (a failed edit by E4B's real causes, the identical call resent,
   a re-read followed by the same call), LLM-like misremembered lines, re-reads whose range no longer gives the answer away.
-- **Training mix:** 2,800 drills with more anchor / block / retry (`TRAIN_FAMILIES`, ≤ 25 per file, ≤ 5 per identical line of a library): 1,139 of them make the
+- **Training mix:** 3,600 drills with more anchor / block / retry (`TRAIN_FAMILIES`, ≤ 30 per file, ≤ 5 per identical line of a library): 1,489 of them make the
   model choose a unique anchor while a repeat is in view (478 of 1,500 before; ~1,500 is the estimate for several matches
   ≤ 10 %). The held-out sets keep the standard family weights.
 - **Gate:** read by tier, paired against gate0 on the same drills (exact McNemar). The 31B-level gate (hit ≥ 80 %, several
@@ -692,18 +692,37 @@ B-3p's two runs did not pass gate 1 (B-3p below: kept as the record, **do not ru
 | # | step | card(s) · time | 📷 | stop / go |
 |---|---|---|---|---|
 | 0 | `cd gemma4-dev-agent && git pull && git log --oneline -1 && ls -la runs/sft/rebenche4b.rendered.jsonl` | — | the commit line and the file line | commit `1b08f32` or later; the rollouts file must exist (else send the photo) |
-| 1 | `bash train/drills_box.sh build` | CPU · ~40 min | four `== drills` lines (2800 · 300 · 80 block slice · 80 retry slice) and the `families built:` line above each (the training one shows the B-3q weights) | any `Traceback`, or a set below its count → stop |
+| 1 | `bash train/drills_box.sh build` | CPU · ~1 h | four `== drills` lines (3600 · 300 · 80 block slice · 80 retry slice) and the `families built:` line above each (the training one shows the B-3q weights) | any `Traceback`, or a set below its count → stop |
 | 2 | `GPU=0 bash train/drills_box.sh gate0` | 1 card · ~15 min | everything from `edit_drills score` down, the `-- block slice` and `-- retry slice` lines | none: this is the baseline every adapter is paired with (new held-out sets: not comparable with B-3p's 62 / 20) |
-| 3 | `GPU=0 nohup bash train/drills_box.sh think > runs/drills_think.log 2>&1 &` then `tail -8 runs/drills_think.log` when it ends | 1 card · ~4–8 h (`THINK_SAMPLES=2` halves it) | `== think`, `samples:`, `calls with a thought by family`, the two score lines | **no stop rule**: block / anchor / retry will have few thoughts (39 % / 28 % in B-3p); they train with an empty thought (decided 2026-11-08; the loss is on the tool call only) |
+| 3 | `GPU=0 nohup bash train/drills_box.sh think > runs/drills_think.log 2>&1 &` then `tail -8 runs/drills_think.log` when it ends | 1 card · ~5–10 h (`THINK_SAMPLES=2` halves it) | `== think`, `samples:`, `calls with a thought by family`, the two score lines | **no stop rule**: block / anchor / retry will have few thoughts (39 % / 28 % in B-3p); they train with an empty thought (decided 2026-11-08; the loss is on the tool call only) |
 | 4 | `bash train/drills_box.sh mix` | CPU · minutes | the render lines, `drills kept by family`, `== mix` | render not PASS → stop; if the kept line says drills were dropped, run it again with `DRILL_SHARE=0.75` and send both |
-| 5 | `GPU=0 LR=1e-5 EPOCHS=4 NAME=e4b_drill_q nohup bash train/drills_box.sh train > runs/drills_train_q.log 2>&1 &`, when it ends `grep -hE "^drills_box|schedule|eval\[|== epoch" runs/drills_train_q.log \| cut -c1-200` | 1 card · ~6–10 h (about 4× B-3p's train stage: twice the drill tokens, 4 epochs; run it overnight) | the header (lr 1e-5 · epochs 4 · r 16 · alpha 16 · eval-every 100), the schedule, the eval lines, four `== epoch` lines | — |
+| 5 | `GPU=0 LR=1e-5 EPOCHS=4 NAME=e4b_drill_q nohup bash train/drills_box.sh train > runs/drills_train_q.log 2>&1 &`, when it ends `grep -hE "^drills_box|schedule|eval\[|== epoch" runs/drills_train_q.log \| cut -c1-200` | 1 card · ~8–13 h (about 5× B-3p's train stage: 2.5× the drill tokens, 4 epochs; run it overnight) | the header (lr 1e-5 · epochs 4 · r 16 · alpha 16 · eval-every 100), the schedule, the eval lines, four `== epoch` lines | — |
 | 6 | `GPU=0 NAME=e4b_drill_q bash train/drills_box.sh gate1` | 1 card · ~1 h (4 adapters × 3 sets) | each adapter's `-- <name>` block and its whole `edit_drills tier` block (✓/✗ lines, `== tier`) | go only for an adapter whose `== tier` line says **A/B tier PASS**; several pass → the one with the highest hit; none → stop, send the photos |
 | 7 | `NAME=e4b_drill_q bash train/drills_box.sh subs` (it takes the epoch that passed the A/B tier with the highest hit; `EPOCH=<n>` names one) | CPU · minutes | the subs lines (epoch, adapter_config r/alpha, build check) | build check fails → stop |
 | 8 | the A/B (commands below): no adapter vs the adapter, 4 lanes × 2 passes on the 51 tasks | 4 cards · ~4 h | the per-arm resolved counts, both `edit_stats` blocks, `rulestats`, the drill-template line count | read it with the rule under the commands |
 
+**Adapter B — the 31B's thoughts on the hard targets (2026-11-09, optional but wanted; same drills, one more variable):**
+E4B's own thought exists only where E4B already answers right, so the hardest calls (block / anchor / retry) train after
+an empty thought. Adapter B fills those from the 31B (open weights, so its outputs may be trained on): the 31B is
+sampled on exactly the targets still empty, a thought is kept by the same rule (only from a sample whose own call was the
+checked answer, ≤ 3,000 chars), and on those calls the thought is trained too (label scope full) — E4B cannot write it
+yet, so as context alone it would not be there at inference. Everything else is adapter A's. Steps, after step 3:
+
+| # | step | card(s) · time | 📷 | stop / go |
+|---|---|---|---|---|
+| 3b | `GPU=1 nohup bash train/drills_box.sh think31 > runs/drills_think31.log 2>&1 &` then `tail -6 runs/drills_think31.log` — only after step 3 has ended (it reads `runs/sft/drills_native` and stops every vllm serve) | 1 card · ~1–3 h (only the empty targets, 2 samples) | the decode line, `== think`, `samples:`, `thought source by family` | fewer than a third of the empty targets filled → send the photo (adapter B then differs little from A) |
+| 4b | `NATIVE=runs/sft/drills_native31 MIX=runs/sft/drills_mix31.rendered.jsonl bash train/drills_box.sh mix` | CPU · minutes | the render lines, `drills kept by family`, `== mix` | as step 4 |
+| 5b | `GPU=1 LR=1e-5 EPOCHS=4 NAME=e4b_drill_q31 MIX=runs/sft/drills_mix31.rendered.jsonl nohup bash train/drills_box.sh train > runs/drills_train_q31.log 2>&1 &` (beside step 5 on GPU 0) | 1 card · ~8–13 h | as step 5 | — |
+| 6b | `GPU=0 NAME=e4b_drill_q31 bash train/drills_box.sh gate1` (after step 6: gate1 stops every vllm serve) | 1 card · ~1 h | as step 6 | as step 6 |
+
+**A or B for the A/B:** only adapters whose `== tier` says A/B tier PASS. Both pass → the one with the lower block-slice
+several-matches rate, and with it the retry slice's hit; within 3 points on both → B only if its `answer length` and
+`not found` lines are no worse than A's (the 31B's thoughts must not make E4B slower or wordier: in the A/B, also compare
+`rulestats`' tool calls and first edit against no adapter). `subs` and step 8 then run with that NAME.
+
 The A/B tier (step 6): against gate0 — hit ≥ +5 pts · several matches ≤ −5 pts with p < 0.05 · not found at distance ≥ 2 no
 more than +2 · parsed ≥ 99 % · non-block median answer ≤ the target's · block slice several matches ≤ −12 pts · retry slice hit
-≥ +10 pts and resends no more. The block drills are now 21 % of the drills' label tokens (12 % before): if answers get longer
+≥ +10 pts and resends no more. The block drills are now 25 % of the drills' label tokens (12 % before): if answers get longer
 than the target everywhere, the answer-length line fails — that is the check for it.
 
 ```bash
