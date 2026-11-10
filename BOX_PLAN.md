@@ -41,60 +41,69 @@ dropped too.
 
 ---
 
-## B-4 · Token-level distillation 31B → E4B, step S0: does the 31B point at E4B's own errors? (2026-11-10) — ✓ S0 done 2026-11-10 · ▶ next: S0b below (two commands, ~15 min, no training)
+## B-4 · Token-level distillation 31B → E4B, step S0: does the 31B point at E4B's own errors? (2026-11-10) — ✓ S0 done 2026-11-10 · ▶ next: S0b below (two commands, ~10 min, no training; locator rewritten 2026-11-10 after a review)
 
 **Status (2026-11-10).** S0 ran: of 88 not-found edits 56 were locatable; the 31B's top-1 continued the source at the first wrong
 token in 2 % (call) and 12 % (thought) → "stop" by S0's rule. But most measured positions repeat a wrong text that is already
 in the context (48 of 56 calls; 39 of 48 thoughts), where any model copies; only 9 were where the text is first written.
 
-### S0b · the same check where each wrong text is FIRST written, plus E4B's own scores (2026-11-10) — START HERE
+### S0b · the same check where each wrong text is FIRST written, plus E4B's own scores (2026-11-10; locator rewritten the same day) — START HERE
 
-**⚠ Review note (2026-11-10 13:40, laptop; code not changed yet).** Step 1 (`student`) is fine to run. Step 2's
-**verdict line must not be acted on yet**: send the photo and wait. Found on the laptop's test data: (1) the model is
-shown file content with JSON escapes (a literal backslash-n, backslash-quote) and often writes them; the harness's
-matcher un-escapes such strings, so an escape is not why an edit is "not found", but the probe compares against the
-decoded text and takes the first literal backslash as the first wrong character: 14 of 37 measured cases sat there (in
-one read in full the real error is 1,839 characters later; in another the edit was stale); (2) when the wrong character
-is not the first character of E4B's token, a teacher top-1 that stops before it is counted as "corrected" (the oracle
-check does not catch it); (3) there is no control line at correctly copied positions, and no rule for "between" or
-n < 20. Also decided by the user: before S1, measure the teacher's probability mass outside its top-20 from the stored
-scores (a `TAIL` line, not in the probe yet); K stays 20 if it is small, else 100–200; never the whole vocabulary.
-Additional check for step 1's photo: on every span E4B's NLL of its own tokens must be below the 31B's, else the
-scoring model is not the sampling model → stop.
-
-Needs the code with `opd_box.sh student` and S0's files on the box (`runs/opd/s0/`: rows.jsonl, recs_*, t31_*.npz — the 31B
-scores are reused, nothing is rescored by the 31B). **Do not run `s0data` again: it deletes the 31B scores.** All cards free
-for step 1.
+Needs the code whose `kd_probe.py` has `--selftest`, and S0's files on the box (`runs/opd/s0/`: rows.jsonl, recs_*,
+t31_*.npz — the 31B scores are reused, nothing is rescored by the 31B). **Do not run `s0data` again with the default
+`OUTD`: it deletes the 31B scores.** All cards free for step 1.
 
 ```bash
 # 0. code, S0's files, cards (📷)
-cd gemma4-dev-agent && git pull && git log --oneline -1 && grep -c "student)" train/opd_box.sh
+cd gemma4-dev-agent && git pull && git log --oneline -1 && .venv-eval/bin/python train/kd_probe.py --selftest
 ls runs/opd/s0/rows.jsonl && ls runs/opd/s0/t31_*.npz | wc -l
 nvidia-smi --query-gpu=index,memory.used --format=csv,noheader
 # 1. E4B scores the same rows, one process per card (~3–5 min)
 nohup bash train/opd_box.sh student > runs/opd_student.log 2>&1 &
 tail -20 runs/opd_student.log          # when it ends: 📷 the '== teacher_score' lines and the '== student' line
-# 2. the readout (CPU, ~5–10 min): 📷 every line from the first 'counts:' line down
+# 2. the readout (CPU, ~1–5 min): 📷 every line from the first 'counts:' line down
 bash train/opd_box.sh probe
 ```
 
-**What changed in the readout** (decided before any first-occurrence data was seen): each not-found edit's wrong text is
-measured where it FIRST appears in the trajectory (a thought or a call; resends count once), with what had been shown at
-that point. Set apart and not in the verdict: written before the source was shown · right as shown then (the file or the
-view changed later) · the shown continuation is not unique · the prefix ends its source. New lines: `BIRTH` (flagged /
-corrected / prefers, by place, before / after a failed edit, and with E4B's own scores the push on E4B's wrong token and
-the lift of the right one), `SEV` (after a too-short anchor is first written: would the 31B go on), `SUBMIT` (the 31B's
-choice at E4B's submit_patch, by the last command since the last edit), `MAP` (where log p_E4B − log p_31B lands: thought
-prose, code inside ``` in a thought, tool name, arguments, text). S0's a–f lines stay, b / c marked as copies.
+**What the readout measures.** Each not-found edit's wrong text is measured where it FIRST appears in the trajectory (a
+thought or a call; resends count once), with what had been shown at that point. The first wrong character now follows
+what the harness's edit matcher forgives (found in a review before the box ran S0b: the model is shown file content
+inside a JSON string, a newline as backslash-n, and often writes it that way; the matcher un-escapes such strings and
+ignores indentation, so neither is why an edit fails — on the laptop's test data the old locator sat on such a
+character in 15 of 33 cases, in one 1,888 characters before the real error). Readings tried: the text as written with
+any whitespace between tokens, and five un-escapings with each line stripped; the latest unexplained character wins; a
+string that some reading explains completely is a stale view and set apart. Other classes set apart as before: written
+before the source was shown · right as shown then · the shown continuation is not unique · the prefix ends its source.
+- `LOCATOR`: how many births moved against S0's locator, and the readings used.
+- `BIRTH` (the verdict line): flagged / corrected / prefers over the **determined** births. corrected = the teacher's
+  top-1 reaches the wrong character and continues the shown text there (in any way of writing it). A top-1 that stops
+  before the wrong character is **undetermined** and left out of n. With E4B's scores: push and lift.
+- `CTRL`: the same numbers on the tokens of the same quotes that E4B copied right. push is positive on average for any
+  teacher (the token was sampled from E4B), so it only means something against this line.
+- `SEV`, `SUBMIT`, `MAP`: as before (SEV in the same normalised reading).
+- `TAIL`: the 31B's probability mass outside its top-20 per span — what a top-20 bucketed KL cannot see.
+- `STUDENT`: E4B's own NLL of its tokens against the 31B's, per span.
+- Lines a, d, e, f and b / c are S0's (b / c with S0's old locator): they must repeat the S0 photo (b n 56 · corrected
+  2 %, c n 48 · 12 %) — the proof that the same files were read.
 
-**Reading rule (S0b):** the probe's last `== S0b verdict` line applies it: `BIRTH` corrected ≥ 50 % with n ≥ 20 → **go to
-S1** (training code, then the A/B); < 30 % → **stop the line**; in between or n < 20 → the laptop decides. `prefers`, push /
-lift, `SEV`, `SUBMIT` and `MAP` do not decide: they set S1's loss scope (code quotes, weighting near first occurrences, a
-tool-choice arm).
+**Reading rule (S0b; written before any data from this locator was seen).** The probe's last `== S0b verdict` line
+applies it, on the determined births:
+- n ≥ 20 and corrected ≥ 50 % → **go to S1** (training code, then the A/B); corrected < 30 % → **stop the line**;
+- 30–50 %: **go** only if prefers ≥ 60 % **and** flagged at the births ≥ 5 × flagged on the `CTRL` tokens (the 31B
+  disagrees at E4B's errors, not everywhere); otherwise **stop**;
+- n < 20: **no verdict** — send the photo; the laptop gives the line for a second scored set (E4B's evaluation passes
+  that kept trajectories: `OUTD=runs/opd/s0x RUNS="…" TASKS=harness/tasks.jsonl` with `s0data`, `score`, `student`,
+  then `POOL="runs/opd/s0 runs/opd/s0x" bash train/opd_box.sh probe`).
+- `TAIL` decides the K of S1's scoring (user, 2026-11-10: measure first, never store the whole vocabulary — 1.2 M reply
+  tokens × 262,144 ≈ 630 GB): mass > 10 % at under 5 % of the positions of every span → K stays 20; else K = 100.
+- `prefers`, push / lift, `SEV`, `SUBMIT` and `MAP` do not decide: they set S1's loss scope (code quotes, weighting
+  near first occurrences, a tool-choice arm).
 
-**Stop and send the photo** on: a missing S0 file, a card in use, a `student` shard with no result (the probe still runs
-without it, only the push / MAP lines are missing — send both photos), or an `oracle check` count below its n (the
-measurement itself is broken).
+**Stop and send the photo** on: the selftest not printing PASS (or saying the harness is not installed), a missing S0
+file, a card in use, a `student` shard with no result (the probe still runs without it, only the push / STUDENT / MAP
+lines are missing — send both photos), `STUDENT … FAIL` (the model that scored is not the model that sampled), lines
+b / c differing from the S0 photo, or a `locator check` count below the measured births (the measurement itself is
+broken).
 
 ### S0 as it ran (kept as the record)
 

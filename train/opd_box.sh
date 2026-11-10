@@ -5,14 +5,18 @@
 #   nohup bash train/opd_box.sh score > runs/opd_score.log 2>&1 &          # all cards: the 31B scores every E4B reply token
 #                                                                          #   (top-20), one process per card (~4 min a shard)
 #   nohup bash train/opd_box.sh student > runs/opd_student.log 2>&1 &      # S0b, all cards: the same rows scored by E4B itself
-#   bash train/opd_box.sh probe                                            # CPU ~5–10 min: kd_probe (S0 lines + S0b BIRTH /
-#                                                                          #   SEV / SUBMIT / MAP + the verdict line)
+#   bash train/opd_box.sh probe                                            # CPU ~1–5 min: kd_probe (S0 lines + S0b LOCATOR /
+#                                                                          #   BIRTH / CTRL / SEV / SUBMIT / TAIL / STUDENT /
+#                                                                          #   MAP + the verdict line)
+#   POOL="runs/opd/s0 runs/opd/s0x" bash train/opd_box.sh probe            # several scored sets read as one (when n < 20);
+#                                                                          #   a second set: OUTD=runs/opd/s0x RUNS="…" TASKS=…
+#                                                                          #   with s0data, score, student
 # s0data: E4B's own rebench rollouts (B-3p step 4: runs/dev33_base_e1..e3, failed tasks included) → convert_traj with the
 # failed calls KEPT as targets (--mask-errors off: the distillation has to see the wrong tokens) → render.py --pack →
 # rows.jsonl (each row tagged with its pass). score: teacher_score.py, rows dealt to the cards (row i → card i mod N).
 # probe: kd_probe.py (read-only). Knobs (each printed): RUNS · TASKS · OUTD · GPUS (default every card) · TOK (E4B, the
 # rows' tokenizer) · T31 (the teacher) · E4BM (the student model for `student`; default TOK) · K · MBT · GPU_UTIL · BATCH · MAX_LEN · FAKE (laptop test only: same|other =
-# teacher_score --fake, no engine).
+# teacher_score --fake, no engine) · POOL (probe only: the scored dirs to read together; default OUTD).
 set -uo pipefail
 cd "$(dirname "$0")/.."
 STEP="${1:?s0data|score|student|probe}"
@@ -24,7 +28,7 @@ GPUS="${GPUS:-$ALLGPUS}"; IFS=, read -ra GL <<< "$GPUS"; NG=${#GL[@]}
 TOK="${TOK:-google/gemma-4-E4B-it-qat-w4a16-ct}"; T31="${T31:-google/gemma-4-31B-it-qat-w4a16-ct}"; E4BM="${E4BM:-$TOK}"
 FAKE="${FAKE:-}"; K="${K:-20}"; MBT="${MBT:-4096}"; GPU_UTIL="${GPU_UTIL:-0.80}"; BATCH="${BATCH:-8}"; MAX_LEN="${MAX_LEN:-32768}"
 mkdir -p "$OUTD"
-echo "opd_box $STEP · runs [$RUNS] · tasks $TASKS · out $OUTD · cards $GPUS ($NG) · tokenizer $TOK · teacher $T31 · student $E4BM · top-k $K · max_num_batched_tokens $MBT · gpu_util $GPU_UTIL · batch $BATCH rows · max_len $MAX_LEN${FAKE:+ · FAKE TEACHER $FAKE} · code $(git log --oneline -1 | cut -c1-50)"
+echo "opd_box $STEP · runs [$RUNS] · tasks $TASKS · out $OUTD · cards $GPUS ($NG) · tokenizer $TOK · teacher $T31 · student $E4BM · top-k $K · max_num_batched_tokens $MBT · gpu_util $GPU_UTIL · batch $BATCH rows · max_len $MAX_LEN${FAKE:+ · FAKE TEACHER $FAKE} · pool [${POOL:-$OUTD}] · code $(git log --oneline -1 | cut -c1-50)"
 T0=$(date +%s)
 case "$STEP" in
 s0data)
@@ -72,11 +76,20 @@ score|student)
   n=$(ls "$OUTD"/${PRE}_*.npz 2>/dev/null | wc -l | tr -d ' ')
   echo "== $STEP: $n of $NG shards wrote their file ($MDL) · $(( ($(date +%s) - T0) / 60 )) min · 📷 the == lines and this one" ;;
 probe)
-  ls "$OUTD"/t31_*.npz >/dev/null 2>&1 || { echo "run score first"; exit 1; }
-  SN=""; ls "$OUTD"/s_*.npz >/dev/null 2>&1 && SN="$OUTD/s_*.npz"
-  echo "  student scores: ${SN:-none (run 'student' for the push / MAP lines)}"
-  $PY train/kd_probe.py "$OUTD/rows.jsonl" --npz "$OUTD/t31_*.npz" ${SN:+--student-npz "$SN"} --recs "$OUTD" --tokenizer "$TOK" > "$OUTD/probe.log" 2>&1
-  grep -vE "^kd_probe|[Ww]arn" "$OUTD/probe.log" | grep -v '^$' | cut -c1-700
+  RO=(); NZ=(); RC=(); SZ=(); allS=1
+  for D in ${POOL:-$OUTD}; do
+    ls "$D"/t31_*.npz >/dev/null 2>&1 || { echo "run score first: $D has no t31_*.npz"; exit 1; }
+    RO+=("$D/rows.jsonl"); NZ+=("$D/t31_*.npz"); RC+=("$D")
+    if ls "$D"/s_*.npz >/dev/null 2>&1; then SZ+=("$D/s_*.npz"); else allS=0; echo "  $D: no student scores"; fi
+  done
+  if [ "$allS" = 1 ]; then
+    echo "  sets: ${RC[*]} · student scores: yes"
+    $PY train/kd_probe.py "${RO[@]}" --npz "${NZ[@]}" --recs "${RC[@]}" --student-npz "${SZ[@]}" --tokenizer "$TOK" > "$OUTD/probe.log" 2>&1
+  else
+    echo "  sets: ${RC[*]} · student scores: none used (run 'student' on every set for the push / STUDENT / MAP lines)"
+    $PY train/kd_probe.py "${RO[@]}" --npz "${NZ[@]}" --recs "${RC[@]}" --tokenizer "$TOK" > "$OUTD/probe.log" 2>&1
+  fi
+  grep -vE "^kd_probe|[Ww]arn" "$OUTD/probe.log" | grep -v '^$' | cut -c1-1200
   echo "  $(( $(date +%s) - T0 )) s · 📷 every line from the first counts line down" ;;
 *) echo "unknown step $STEP"; exit 1 ;;
 esac
