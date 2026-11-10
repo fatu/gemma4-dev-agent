@@ -41,16 +41,47 @@ dropped too.
 
 ---
 
-## B-4 · Token-level distillation 31B → E4B, step S0: does the 31B point at E4B's own errors? (2026-11-10) — ✓ S0 done 2026-11-10 · ⏸ next: S0b (code not pushed yet)
+## B-4 · Token-level distillation 31B → E4B, step S0: does the 31B point at E4B's own errors? (2026-11-10) — ✓ S0 done 2026-11-10 · ▶ next: S0b below (two commands, ~15 min, no training)
 
 **Status (2026-11-10).** S0 ran: of 88 not-found edits 56 were locatable; the 31B's top-1 continued the source at the first wrong
-token in 2 % (call) and 12 % (thought) → "stop" by the rule below. But most measured positions repeat a wrong text that is
-already in the context (48 of 56 calls; 39 of 48 thoughts), where any model copies; only 9 were where the text is first
-written. **Next, S0b** (laptop, not pushed yet): measure where each wrong text is first written in the trajectory (resends once),
-set apart texts written before the source was shown and sources whose continuation is not unique, add "the teacher prefers the
-right token", score E4B too (where the distillation signal lands), and re-measure the several-matches and run-before-submit lines;
-thresholds unchanged. On the box it will be `git pull` → `bash train/opd_box.sh student` → `bash train/opd_box.sh probe` (the 31B
-scores are reused). **Do not rerun S0 and do not start S1.** Keep `runs/opd/s0/` (rows, recs, t31_*.npz).
+token in 2 % (call) and 12 % (thought) → "stop" by S0's rule. But most measured positions repeat a wrong text that is already
+in the context (48 of 56 calls; 39 of 48 thoughts), where any model copies; only 9 were where the text is first written.
+
+### S0b · the same check where each wrong text is FIRST written, plus E4B's own scores (2026-11-10) — START HERE
+
+Needs the code with `opd_box.sh student` and S0's files on the box (`runs/opd/s0/`: rows.jsonl, recs_*, t31_*.npz — the 31B
+scores are reused, nothing is rescored by the 31B). **Do not run `s0data` again: it deletes the 31B scores.** All cards free
+for step 1.
+
+```bash
+# 0. code, S0's files, cards (📷)
+cd gemma4-dev-agent && git pull && git log --oneline -1 && grep -c "student)" train/opd_box.sh
+ls runs/opd/s0/rows.jsonl && ls runs/opd/s0/t31_*.npz | wc -l
+nvidia-smi --query-gpu=index,memory.used --format=csv,noheader
+# 1. E4B scores the same rows, one process per card (~3–5 min)
+nohup bash train/opd_box.sh student > runs/opd_student.log 2>&1 &
+tail -20 runs/opd_student.log          # when it ends: 📷 the '== teacher_score' lines and the '== student' line
+# 2. the readout (CPU, ~5–10 min): 📷 every line from the first 'counts:' line down
+bash train/opd_box.sh probe
+```
+
+**What changed in the readout** (decided before any first-occurrence data was seen): each not-found edit's wrong text is
+measured where it FIRST appears in the trajectory (a thought or a call; resends count once), with what had been shown at
+that point. Set apart and not in the verdict: written before the source was shown · right as shown then (the file or the
+view changed later) · the shown continuation is not unique · the prefix ends its source. New lines: `BIRTH` (flagged /
+corrected / prefers, by place, before / after a failed edit, and with E4B's own scores the push on E4B's wrong token and
+the lift of the right one), `SEV` (after a too-short anchor is first written: would the 31B go on), `SUBMIT` (the 31B's
+choice at E4B's submit_patch, by the last command since the last edit), `MAP` (where log p_E4B − log p_31B lands: thought
+prose, code inside ``` in a thought, tool name, arguments, text). S0's a–f lines stay, b / c marked as copies.
+
+**Reading rule (S0b):** the probe's last `== S0b verdict` line applies it: `BIRTH` corrected ≥ 50 % with n ≥ 20 → **go to
+S1** (training code, then the A/B); < 30 % → **stop the line**; in between or n < 20 → the laptop decides. `prefers`, push /
+lift, `SEV`, `SUBMIT` and `MAP` do not decide: they set S1's loss scope (code quotes, weighting near first occurrences, a
+tool-choice arm).
+
+**Stop and send the photo** on: a missing S0 file, a card in use, a `student` shard with no result (the probe still runs
+without it, only the push / MAP lines are missing — send both photos), or an `oracle check` count below its n (the
+measurement itself is broken).
 
 ### S0 as it ran (kept as the record)
 
