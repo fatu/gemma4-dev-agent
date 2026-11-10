@@ -673,7 +673,7 @@ python3 scripts/compare_runs.py runs/dev33_base_p{1,2,3,4} | head -8            
 (passes of one arm differ by up to 5–6 tasks on these 51). Next on the laptop either way: step 2 (an edit-skill LoRA
 on short, checked edit exercises, no whole 31B trajectories) and, later, step 3 (31B relabels E4B's own states).
 
-## B-3q · The edit-skill LoRA again: drills rebuilt from E4B's real failures, gate in tiers ▶ next (~1 h build + ~15 min gate0 + ~5–10 h think + ~8–13 h train + ~1 h gate1, then ~4 h A/B)
+## B-3q · The edit-skill LoRA again: drills rebuilt from E4B's real failures, gate in tiers ▶ steps 1–2 done, step 3 next (on 8 cards ~5–7 h to gate1, on 4 cards ~8–12 h; one card ~15–25 h; then ~4 h A/B)
 
 B-3p's two runs did not pass gate 1 (B-3p below: kept as the record, **do not run its steps**). What changed for B-3q, all in the code:
 - **Drills:** a `retry` family from E4B's real failure loops (a failed edit by E4B's real causes, the identical call resent,
@@ -687,17 +687,31 @@ B-3p's two runs did not pass gate 1 (B-3p below: kept as the record, **do not ru
   still improving at epoch 2). Every epoch's adapter goes through gate1.
 - **E4B's rollouts are reused** (`runs/sft/rebenche4b.rendered.jsonl` from B-3p's step 4): no new rollouts.
 
-### B-3q run order on the box (2026-11-09, code ≥ `32c037b`) — one step at a time, 📷 after each
+### B-3q run order on the box (2026-11-09, code ≥ `614dc93` for steps 3–6: several cards) — one step at a time, 📷 after each
+
+**Cards (2026-11-09):** `drills_box.sh` takes `GPUS=a,b,…` (default: every card). think / think31 / gate1 start one
+server per card and spread the calls over them; `train` trains ONE adapter on all of its `GPUS` (the 16 sequences of a
+step dealt to the cards, gradients summed: the single-card update); gate1 takes `NAMES="a b"` and decodes every epoch of
+every name at once. Set these once in the shell, then use the commands as written:
+```bash
+ALL=0,1,2,3,4,5,6,7; CA=0,1,2,3; CB=4,5,6,7      # 8 cards: adapter A on CA, adapter B on CB
+ALL=0,1,2,3;         CA=0,1;     CB=2,3          # 4 cards
+```
+Steps 1–2 are done on the box (training 3,600 · held-out 300 · 80 · 80; gate0 hit 60 % · several 21 % · not found 3 % ·
+parsed 100 %): **do not run them again** — a rebuild would change the held-out sets and gate0 with them. The times below
+are estimates from the one-card times ÷ cards (training: ÷ ~0.85 × cards); every stage prints its real rate
+(`calls/s` and `eta` in decode, `×… of one card` in each training step line).
+
 
 | # | step | card(s) · time | 📷 | stop / go |
 |---|---|---|---|---|
-| 0 | `cd gemma4-dev-agent && git pull && git log --oneline -1 && ls -la runs/sft/rebenche4b.rendered.jsonl` | — | the commit line and the file line | commit `32c037b` or later; the rollouts file must exist (else send the photo) |
-| 1 | `bash train/drills_box.sh build` | CPU · ~1 h | four `== drills` lines (3600 · 300 · 80 block slice · 80 retry slice) and the `families built:` line above each (the training one shows the B-3q weights) | any `Traceback`, or a set below its count → stop |
-| 2 | `GPU=0 bash train/drills_box.sh gate0` | 1 card · ~15 min | everything from `edit_drills score` down, the `-- block slice` and `-- retry slice` lines | none: this is the baseline every adapter is paired with (new held-out sets: not comparable with B-3p's 62 / 20) |
-| 3 | `GPU=0 nohup bash train/drills_box.sh think > runs/drills_think.log 2>&1 &` then `tail -8 runs/drills_think.log` when it ends | 1 card · ~5–10 h (`THINK_SAMPLES=2` halves it) | `== think`, `samples:`, `calls with a thought by family`, the two score lines | **no stop rule**: block / anchor / retry will have few thoughts (39 % / 28 % in B-3p); they train with an empty thought (decided 2026-11-08; the loss is on the tool call only) |
+| 0 | `cd gemma4-dev-agent && git pull && git log --oneline -1 && nvidia-smi --query-gpu=index,memory.used --format=csv,noheader` | — | the commit line and the cards | commit `614dc93` or later; every card of `$ALL` free |
+| 1 ✔ done | `bash train/drills_box.sh build` | CPU · ~1 h | four `== drills` lines (3600 · 300 · 80 block slice · 80 retry slice) and the `families built:` line above each (the training one shows the B-3q weights) | any `Traceback`, or a set below its count → stop |
+| 2 ✔ done | `GPU=0 bash train/drills_box.sh gate0` | 1 card · ~15 min | everything from `edit_drills score` down, the `-- block slice` and `-- retry slice` lines | none: this is the baseline every adapter is paired with (new held-out sets: not comparable with B-3p's 62 / 20) |
+| 3 | `GPUS=$ALL nohup bash train/drills_box.sh think > runs/drills_think.log 2>&1 &` then `tail -8 runs/drills_think.log` when it ends (progress: `grep -E "servers up|/ " runs/drills_think.log \| tail -3`) | all cards · 8: ~40–75 min · 4: ~1.3–2.5 h (`THINK_SAMPLES=2` halves it) | the header (cards), `servers up: N of N`, the decode line (N servers) and `== decoded` (per server, errors), `== think`, `samples:`, `calls with a thought by family`, the two score lines | `servers up` below the card count → send the photo (it goes on with the ones that came up). **No stop rule** on the thoughts: block / anchor / retry will have few (39 % / 28 % in B-3p); they train with an empty thought (decided 2026-11-09), adapter B fills them |
 | 4 | `bash train/drills_box.sh mix` | CPU · minutes | the render lines, `drills kept by family`, `== mix` | render not PASS → stop; if the kept line says drills were dropped, run it again with `DRILL_SHARE=0.75` and send both |
-| 5 | `GPU=0 LR=1e-5 EPOCHS=4 NAME=e4b_drill_q nohup bash train/drills_box.sh train > runs/drills_train_q.log 2>&1 &`, when it ends `grep -hE "^drills_box|schedule|eval\[|== epoch" runs/drills_train_q.log \| cut -c1-200` | 1 card · ~8–13 h (about 5× B-3p's train stage: 2.5× the drill tokens, 4 epochs; run it overnight) | the header (lr 1e-5 · epochs 4 · r 16 · alpha 16 · eval-every 100), the schedule, the eval lines, four `== epoch` lines | — |
-| 6 | `GPU=0 NAME=e4b_drill_q bash train/drills_box.sh gate1` | 1 card · ~1 h (4 adapters × 3 sets) | each adapter's `-- <name>` block and its whole `edit_drills tier` block (✓/✗ lines, `== tier`) | go only for an adapter whose `== tier` line says **A/B tier PASS**; several pass → the one with the highest hit; none → stop, send the photos |
+| 5 | `GPUS=$CA LR=1e-5 EPOCHS=4 NAME=e4b_drill_q nohup bash train/drills_box.sh train > runs/drills_train_q.log 2>&1 &`; after ~10 min `grep -hE "^drills_box|schedule|ranks joined|step +[0-9]+/" runs/drills_train_q.log \| cut -c1-260 \| head -8` 📷; when it ends `grep -hE "schedule|eval\[|== epoch|checksum|FAILED" runs/drills_train_q.log \| cut -c1-200` | CA · 4 cards: ~2.5–4 h · 2 cards: ~4.5–7 h (one card: ~8–13 h) | the header (cards · lr 1e-5 · epochs 4 · r 16 · alpha 16 · eval-every 100), the schedule line (`cards for this adapter N`), `N ranks joined`, a step line (`×… of one card`, `gradient sync … s`), the `eval[...]` lines, four `== epoch` lines, the `parameter checksum` line | a `Traceback` in `runs/drills_train_q.log` or `runs/sft_e4b_drill_q.rank*.log`, `TRAIN FAILED`, or a speed-up below ×1.3 → send the photo and run it on one card (`GPUS=${CA%%,*}`); a checksum WARNING → send the photo |
+| 6 | after steps 5 and 5b have both ended: `GPUS=$ALL NAMES="e4b_drill_q e4b_drill_q31" bash train/drills_box.sh gate1` (adapter A alone, earlier: `GPUS=$CA NAMES=e4b_drill_q …`; it stops every vllm serve, so not while think31 runs) | all cards · 8 adapters at once · 8 cards: ~15 min · 4: ~25 min | `N adapters on N servers`, each adapter's `-- <name>` block and its whole `edit_drills tier` block (✓/✗ lines, `== tier`) | go only for an adapter whose `== tier` line says **A/B tier PASS**; several epochs of one name pass → the one with the highest hit; none → stop, send the photos |
 | 7 | `NAME=e4b_drill_q bash train/drills_box.sh subs` (it takes the epoch that passed the A/B tier with the highest hit; `EPOCH=<n>` names one) | CPU · minutes | the subs lines (epoch, adapter_config r/alpha, build check) | build check fails → stop |
 | 8 | the A/B (commands below): no adapter vs the adapter, 4 lanes × 2 passes on the 51 tasks | 4 cards · ~4 h | the per-arm resolved counts, both `edit_stats` blocks, `rulestats`, the drill-template line count | read it with the rule under the commands |
 
@@ -710,10 +724,10 @@ yet, so as context alone it would not be there at inference. Everything else is 
 
 | # | step | card(s) · time | 📷 | stop / go |
 |---|---|---|---|---|
-| 3b | `GPU=1 nohup bash train/drills_box.sh think31 > runs/drills_think31.log 2>&1 &` then `tail -6 runs/drills_think31.log` — only after step 3 has ended (it reads `runs/sft/drills_native` and stops every vllm serve) | 1 card · ~1–3 h (only the empty targets, 2 samples) | the decode line, `== think`, `samples:`, `thought source by family` | fewer than a third of the empty targets filled → send the photo (adapter B then differs little from A) |
+| 3b | right after step 5 has started (step 3 has ended, no gate1 running): `GPUS=$CB nohup bash train/drills_box.sh think31 > runs/drills_think31.log 2>&1 &` then `tail -6 runs/drills_think31.log` — it stops every vllm serve when it starts (none is running; step 5's training is not touched) | CB · 4 cards: ~15–45 min · 2 cards: ~0.5–1.5 h (only the empty targets, 2 samples) | `servers up`, the decode line, `== decoded`, `== think`, `samples:`, `thought source by family` | fewer than a third of the empty targets filled → send the photo before 4b (adapter B would differ little from A) |
 | 4b | `NATIVE=runs/sft/drills_native31 MIX=runs/sft/drills_mix31.rendered.jsonl bash train/drills_box.sh mix` | CPU · minutes | the render lines, `drills kept by family`, `== mix` | as step 4 |
-| 5b | `GPU=1 LR=1e-5 EPOCHS=4 NAME=e4b_drill_q31 MIX=runs/sft/drills_mix31.rendered.jsonl nohup bash train/drills_box.sh train > runs/drills_train_q31.log 2>&1 &` (beside step 5 on GPU 0) | 1 card · ~8–13 h | as step 5 | — |
-| 6b | `GPU=0 NAME=e4b_drill_q31 bash train/drills_box.sh gate1` (after step 6: gate1 stops every vllm serve) | 1 card · ~1 h | as step 6 | as step 6 |
+| 5b | `GPUS=$CB LR=1e-5 EPOCHS=4 NAME=e4b_drill_q31 MIX=runs/sft/drills_mix31.rendered.jsonl nohup bash train/drills_box.sh train > runs/drills_train_q31.log 2>&1 &` (beside step 5; its own ranks port, 29500 + its first card) | CB · as step 5 | as step 5 | as step 5 |
+| 6b | — (step 6 gates both names in one call) | | | |
 
 **A or B for the A/B:** only adapters whose `== tier` says A/B tier PASS. Both pass → the one with the lower block-slice
 several-matches rate, and with it the retry slice's hit; within 3 points on both → B only if its `answer length` and
