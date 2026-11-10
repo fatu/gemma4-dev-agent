@@ -35,7 +35,7 @@ Families (record field `family`, weights FAMILIES):
   block    a site inside a 3-line block that repeats in the file (sibling classes / functions copy-pasted, like
            fastapi's), from --block-libs; the shortest unique span is 3-25 lines (BLOCK_LINES, BLOCK_CAP). BLOCK_FAIL of
            them first copy the longest span that still repeats ("occurs N times", corruption block_nonunique), then
-           target 1 reads again and target 2 is the edit
+           target 1 is the check (grep with context) and target 2 the edit — see "Duplicates seen"
   retry    E4B's real retry loops (all-129: after a failed edit E4B retried straight away 103 of 147 times, ok 14 %;
            it resent the identical old_string 48 times, 0 ok; 31B re-reads first and is ok 81 %). Context: copy + a
            failed edit_file (FAILED_LINES long, lines misremembered at MISQUOTE strength, both from E4B's real failures)
@@ -67,10 +67,14 @@ Rejected and counted by reason: dup (same file, line, kind) · overlap (answer w
 file; ≤ --file-cap drills per file, libraries kept level) · no_site · leak (a whole old line ≥ 6 chars in the task text) · syntax (the intended file
 must ast.parse; no `return_new x`) · window (the view must show the old lines and the scope's def/class line, ≤ 150
 lines, not truncated) · corrupt · apply. Scope names must be unique in the file.
-Duplicates seen (record field `dup_seen`): when the changed lines occur elsewhere in the file, another copy is always
-in the context: already in the view (in_view), the view widened to the nearest copy (view, DUP_VIEW), or a
-`grep -nF '<first changed line>' <file>` through run_command right after the view (grep: a uniqueness check, counted in
-`distance`); none = the lines are unique.
+Duplicates seen (record field `dup_seen`; B-3r, 2026-11-10: every answer decidable from the context): when the changed
+lines occur elsewhere in the file, every other copy is in the context together with the lines that sit where the answer
+window sits around the site — already in the view (in_view), the view widened to them (view, DUP_VIEW), or a
+`grep -nF -C CHECK_CONTEXT -e '<first changed line>' <file>` through run_command right after the view (grep: a check
+that is already done, counted in `distance`); none = the lines are unique. After a several-matches failure
+(short_nonunique, block_nonunique) with the copies out of sight (hidden) that grep is target 1 (record field `check`,
+call field `seen` = the lines shown so far) and the edit is target 2; with the copies in sight the edit is the only
+target. Before B-3r only the bare line of one other copy was shown and target 1 read the same lines again.
 "Elsewhere" also counts the first changed line stripped inside another line (an anchor copied without its indentation
 matches there too).
 Checks: every answer is applied with the harness's edit_file on a copy and must give the intended file (strategy
@@ -134,6 +138,20 @@ DUP_VIEW = 0.5
 BLOCK_LINES = 3
 BLOCK_CAP = 25
 BLOCK_FAIL = 0.5
+# B-3r (2026-11-10): an answer must be decidable from the context. B-3q showed the model one copy of a repeated line and
+# at most the bare line of the others (`grep -nF`), while the answer's length depends on where the copies start to
+# differ: of the block drills 82 % (anchor 41 %) could not be decided from the lines shown, the 31B checked first on
+# 49 % of those samples, and in E4B's real runs 56 of 67 several-matches failures came without the other copy in sight.
+# Now: around every other copy of the changed line, the lines that sit where the answer window sits around the site are
+# in the view (in_view), in a view widened to them (view), or in a `grep -nF -C CHECK_CONTEXT` of the line that is in the
+# context before a first try (grep). After a several-matches failure with the copies out of sight (hidden) the drill
+# has two targets: that grep (the check), then the edit — E4B's real loop state (after "occurs N times" it edited again
+# at once 49 of 67 times, 38 of them several again; it grepped once). The answer is cut back to the shortest unique
+# span when the grown one does not fit into the check's context; sites that still do not fit, or whose line has more
+# than CHECK_COPIES copies, are rejected (check_span / check_many)
+CHECK_CONTEXT = 5
+CHECK_COPIES = 8
+NEED_MARGIN = 3            # in a view, the copies' lines count as shown only with this many more lines on each side
 SAME_LINE_CAP = 5          # drills per identical (stripped) changed line of one library: boilerplate repeated across a
 # library (openai's `extra_headers: … = None,` in every method: 76 of 392 block drills at B-3q's first build) is one site
 REREAD_MARGIN = (0, 25)    # lines read again around the failed span + the answer, each side drawn uniformly (≤ 150 lines)
@@ -1028,21 +1046,59 @@ class Builder:
         newset = {x.strip() for x in site["new_lines"]}   # the first line the change touches (call_arg: inside the call)
         probe = next((x.strip() for x in core.split("\n") if x.strip() and x.strip() not in newset),
                      next((x.strip() for x in core.split("\n") if x.strip()), ""))
+        p0 = next((k for k in range(site["l0"], site["l1"]) if lines[k].strip() == probe), site["l0"])
         dup_at = [k for k, x in enumerate(lines) if probe and probe in x and not site["l0"] <= k < site["l1"]]
         single = n_matches(content, core) == 1 and content.count(core) == 1
+        several_fail = ckind in ("short_nonunique", "block_nonunique")
+        # decidable (B-3r): `need` = around every other copy of the changed line, the lines where the answer window sits
+        need = lambda m=0: {x for k in dup_at for x in range(a + k - p0 - m, b + k - p0 + m) if 0 <= x < len(lines)}
+        in_view = lambda: set(range(s0 - 1, e0))
+        check_cmd, check_res, check_lines = None, None, set()
         if single and not dup_at:
             dup_seen = "none"                     # the changed lines are unique, even stripped: nothing to show
         elif not dup_at:
             self.why = "dup_probe"                # repeats only as a block across lines: no one-line probe shows it
             return None
-        elif any(s0 <= k + 1 <= e0 for k in dup_at):
+        elif need(NEED_MARGIN) <= in_view():      # with a margin: a copy cut off by the view's edge cannot be compared
             dup_seen = "in_view"
-        else:                                     # make another copy visible (widen the view, else grep)
-            near = min(dup_at, key=lambda k: abs(k - i))
-            ws0, we0 = min(s0, near + 1), max(e0, near + 1)
-            dup_seen = "view" if rng.random() < DUP_VIEW and we0 - ws0 + 1 <= 150 else "grep"
-            if dup_seen == "view":
-                s0, e0 = ws0, we0
+        else:
+            ws0, we0 = min(s0, min(need(NEED_MARGIN)) + 1), max(e0, max(need(NEED_MARGIN)) + 1)
+            if not several_fail and we0 - ws0 + 1 <= 150 and rng.random() < DUP_VIEW:
+                dup_seen, s0, e0 = "view", ws0, we0          # the view widened to the copies and their lines
+            else:                                 # a grep with context: before a first try, or the target after the failure
+                dup_seen = "hidden" if several_fail else "grep"
+                if len(dup_at) + 1 > CHECK_COPIES:
+                    self.why = "check_many"
+                    return None
+                fits = lambda a_, b_: p0 - a_ <= CHECK_CONTEXT and b_ - 1 - p0 <= CHECK_CONTEXT
+                if not fits(a, b):                # the grown answer is wider than the check's context: the shortest unique span
+                    from swegemma.edit import apply_replacement
+                    w = None if pre else minimal_unique(lines, site["l0"], site["l1"], content, BLOCK_CAP if family == "block" else 8)
+                    if not w or not fits(*w) or (family == "block" and w[1] - w[0] < BLOCK_LINES):
+                        self.why = "check_span"
+                        return None
+                    a, b = w
+                    new_lines = lines[a:site["l0"]] + site["new_lines"] + lines[site["l1"]:b]
+                    old, new = "\n".join(lines[a:b]), "\n".join(new_lines)
+                    r = apply_replacement(content, old, new)
+                    if not (r.strategy == "exact" and r.occurrences == 1 and r.new_content == intended):
+                        self.why = "check_span"
+                        return None
+                from swegemma.tools.execution import run_command
+                pat = grep_pattern(probe, lines)
+                if not pat:
+                    self.why = "check_quote"
+                    return None
+                check_cmd = f"grep -nF -C {CHECK_CONTEXT} -e {shlex.quote(pat)} {rel}"
+                cctx = _Ctx(root, run=True)
+                check_res = run_command(cctx, check_cmd)
+                r = json.loads(check_res)
+                out_ = r.get("stdout") or ""
+                check_lines = {int(m.group(1)) - 1 for m in re.finditer(r"^(\d+)[:-]", out_, re.M)}
+                cap_ = cctx.harness.max_stdout_chars
+                if r.get("status") != "ok" or (cap_ is not None and len(out_) >= cap_) or not need() <= in_view() | check_lines:
+                    self.why = "dup_grep"
+                    return None
         view = json.loads(ws.read_file(ctx, rel, s0, e0))
         shown = view.get("content") or ""
         if view.get("is_truncated") or "\n".join(lines[a:b]) not in shown or any(lines[x - 1] not in shown for x in scope_lines):
@@ -1052,16 +1108,9 @@ class Builder:
         msgs = [{"role": "system", "content": system}, {"role": "user", "content": self.user(lib, instr, root)}]
         cid, am = self.call("read_file", {"filepath": rel, "start_line": s0, "end_line": e0})
         msgs += [am, {"role": "tool", "tool_call_id": cid, "content": tool_msg(ws.read_file(ctx, rel, s0, e0))}]
-        if dup_seen == "grep":                    # after the view: every copy of the first changed line (a uniqueness check)
-            from swegemma.tools.execution import run_command
-            cmd = f"grep -nF -e {shlex.quote(probe)} {rel}"
-            res = run_command(_Ctx(root, run=True), cmd)
-            r = json.loads(res)
-            if r.get("status") != "ok" or len((r.get("stdout") or "").strip().split("\n")) < 2:
-                self.why = "dup_grep"
-                return None
-            cid, am = self.call("run_command", {"command": cmd})
-            msgs += [am, {"role": "tool", "tool_call_id": cid, "content": tool_msg(res)}]
+        if dup_seen == "grep":                    # after the view: every copy of the first changed line with its lines around
+            cid, am = self.call("run_command", {"command": check_cmd})
+            msgs += [am, {"role": "tool", "tool_call_id": cid, "content": tool_msg(check_res)}]
         if pre:                                   # the first change, done: its diff is the only view of the new text
             cid, am = self.call("edit_file", {"filepath": rel, "new_string": pre[1], "old_string": pre[0]})
             res = ws.edit_file(ctx, rel, pre[0], pre[1])
@@ -1083,7 +1132,7 @@ class Builder:
                "patch_sha": None, "source": "edit_drill", "resolved": None, "policy_model": self.model,
                "sampling": dict(self.sampling, max_tool_calls=28, max_time_minutes=7), "env_fingerprint": None,
                "family": family, "distance": len(others) + (dup_seen == "grep"), "fillers": dict(got), "site_line": i + 1, "old_lines": b - a,
-               "window": [a + 1, b], "dup_seen": dup_seen,
+               "window": [a + 1, b], "dup_seen": dup_seen, "copies": len(dup_at) + 1, "check": False,
                "mutation": site["kind"], "scope": site["scope"], "verify": verify, "tools": self.tools}
         if pre:
             rec["pre_kind"] = pre[2]["kind"]
@@ -1140,7 +1189,19 @@ class Builder:
             rec["failed_old"] = bad
             if state:
                 rec["retry_state"] = state
-            if state == "reread_resent":          # the fresh view is already in context: the correct edit
+            vis = in_view() | (check_lines if dup_seen == "grep" else set()) | \
+                (set(range(rs - 1, re_)) if state == "reread_resent" else set())
+            if several_fail and not need() <= vis:  # the copies are still out of sight: the check, then the edit
+                check = {"id": None, "name": "run_command", "args": json.dumps({"command": check_cmd}, ensure_ascii=False)}
+                cid, am = self.call("run_command", {"command": check_cmd})
+                msgs2 = msgs + [am, {"role": "tool", "tool_call_id": cid, "content": tool_msg(check_res)}]
+                c1 = one(1, msgs, check)
+                c1["seen"] = _ranges(vis)         # score: a read of only these lines again is not a check
+                rec["calls"], rec["check"] = [c1, one(2, msgs2, edit)], True
+            elif several_fail:                    # every copy and its lines are in sight: the edit that tells them apart
+                rec["calls"] = [one(1, msgs, edit)]
+                rec["dup_seen"] = "in_view" if dup_seen == "hidden" else dup_seen
+            elif state == "reread_resent":        # the fresh view is already in context: the correct edit
                 rec["calls"] = [one(1, msgs, edit)]
             else:
                 cid, am = self.call("read_file", {"filepath": rel, "start_line": rs, "end_line": re_})
@@ -1155,6 +1216,30 @@ class Builder:
         (Path(root) / rel).write_text(content)
         self.why = None if ok else "apply"
         return rec if ok else None
+
+
+def grep_pattern(probe, lines):
+    """what the check greps for: the changed line itself, or — when it holds quotes, `$`, a backtick or a backslash, which
+    a model rarely escapes right inside a shell command — its longest piece without them (≥ 8 chars) that matches the
+    same lines of the file; None if there is none"""
+    if not re.search(r"['\"$`\\]", probe):
+        return probe
+    want = [k for k, x in enumerate(lines) if probe in x]
+    for piece in sorted({x.strip() for x in re.split(r"['\"$`\\]", probe)}, key=len, reverse=True):
+        if len(piece) >= 8 and [k for k, x in enumerate(lines) if piece in x] == want:
+            return piece
+    return None
+
+
+def _ranges(xs):
+    """0-based line set → [[first, last], …] 1-based inclusive"""
+    out = []
+    for x in sorted(xs):
+        if out and x + 1 == out[-1][1] + 1:
+            out[-1][1] = x + 1
+        else:
+            out.append([x + 1, x + 1])
+    return out
 
 
 def lib_files(lib, min_lines):
@@ -1191,8 +1276,9 @@ def build(a):
           f"duplicate sites (file, line, kind) and overlapping answer windows rejected · ≤ {a.file_cap} drills per file · "
           f"libraries kept level (one with 60 misses in a row counts as used up) · greps: {RARE_SHARE} a name used ≤ {RARE_NAME}× "
           f"in the library, else any, {EMPTY_GREP} of them a typo that finds "
-          f"nothing · repeated changed lines: another copy always in context (view widened to it {DUP_VIEW}, else "
-          f"grep -nF right after the view) · block family from {block_libs or 'nothing (no --block-libs): off'}: sites in a "
+          f"nothing · repeated changed lines: every copy with the lines around it in context (decidable: in the view, the "
+          f"view widened to them {DUP_VIEW} (+ {NEED_MARGIN} lines each side), else grep -nF -C {CHECK_CONTEXT} after the view; after a several-matches failure with "
+          f"the copies out of sight that grep is target 1 and the edit target 2; ≤ {CHECK_COPIES} copies) · block family from {block_libs or 'nothing (no --block-libs): off'}: sites in a "
           f"repeated {BLOCK_LINES}-line block, shortest unique span {BLOCK_LINES}-{BLOCK_CAP} lines, {BLOCK_FAIL} first fail "
           f"on the longest repeating span · retry errors by weight {dict(zip(*RETRY_ERRORS))} · retry loop states "
           f"{dict(zip(*RETRY_STATES))} · retry failed old_string lines by weight {dict(zip(*FAILED_LINES))} (7-8 / 9-12 / 13-20 / "
@@ -1285,6 +1371,7 @@ def build(a):
             st[f"ok_{fam}"] += 1
             st[f"kind_{rec['mutation']}"] += 1
             st[f"dup_seen_{rec['dup_seen']}"] += 1
+            st["check_chain"] += bool(rec.get("check"))
             st[f"lib_{lib}"] += 1
             span[min(rec["old_lines"], 6)] += 1
             if rec.get("corruption"):
@@ -1398,16 +1485,36 @@ def drill_file(rec, cache):
 def call_outcome(rec, call, m, cache):
     """one decoded reply against its target → (outcome, the model's edit args or None). Outcomes: intended,
     applied_other_change, several_matches, not_found, wrong_file, bad_args, other_tool:<name>, same_tool (a read_file
-    target answered by read_file of the right file), edit_intended_early (a read_file target answered by the correct
-    edit at once: also right), no_call, cut_off"""
+    target answered by read_file of the right file), edit_intended_early (a read_file or check target answered by the
+    correct edit at once: also right), no_call, cut_off. A check target (run_command: the grep after a several-matches
+    failure, B-3r): checked (a grep / sed / cat … naming the file, or a read_file of it that reaches lines not shown
+    yet) · reread_seen (read_file of lines already shown) · edit_again (another edit that is not the answer: the loop) ·
+    other_command"""
     from swegemma.edit import apply_replacement
     tgt = rec["calls"][call - 1]["target"]["tool_calls"][0]
     v = rec["verify"]
     got = (m.get("tool_calls") or [None])[0]
     if not got:
         return ("no_call" if m.get("finish_reason") != "length" else "cut_off"), None
+    if tgt["name"] == "run_command" and got["name"] in ("run_command", "read_file"):
+        try:
+            ga = json.loads(got["args"]) if isinstance(got["args"], str) else got["args"]
+        except (json.JSONDecodeError, TypeError):
+            ga = None
+        if not isinstance(ga, dict):
+            return "bad_args", None
+        if got["name"] == "run_command":
+            cmd = str(ga.get("command") or "")
+            return ("checked" if os.path.basename(v["path"]) in cmd and
+                    re.search(r"\b(grep|rg|sed|awk|cat|nl|head|tail)\b", cmd) else "other_command"), None
+        if str(ga.get("filepath", "")).removeprefix("/workspace/") != v["path"]:
+            return "wrong_file", None
+        seen = {x for s_, e_ in rec["calls"][call - 1].get("seen") or [] for x in range(s_, e_ + 1)}
+        if not isinstance(ga.get("start_line"), int) or not isinstance(ga.get("end_line"), int):
+            return "checked", None                # the whole file
+        return ("checked" if set(range(ga["start_line"], ga["end_line"] + 1)) - seen else "reread_seen"), None
     if got["name"] != tgt["name"]:
-        if tgt["name"] == "read_file" and got["name"] == "edit_file":   # the correct edit at once is also right
+        if tgt["name"] in ("read_file", "run_command") and got["name"] == "edit_file":   # the correct edit at once is also right
             try:
                 ga = json.loads(got["args"]) if isinstance(got["args"], str) else got["args"]
                 r = apply_replacement(drill_file(rec, cache), ga["old_string"], ga["new_string"])
@@ -1416,6 +1523,8 @@ def call_outcome(rec, call, m, cache):
                     return "edit_intended_early", ga
             except (ValueError, KeyError, TypeError, json.JSONDecodeError):
                 pass
+            if tgt["name"] == "run_command":
+                return "edit_again", None
         return f"other_tool:{got['name']}", None
     try:
         ga = json.loads(got["args"]) if isinstance(got["args"], str) else got["args"]
@@ -1473,6 +1582,12 @@ def score(a):
     if rr:
         print(f"  recover call 1 (target read_file): same tool {sum(r['outcome'] == 'same_tool' for r in rr)} / {len(rr)} · "
               f"the correct edit at once (also right) {sum(r['outcome'] == 'edit_intended_early' for r in rr)}")
+    ck = [r for r in rows if r["target"] == "run_command"]
+    if ck:
+        kc = Counter(r["outcome"].split(":")[0] for r in ck)
+        print(f"   check after a several-matches failure (target: grep the line with context; copies out of sight): n {len(ck)} · "
+              + " · ".join(f"{k} {v} ({100 * v / len(ck):.0f}%)" for k, v in kc.most_common())
+              + f" → checked or the right edit at once {100 * check_rate(ck):.0f}%")
     rs_ = [r for r in edits if "resend" in r]
     if rs_:
         print(f"   resend (edit targets after a failed edit in context: the model's old_string is the failed one): "
@@ -1505,7 +1620,8 @@ def score(a):
                 w.write(json.dumps(r) + "\n")
     nb = [r for r in edits if r["family"] != "block" and "old_lines" in r]
     summ = {"records": a.records, "decoded": a.decoded, "n": len(edits), **metrics(edits),
-            "answer_median": med([r["old_lines"] for r in nb]), "target_median": med([r["tgt_lines"] for r in nb])}
+            "answer_median": med([r["old_lines"] for r in nb]), "target_median": med([r["tgt_lines"] for r in nb]),
+            "check_n": len(ck), "checked": check_rate(ck) if ck else None}
     if a.baseline:
         base = {(r["id"], r["call"]): r for r in map(json.loads, open(a.baseline)) if r["target"] == "edit_file"}
         pairs = [(base[(r["id"], r["call"])], r) for r in edits if (r["id"], r["call"]) in base]
@@ -1521,14 +1637,21 @@ def score(a):
             d = 100 * (c_ - b_) / (len(pairs) or 1)
             print(f"   {key}: both {both} · only baseline {b_} · only this run {c_} · change {d:+.1f} pts · p {p_:.3g}"
                   f" ({'better' if (d > 0) == good and d else 'worse' if d else 'same'})")
-        for k in ("intended", "several", "not_found_far", "parsed", "resend"):
+        bck = [r for r in map(json.loads, open(a.baseline)) if r["target"] == "run_command"]
+        summ["base"]["checked"] = check_rate(bck) if bck else None
+        for k in ("intended", "several", "not_found_far", "parsed", "resend", "checked"):
             if summ["base"].get(k) is not None and summ.get(k) is not None:
                 summ[f"d_{k}"] = summ[k] - summ["base"][k]
         print("   " + " · ".join(f"{k} {100 * summ['base'][k]:.0f} → {100 * summ[k]:.0f} %" for k in
-                                 ("intended", "several", "not_found_far", "parsed", "resend") if summ["base"].get(k) is not None
+                                 ("intended", "several", "not_found_far", "parsed", "resend", "checked") if summ["base"].get(k) is not None
                                  and summ.get(k) is not None))
     if a.summary:
         json.dump(summ, open(a.summary, "w"), indent=1)
+
+
+def check_rate(ck):
+    """share of check targets answered by a check (or by the right edit at once)"""
+    return sum(r["outcome"] in ("checked", "edit_intended_early") for r in ck) / (len(ck) or 1)
 
 
 def metrics(edits):
@@ -1554,9 +1677,11 @@ def mcnemar(b, c):
 
 # the tiers gate1 is read with (2026-11-09; relative to gate0 on the same drills: the drills oversample repeated lines, so
 # the 31B-level absolute gate is far off — E4B's real first-try several-matches rate is 5 %, the drills' 20 %)
+# B-3r: the block slice's line is the check after a several-matches failure (its drills are decidable now: the old line,
+# several matches −12 pts on answers the view could not justify, measured a guess); its several-matches rate may not rise
 TIER_AB = {"d_intended": 0.05, "d_several": -0.05, "p_several": 0.05, "nf_slack": 0.02, "parsed": 0.99,
-           "block_d_several": -0.12, "retry_d_intended": 0.10}
-TIER_STRETCH = {"intended": 0.72, "several": 0.10, "block_several": 0.50, "retry_intended": 0.60}
+           "block_d_checked": 0.20, "block_d_several": 0.0, "retry_d_intended": 0.10}
+TIER_STRETCH = {"intended": 0.72, "several": 0.10, "block_several": 0.30, "block_checked": 0.70, "retry_intended": 0.60}
 
 
 def tier(a):
@@ -1586,8 +1711,14 @@ def tier(a):
     chk("answer length", m["answer_median"] is not None and m["answer_median"] <= m["target_median"],
         f"non-block median {m['answer_median']} lines ≤ the target's {m['target_median']}")
     if blk:
+        if blk.get("check_n"):
+            chk("block slice check after several matches", blk.get("d_checked") is not None and blk["d_checked"] >= t["block_d_checked"],
+                f"{100 * (blk['base'].get('checked') or 0):.0f} → {100 * blk['checked']:.0f} % of {blk['check_n']} check targets "
+                f"(need ≥ +{100 * t['block_d_checked']:.0f} pts)")
+        else:
+            print("   – block slice: no check targets in this build (B-3q drills): the check line is not read")
         chk("block slice several matches", blk.get("d_several") is not None and blk["d_several"] <= t["block_d_several"],
-            f"{100 * blk['base']['several']:.0f} → {100 * blk['several']:.0f} % (need ≤ {100 * t['block_d_several']:.0f} pts)")
+            f"{100 * blk['base']['several']:.0f} → {100 * blk['several']:.0f} % (no more: ≤ {100 * t['block_d_several']:+.0f} pts)")
     if rt:
         chk("retry slice hit", rt.get("d_intended") is not None and rt["d_intended"] >= t["retry_d_intended"],
             f"{100 * rt['base']['intended']:.0f} → {100 * rt['intended']:.0f} % (need ≥ +{100 * t['retry_d_intended']:.0f})")
@@ -1597,10 +1728,12 @@ def tier(a):
     ab = all(ok)
     s_ = TIER_STRETCH
     st = m["intended"] >= s_["intended"] and m["several"] <= s_["several"] and \
-        (not blk or blk["several"] <= s_["block_several"]) and (not rt or rt["intended"] >= s_["retry_intended"])
+        (not blk or (blk["several"] <= s_["block_several"] and (blk.get("checked") is None or blk["checked"] >= s_["block_checked"]))) \
+        and (not rt or rt["intended"] >= s_["retry_intended"])
     g31 = m["intended"] >= 0.80 and m["not_found_far"] <= 0.10 and m["several"] <= 0.03 and m["parsed"] >= 0.99
     print(f"-- stretch tier: hit {100 * m['intended']:.1f} % (≥ {100 * s_['intended']:.0f}) · several {100 * m['several']:.1f} % "
-          f"(≤ {100 * s_['several']:.0f})" + (f" · block slice several {100 * blk['several']:.1f} % (≤ {100 * s_['block_several']:.0f})" if blk else "")
+          f"(≤ {100 * s_['several']:.0f})" + (f" · block slice several {100 * blk['several']:.1f} % (≤ {100 * s_['block_several']:.0f})"
+                                    + (f" · checks {100 * blk['checked']:.0f} % (≥ {100 * s_['block_checked']:.0f})" if blk.get("checked") is not None else "") if blk else "")
           + (f" · retry slice hit {100 * rt['intended']:.1f} % (≥ {100 * s_['retry_intended']:.0f})" if rt else "") + f" → {'PASS' if st else 'not yet'}")
     print(f"== tier {a.name}: A/B tier {'PASS → run the agent A/B' if ab else 'not passed → stop, send the photos'} · "
           f"stretch {'PASS' if st else 'not yet'} · 31B-level gate {'PASS' if g31 else 'not yet'}")
@@ -1625,9 +1758,9 @@ def think(a):
         if not m.get("reasoning") or len(m["reasoning"]) > a.max_thought_chars:
             why["no_or_long_thought"] += 1
             continue
-        out_, _ = call_outcome(rec, m["call"], m, cache)
-        if out_ in ("intended", "same_tool"):     # the thought led to the checked answer itself (read: same file)
-            best.setdefault(key, m["reasoning"])
+        out_, ga_ = call_outcome(rec, m["call"], m, cache)
+        if out_ in ("intended", "same_tool", "checked"):   # the thought led to a right call (read: same file; check: a check)
+            best.setdefault(key, (m["reasoning"], ga_ if out_ == "intended" else None))
             why["kept:" + out_] += 1
         else:                                     # a thought planning another anchor must not sit before the answer
             why["dropped:" + out_.split(":")[0]] += 1
@@ -1644,9 +1777,19 @@ def think(a):
                 st["kept_earlier"] += 1
                 src_fam[(rec["family"], c.get("thought_source"))] += 1
                 continue
-            th = best.get((iid, c["call"]))
+            th, own = best.get((iid, c["call"]), (None, None))
             if th:
                 c["target"]["reasoning"], c["thought_source"] = th, a.source
+                tc0 = c["target"]["tool_calls"][0]
+                if a.label == "own" and own and k + 1 == len(rec["calls"]):
+                    # --label own (B-3r): the edit that followed this thought becomes the label (it gave the intended
+                    # file). Before, the label stayed the builder's answer, so a thought planning a one-line old_string
+                    # could sit before a four-line one (the box's audit: of the thoughts that state their old_string,
+                    # 10 of 12 points did not match the trained call)
+                    st["own_label"] += 1
+                    st["own_differs"] += own.get("old_string") != json.loads(tc0["args"]).get("old_string")
+                    tc0["args"] = json.dumps(own, ensure_ascii=False)
+                    c["label_source"] = "own"
                 c["label_scope"] = scope            # tool_call: the thought is context · full: the thought is trained too
                 st["native"] += 1
                 src_fam[(rec["family"], a.source)] += 1
@@ -1671,8 +1814,10 @@ def think(a):
         f"{f} " + "/".join(f"{x} {src_fam[(f, x)]}" for x in srcs if src_fam[(f, x)]) for f in sorted({k[0] for k in src_fam})))
     print(f"== think: {st['native']} / {st['calls']} target calls got a thought from this decode (source {a.source}, label "
           f"scope {scope}: {'the thought is context only' if scope == 'tool_call' else 'the thought is trained too'}; "
-          f"{a.decoded}, ≤ {a.max_thought_chars} chars, only from a sample whose own call was the checked answer: edit → "
-          f"the intended file, read → the right file)" + (f" · {st['kept_earlier']} kept from an earlier think (--fill)" if a.fill else "")
+          f"{a.decoded}, ≤ {a.max_thought_chars} chars, only from a sample whose own call was right: edit → "
+          f"the intended file, read → the right file, check → a check) · label rule {a.label}: "
+          + (f"{st['own_label']} edit targets now carry the sample's own call ({st['own_differs']} with another old_string "
+             f"than the builder's answer)" if a.label == "own" else "the builder's answer stays the label") + (f" · {st['kept_earlier']} kept from an earlier think (--fill)" if a.fill else "")
           + f"; the rest keep an empty thought · {len(recs)} records → {out}")
 
 
@@ -1710,7 +1855,7 @@ def why(a):
             fam_use.setdefault(rec["family"], Counter())[key] += 1
         tk = (m["instance_id"], m["call"])
         right_len.setdefault(tk, None)
-        if key in ("intended", "same_tool") and th:        # think's rule, without the cap: the shortest such thought
+        if key in ("intended", "same_tool", "checked") and th:   # think's rule, without the cap: the shortest such thought
             right_len[tk] = min(len(th), right_len[tk] or len(th))
         if key != "other_tool":
             continue
@@ -1818,6 +1963,9 @@ def main():
     t.add_argument("--source", default="native", help="thought_source written for this decode's thoughts (e.g. 31b)")
     t.add_argument("--scope", default="tool_call", choices=["tool_call", "full"],
                    help="label scope of the calls this decode fills: tool_call = thought is context, full = thought trained too")
+    t.add_argument("--label", default="own", choices=["own", "checked"],
+                   help="own: an edit target takes the call of the sample its thought comes from (thought and call agree); "
+                        "checked: the builder's answer stays the label (before 2026-11-10)")
     t.add_argument("--out", required=True)
     w = sub.add_parser("why", help="read-only: what a decode did instead of the answer (thought state, outcome, the other tool)")
     w.add_argument("records")

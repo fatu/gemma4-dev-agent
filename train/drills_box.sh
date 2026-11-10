@@ -14,6 +14,9 @@
 #   GPU=0 bash train/drills_box.sh gate1    # each epoch's adapter on the held-out drills, paired against gate0's per-drill
 #                                           # outcomes (McNemar), verdict by tier (edit_drills.py TIER_AB / TIER_STRETCH)
 #   bash train/drills_box.sh subs           # the chosen epoch → runs/adapters/$NAME + a build check
+# B-3r (2026-11-10): SET=_r in front of every stage → this build's drills live in runs/sft/drills_r*, its decodes and
+#   gate files in runs/drills_r (an earlier build stays). The builder now makes every answer decidable from the context
+#   and, after a several-matches failure, asks for a grep with context first (train/edit_drills.py "Duplicates seen")
 # Several cards (B-3q, 2026-11-09): GPUS=0,1,2,3 (default: GPU if set, else every card nvidia-smi lists).
 #   gate0 / think / think31   one server per card (ports DPORT, DPORT+1, …); decode spreads the target calls over them
 #                             (DCONC requests per server), one output file as before → time ÷ cards
@@ -49,7 +52,13 @@ N_TRAIN="${N_TRAIN:-3600}"; N_HELD="${N_HELD:-300}"; FILE_CAP="${FILE_CAP:-30}"
 # B-3q (2026-11-09): only 478 of 1,500 drills at FAMILIES' weights exercised "a unique anchor while a repeat is in view"
 # (E4B's several-matches failure); ~1,500 such drills are the estimate for several matches ≤ 10 %: 3,600 drills at
 # these weights hold 1,489 of them (2,800 at milder weights: 1,139)
-TRAIN_FAMILIES="${TRAIN_FAMILIES:-copy=0.22,anchor=0.2,recover=0.18,stale=0.06,block=0.19,retry=0.15}"
+# B-3r (2026-11-10): the builder makes every answer decidable from the context, and after a several-matches failure the
+# first target is a grep with context. First-try anchor / block drills train the rarer real case (13 of E4B's 205 failed
+# edits in the all-129 run; 148 were further tries after a failure) → fewer anchor, more recover / retry; block is
+# drawn more often because about two thirds of its sites do not fit the check's context
+TRAIN_FAMILIES="${TRAIN_FAMILIES:-copy=0.22,anchor=0.08,recover=0.19,stale=0.05,block=0.27,retry=0.19}"
+SET="${SET:-}"             # a suffix for every data dir of this build (B-3r: SET=_r), so an earlier build's files stay
+THINK_LABEL="${THINK_LABEL:-own}"   # think: an edit target takes the call of the sample its thought comes from
 TRAIN_LIBS="${TRAIN_LIBS:-click,jinja2,attr,anyio,h11,werkzeug,packaging,markdown_it,yaml,dateutil}"
 HELD_LIBS="${HELD_LIBS:-sqlalchemy,tqdm,tenacity,starlette}"; N_BLOCK="${N_BLOCK:-80}"; N_RETRY="${N_RETRY:-80}"
 BLOCK_LIBS="${BLOCK_LIBS:-typer,openai,networkx}"; HELD_BLOCK_LIBS="${HELD_BLOCK_LIBS:-sqlmodel,huggingface_hub,pandas}"
@@ -60,12 +69,13 @@ DQ="${DQ:-runs/dequant/gemma-4-E4B-dq}"; NAME="${NAME:-e4b_drill}"; OUTD="runs/s
 E4B=google/gemma-4-E4B-it-qat-w4a16-ct; ALIAS=gemma-4-e4b-it-qat-w4a16-ct; TOK="${TOK:-$E4B}"
 E31=google/gemma-4-31B-it-qat-w4a16-ct; ALIAS31=gemma-4-31b-it-qat-w4a16-ct
 THINK31_SAMPLES="${THINK31_SAMPLES:-2}"; THINK31_MAX_CHARS="${THINK31_MAX_CHARS:-3000}"; THINK31_SCOPE="${THINK31_SCOPE:-full}"
-NATIVE="${NATIVE:-runs/sft/drills_native}"; MIX="${MIX:-runs/sft/drills_mix.rendered.jsonl}"
+NATIVE="${NATIVE:-runs/sft/drills${SET}_native}"; MIX="${MIX:-runs/sft/drills${SET}_mix.rendered.jsonl}"
 NOAD=runs/noadapter      # what serve "" mounts: an empty dir (no adapter)
-D=runs/sft/drills; H=runs/sft/drills_heldout; HB=runs/sft/drills_heldout_block; HR=runs/sft/drills_heldout_retry; G=runs/drills
+D=runs/sft/drills$SET; H=runs/sft/drills${SET}_heldout; HB=runs/sft/drills${SET}_heldout_block; HR=runs/sft/drills${SET}_heldout_retry; G=runs/drills$SET
+mkdir -p $G
 SFT="--base $DQ --max-len 32768 --epochs ${EPOCHS:-2} --lr ${LR:-3e-5} --warmup 0.05 --accum ${ACCUM:-16} --r ${R:-16} --alpha ${ALPHA:-16} --clip 1.0 --eval-every ${EVAL_EVERY:-100} --seed 0 ${SFT_EXTRA:-}"
 if [ "$KILL_ALL" = 0 ] && [ "$DPORT" = 8000 ]; then echo "KILL_ALL=0 needs DPORT ≠ 8000 (the lanes serve on 8000)"; exit 1; fi
-echo "drills_box $STEP · cards $GPUS ($NG; the box has ${ALLGPUS:-?}) · server ports ${DPORT}-$((DPORT + NG - 1)) · $DCONC requests per server · gate1 names [$NAMES] · train ranks port $DIST_PORT · stops $([ "$KILL_ALL" = 1 ] && echo 'every vllm serve' || echo "only its own (ports from $DPORT)") · train $N_TRAIN from $TRAIN_LIBS (block: $BLOCK_LIBS; families $TRAIN_FAMILIES; ≤ $FILE_CAP per file) · held out $N_HELD from $HELD_LIBS (block: $HELD_BLOCK_LIBS) + block slice $N_BLOCK + retry slice $N_RETRY · system $SYSTEM · drop tools [${DROP_TOOLS}] · tools from $TOOLS_FROM · own $OWN · drill share ≤ $DRILL_SHARE · think samples $THINK_SAMPLES · think31 samples $THINK31_SAMPLES ≤ $THINK31_MAX_CHARS chars scope $THINK31_SCOPE · native $NATIVE · mix $MIX · sft: $SFT · name $NAME"
+echo "drills_box $STEP · cards $GPUS ($NG; the box has ${ALLGPUS:-?}) · server ports ${DPORT}-$((DPORT + NG - 1)) · $DCONC requests per server · gate1 names [$NAMES] · train ranks port $DIST_PORT · stops $([ "$KILL_ALL" = 1 ] && echo 'every vllm serve' || echo "only its own (ports from $DPORT)") · train $N_TRAIN from $TRAIN_LIBS (block: $BLOCK_LIBS; families $TRAIN_FAMILIES; ≤ $FILE_CAP per file) · held out $N_HELD from $HELD_LIBS (block: $HELD_BLOCK_LIBS) + block slice $N_BLOCK + retry slice $N_RETRY · system $SYSTEM · drop tools [${DROP_TOOLS}] · tools from $TOOLS_FROM · own $OWN · drill share ≤ $DRILL_SHARE · think samples $THINK_SAMPLES · think31 samples $THINK31_SAMPLES ≤ $THINK31_MAX_CHARS chars scope $THINK31_SCOPE · native $NATIVE · mix $MIX · sft: $SFT · name $NAME · set '${SET}' (drills $D, outputs $G) · think label $THINK_LABEL"
 mkdir -p "$G"
 
 stop_serve() {   # KILL_ALL=1: every vllm serve on the box; 0: only ours (by their ports)
@@ -100,7 +110,7 @@ case "$STEP" in
 build)
   [ -f "$TOOLS_FROM" ] || { echo "TOOLS_FROM=$TOOLS_FROM: no traj log"; exit 1; }
   # a new training set: an earlier build's thoughts, mix and gate0 no longer belong to it
-  rm -rf ${D}_native ${D}_native.rendered.jsonl ${D}_native.render.log ${D}_native31 ${D}_native31.rendered.jsonl ${D}_native31.render.log runs/sft/drills_mix.rendered.jsonl runs/sft/drills_mix31.rendered.jsonl $G/gate0*.out.jsonl $G/gate0*.sum.json
+  rm -rf ${D}_native ${D}_native.rendered.jsonl ${D}_native.render.log ${D}_native31 ${D}_native31.rendered.jsonl ${D}_native31.render.log runs/sft/drills${SET}_mix.rendered.jsonl runs/sft/drills${SET}_mix31.rendered.jsonl $G/gate0*.out.jsonl $G/gate0*.sum.json
   echo "  removed the earlier build's ${D}_native, drills_mix and gate0 outcomes (think, mix and gate0 run again on the new sets)"
   $PY train/edit_drills.py build --libs "$TRAIN_LIBS" --block-libs "$BLOCK_LIBS" --n "$N_TRAIN" --seed 0 --families "$TRAIN_FAMILIES" --file-cap "$FILE_CAP" --tools-from "$TOOLS_FROM" \
     --drop-tools "$DROP_TOOLS" --system "$SYSTEM" --out $D 2>&1 | grep -v LiteLLM | cut -c1-300
@@ -116,7 +126,7 @@ gate0)
   $PY train/edit_drills.py decode $H --url $URL --conc $DCONC --model $ALIAS --temperature 0 --out $G/heldout_base_t0.jsonl 2>&1 | grep -E "^==|^edit_drills"
   $PY train/edit_drills.py score $H $G/heldout_base_t0.jsonl --outcomes $G/gate0.out.jsonl --summary $G/gate0.sum.json 2>&1 | grep -v LiteLLM | tee $G/gate0.txt
   $PY train/edit_drills.py decode $HB --url $URL --conc $DCONC --model $ALIAS --temperature 0 --out $G/heldblock_base_t0.jsonl 2>&1 | grep -E "^==|^edit_drills"
-  echo "-- block slice"; $PY train/edit_drills.py score $HB $G/heldblock_base_t0.jsonl --outcomes $G/gate0_block.out.jsonl --summary $G/gate0_block.sum.json 2>&1 | grep -v LiteLLM | tee $G/gate0_block.txt | grep -E "edit outcomes|block slice"
+  echo "-- block slice"; $PY train/edit_drills.py score $HB $G/heldblock_base_t0.jsonl --outcomes $G/gate0_block.out.jsonl --summary $G/gate0_block.sum.json 2>&1 | grep -v LiteLLM | tee $G/gate0_block.txt | grep -E "edit outcomes|block slice|check after|family|repeated"
   $PY train/edit_drills.py decode $HR --url $URL --conc $DCONC --model $ALIAS --temperature 0 --out $G/heldretry_base_t0.jsonl 2>&1 | grep -E "^==|^edit_drills"
   echo "-- retry slice"; $PY train/edit_drills.py score $HR $G/heldretry_base_t0.jsonl --outcomes $G/gate0_retry.out.jsonl --summary $G/gate0_retry.sum.json 2>&1 | grep -v LiteLLM | tee $G/gate0_retry.txt | grep -E "edit outcomes|resend|recover call 1"
   stop_serve
@@ -125,15 +135,15 @@ gate0)
 think)
   serve ""
   $PY train/edit_drills.py decode $D --url $URL --conc $DCONC --model $ALIAS --temperature 0.7 --samples "$THINK_SAMPLES" --out $G/train_think_t07.jsonl 2>&1 | grep --line-buffered -E "^==|^edit_drills|^  [0-9]+000 /"
-  $PY train/edit_drills.py think $D $G/train_think_t07.jsonl --out ${D}_native 2>&1 | grep -E "^==|^   (samples|calls with)"
-  $PY train/edit_drills.py score $D $G/train_think_t07.jsonl 2>&1 | grep -E "edit outcomes|^== gate"   # E4B on its own training drills
+  $PY train/edit_drills.py think $D $G/train_think_t07.jsonl --label "$THINK_LABEL" --out ${D}_native 2>&1 | grep -E "^==|^   (samples|calls with)"
+  $PY train/edit_drills.py score $D $G/train_think_t07.jsonl 2>&1 | grep -E "edit outcomes|check after|^== gate"   # E4B on its own training drills
   stop_serve
   echo "📷 the '== think' line, the 'samples:' and 'calls with a thought by family' lines and the two score lines" ;;
 think31)
   [ -d ${D}_native ] || { echo "no ${D}_native: run think first (the 31B fills only what E4B left empty)"; exit 1; }
   serve "" $E31
   $PY train/edit_drills.py decode ${D}_native --only-empty --url $URL --conc $DCONC --model $ALIAS31 --temperature 0.7 --samples "$THINK31_SAMPLES" --out $G/train_think31_t07.jsonl 2>&1 | grep --line-buffered -E "^==|^edit_drills|^  [0-9]+000 /"
-  $PY train/edit_drills.py think ${D}_native $G/train_think31_t07.jsonl --fill --source 31b --scope "$THINK31_SCOPE" --max-thought-chars "$THINK31_MAX_CHARS" --out ${D}_native31 2>&1 | grep -E "^==|^   (samples|calls with|thought source)"
+  $PY train/edit_drills.py think ${D}_native $G/train_think31_t07.jsonl --fill --source 31b --scope "$THINK31_SCOPE" --max-thought-chars "$THINK31_MAX_CHARS" --label "$THINK_LABEL" --out ${D}_native31 2>&1 | grep -E "^==|^   (samples|calls with|thought source)"
   stop_serve
   echo "📷 the decode line, '== think', 'samples:', 'thought source by family'" ;;
 mix)
@@ -226,7 +236,8 @@ gate1)
   GP=()      # wait for these only: a bare `wait` would also wait for the servers
   for j in "${!AD[@]}"; do gate_one "${AD[$j]}" "${URLS[$((j % ${#URLS[@]}))]}" > $G/gate1_run_${AD[$j]}.log 2>&1 & GP+=($!); done; wait "${GP[@]}"
   for a in "${AD[@]}"; do cat $G/gate1_run_$a.log; done
-  echo "-- no adapter (gate0)"; grep -E "edit outcomes|^== gate|block slice|answer length|resend" $G/gate0.txt $G/gate0_block.txt $G/gate0_retry.txt 2>/dev/null || echo "  (no gate0 yet)"
+  for a in "${AD[@]}"; do echo "-- $a, block slice"; grep -E "edit outcomes|check after|block slice" $G/gate1_block_$a.txt; done
+  echo "-- no adapter (gate0)"; grep -E "edit outcomes|^== gate|block slice|check after|answer length|resend" $G/gate0.txt $G/gate0_block.txt $G/gate0_retry.txt 2>/dev/null || echo "  (no gate0 yet)"
   stop_serve
   echo "📷 each adapter's '-- <name>' block: edit outcomes, gate, answer length, and the whole 'edit_drills tier' block (✓/✗ lines + '== tier'); full scores in $G/gate1_*.txt" ;;
 subs)
@@ -244,7 +255,7 @@ PY
 )
   EP="${EPOCH:-$BEST}"
   say "subs: gate1 winner (A/B tier PASS, highest hit) epoch ${BEST:-none} → epoch ${EP:-?} (EPOCH=${EPOCH:-auto}) → runs/adapters/$NAME"
-  [ -n "$EP" ] || { echo "no epoch of $NAME passed the A/B tier (runs/drills/tier_${NAME}_epoch*.txt): stop here, or name one with EPOCH=<n>"; exit 1; }
+  [ -n "$EP" ] || { echo "no epoch of $NAME passed the A/B tier ($G/tier_${NAME}_epoch*.txt): stop here, or name one with EPOCH=<n>"; exit 1; }
   [ -f "$OUTD/epoch$EP/adapter_model.safetensors" ] || { echo "no $OUTD/epoch$EP/adapter_model.safetensors"; exit 1; }
   rm -rf "runs/adapters/$NAME"; mkdir -p runs/adapters; cp -r "$OUTD/epoch$EP" "runs/adapters/$NAME"
   python3 -c "import json,sys;c=json.load(open(sys.argv[1]));print('  adapter_config: r',c.get('r'),'alpha',c.get('lora_alpha'),'base',c.get('base_model_name_or_path'))" "runs/adapters/$NAME/adapter_config.json"
