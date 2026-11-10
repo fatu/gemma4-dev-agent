@@ -687,7 +687,7 @@ B-3p's two runs did not pass gate 1 (B-3p below: kept as the record, **do not ru
   still improving at epoch 2). Every epoch's adapter goes through gate1.
 - **E4B's rollouts are reused** (`runs/sft/rebenche4b.rendered.jsonl` from B-3p's step 4): no new rollouts.
 
-### B-3q after gate 1 (2026-11-10) — two read-only commands, 📷, then wait
+### B-3q after gate 1 (2026-11-10) — START HERE: steps 1–2 now (read-only), 📷, then step 3 only on the user's word
 
 Where it stands (steps 0–6 ran 2026-11-09 → 11-10, 8 cards):
 - **gate 1, adapter A:** no epoch passed the A/B tier. Epoch 1 passed 6 of the 8 lines (hit 60 → 67 %, several matches
@@ -713,7 +713,23 @@ but the two text files. A minute or two each:
 the outcome by thought state, how many targets a higher cap would fill, which tool was called instead of the edit (a
 read of the same lines again, of other lines, the whole file, a grep …), and all of it by family.
 
-**3. Stop.** No `subs`, no A/B, no retraining, no `think31` rerun and nothing deleted until the laptop answers.
+**3. Only when the user at the box says "run the A/B": the exploratory A/B with epoch 1** (8 cards, ~2 h). No epoch
+passed the tier, so this is outside the gate rule and its result is reported as exploratory; it answers whether the
+drill gain carries over to real tasks at all.
+- **Disk first.** About 20 GB are needed (the box's estimate), 12 GB were free. Show the user
+  `df -h . | tail -1; du -sh runs/* ~/.cache/huggingface/hub/* 2>/dev/null | sort -h | tail -15` and delete only what
+  the user names. Keep `runs/dequant` (every retraining needs it), `runs/sft*`, `runs/drills` and `runs/adapters`. The 31B
+  download of step 3b is the natural candidate (not used by this A/B, can be downloaded again).
+- **The adapter** (`EPOCH=1` is required: without a passing tier `subs` stops):
+  ```bash
+  EPOCH=1 NAME=e4b_drill_q bash train/drills_box.sh subs
+  ```
+  📷 the subs lines. Go if the build check passes.
+- **The A/B:** the step-8 command block further down, unchanged (`NAME=e4b_drill_q`, `LANES=(0 1 2 3 4 5 6 7); PASSES="1"`),
+  then its readout lines. 📷 the per-arm resolved counts, both `edit_stats` blocks, `rulestats`, the drill-template count.
+
+**4. Stop.** Not without a new plan from the laptop: retraining, more thought sampling, a `think31` rerun with another
+cap, another teacher model, any other deletion. Append what ran to `runs/B3Q_RUN_LOG.md` as before.
 
 ### B-3q run order on the box (2026-11-09, code ≥ `614dc93` for steps 3–6: several cards) — one step at a time, 📷 after each
 
