@@ -687,11 +687,11 @@ B-3p's two runs did not pass gate 1 (B-3p below: kept as the record, **do not ru
   still improving at epoch 2). Every epoch's adapter goes through gate1.
 - **E4B's rollouts are reused** (`runs/sft/rebenche4b.rendered.jsonl` from B-3p's step 4): no new rollouts.
 
-### B-3q run order on the box (2026-11-09, code ≥ `55ecc01`) — one step at a time, 📷 after each
+### B-3q run order on the box (2026-11-09, code ≥ `1b08f32`) — one step at a time, 📷 after each
 
 | # | step | card(s) · time | 📷 | stop / go |
 |---|---|---|---|---|
-| 0 | `cd gemma4-dev-agent && git pull && git log --oneline -1 && ls -la runs/sft/rebenche4b.rendered.jsonl` | — | the commit line and the file line | commit `55ecc01` or later; the rollouts file must exist (else send the photo) |
+| 0 | `cd gemma4-dev-agent && git pull && git log --oneline -1 && ls -la runs/sft/rebenche4b.rendered.jsonl` | — | the commit line and the file line | commit `1b08f32` or later; the rollouts file must exist (else send the photo) |
 | 1 | `bash train/drills_box.sh build` | CPU · ~40 min | four `== drills` lines (2800 · 300 · 80 block slice · 80 retry slice) and the `families built:` line above each (the training one shows the B-3q weights) | any `Traceback`, or a set below its count → stop |
 | 2 | `GPU=0 bash train/drills_box.sh gate0` | 1 card · ~15 min | everything from `edit_drills score` down, the `-- block slice` and `-- retry slice` lines | none: this is the baseline every adapter is paired with (new held-out sets: not comparable with B-3p's 62 / 20) |
 | 3 | `GPU=0 nohup bash train/drills_box.sh think > runs/drills_think.log 2>&1 &` then `tail -8 runs/drills_think.log` when it ends | 1 card · ~4–8 h (`THINK_SAMPLES=2` halves it) | `== think`, `samples:`, `calls with a thought by family`, the two score lines | **no stop rule**: block / anchor / retry will have few thoughts (39 % / 28 % in B-3p); they train with an empty thought (decided 2026-11-08; the loss is on the tool call only) |
