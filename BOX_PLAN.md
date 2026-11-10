@@ -41,7 +41,18 @@ dropped too.
 
 ---
 
-## B-4 · Token-level distillation 31B → E4B, step S0: does the 31B point at E4B's own errors? (2026-11-10) — no training, ~1–1.5 h
+## B-4 · Token-level distillation 31B → E4B, step S0: does the 31B point at E4B's own errors? (2026-11-10) — ✓ S0 done 2026-11-10 · ⏸ next: S0b (code not pushed yet)
+
+**Status (2026-11-10).** S0 ran: of 88 not-found edits 56 were locatable; the 31B's top-1 continued the source at the first wrong
+token in 2 % (call) and 12 % (thought) → "stop" by the rule below. But most measured positions repeat a wrong text that is
+already in the context (48 of 56 calls; 39 of 48 thoughts), where any model copies; only 9 were where the text is first
+written. **Next, S0b** (laptop, not pushed yet): measure where each wrong text is first written in the trajectory (resends once),
+set apart texts written before the source was shown and sources whose continuation is not unique, add "the teacher prefers the
+right token", score E4B too (where the distillation signal lands), and re-measure the several-matches and run-before-submit lines;
+thresholds unchanged. On the box it will be `git pull` → `bash train/opd_box.sh student` → `bash train/opd_box.sh probe` (the 31B
+scores are reused). **Do not rerun S0 and do not start S1.** Keep `runs/opd/s0/` (rows, recs, t31_*.npz).
+
+### S0 as it ran (kept as the record)
 
 **Idea.** E4B runs tasks itself; the 31B gives its top-20 next-token distribution at every token E4B wrote (thought, text,
 tool call); a LoRA is then trained toward it (reverse KL on E4B's own tokens: no format gap, the thought gets a signal
