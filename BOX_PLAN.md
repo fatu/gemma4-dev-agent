@@ -123,7 +123,10 @@ Nothing goes to Kaggle. Cost: own box only, ≈ 4 cards × 5–6 h + ~3 h CPU.
 **Result (2026-11-11).** No adapter 12 · 16 · 15 · 15 (mean 14.5); `e4b_rft` 14 · 11 · 11 · 13 (mean 12.25): −2.25, rule needs ≥ +3 → stop.
 The user agreed to the diagnostic (2026-11-11): it is the block below.
 
-### B-6-D · Diagnostic: does `e4b_rft` reproduce its own successes on the 67 training tasks? (2026-11-11) — START HERE: 8 cards, about 3–4 h, then 1 min CPU
+### B-6-D · Diagnostic: does `e4b_rft` reproduce its own successes on the 67 training tasks? (2026-11-11) — ✓ ran 2026-11-11: trained flip tasks 48 % → 47 % (within ± 10 pts): imitation of the resolved runs does not remove the variation
+
+**Result.** 8 adapter passes 27 · 28 · 26 · 25 · 24 · 24 · 23 · 25 (mean 25.25; no adapter 26.1 over 11). always 100 % → 99 % · flip in training
+48 % → 47 % · flip held out 39 % → 22 % (32 runs only) · never 0 % → 1 % · all 39 % → 38 %. No damage, no gain. B-6 is closed.
 
 It explains the stop, it does not reopen it. Eight adapter passes (one per card; user 2026-11-11: all 8 cards may be used) on the tasks the adapter was trained on, read per task
 class against the 11 no-adapter passes.
