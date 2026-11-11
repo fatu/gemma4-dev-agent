@@ -41,7 +41,7 @@ if [ -n "$SERVE_ADAPTER" ]; then
   [ -f "runs/adapters/$SERVE_ADAPTER/adapter_model.safetensors" ] || { echo "SERVE_ADAPTER=$SERVE_ADAPTER: no runs/adapters/$SERVE_ADAPTER/adapter_model.safetensors"; exit 1; }
   SERVE_SUB="runs/serve_lane$GPU"; rm -rf "$SERVE_SUB"; mkdir -p "$SERVE_SUB/adapters"; cp -r "runs/adapters/$SERVE_ADAPTER" "$SERVE_SUB/adapters/"
 fi
-echo "lane gpu $GPU: server adapters from ${SERVE_SUB:-harness/sample_submission}/adapters: $(ls "${SERVE_SUB:-harness/sample_submission}/adapters" 2>/dev/null | tr '\n' ' ')(SERVE_ADAPTER=${SERVE_ADAPTER:-none})"
+echo "lane gpu $GPU: eval concurrency ${LANE_CONC:-1} · server adapters from ${SERVE_SUB:-harness/sample_submission}/adapters: $(ls "${SERVE_SUB:-harness/sample_submission}/adapters" 2>/dev/null | tr '\n' ' ')(SERVE_ADAPTER=${SERVE_ADAPTER:-none})"
 # whole lane body runs inside one namespace; env (GPU, TAG, TIME_MIN, ARMS, SUBMISSION, …) is inherited
 exec unshare -rn bash -c '
   set -euo pipefail
@@ -60,5 +60,5 @@ exec unshare -rn bash -c '
   if [ "'"$MODE"'" = smoke ]; then
     python3 scripts/smoke.py | grep -E "^--- "      # 📷 the warm line (sanity only; set TIME_MIN from the trace fit, see header)
   else
-    CONC=1 bash scripts/eval_dev.sh                 # TAG, TIME_MIN, ARMS, SUBMISSION, REFS come from the environment
+    CONC=${LANE_CONC:-1} bash scripts/eval_dev.sh   # TAG, TIME_MIN, ARMS, SUBMISSION, REFS come from the environment; LANE_CONC > 1 only for data (B-7)
   fi'

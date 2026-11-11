@@ -16,6 +16,10 @@
 # · TOK (tokenizer for render/parser: the 31B id; same chat template as E4B, A2-checked 2026-11-03) · MAX_TURNS (80: the
 # scorer reads max_turns: 80 from our eval_config.yaml and then prints "- Max loop iterations: 80 turns" in the task
 # prompt; the local CLI ignores eval_config, so without it the generated prompts would lack that line — as the kit's have it).
+# More tasks (BOX_PLAN B-7): BUILD_JOBS (1; > 1 = that many build processes, tasks dealt by repo, outputs merged) · LEAN (0;
+# 1 = blobless git clones deleted after use) · MIN_FREE_GB (0 = no guard) · SNAP_MAX_MB (0 = any size) · UV_CACHE ("";
+# a dir under OUT = one hard-linked wheel cache) · KILL_VLLM (1; 0 = leave other lanes' servers alone) · ARM_BY_PASS
+# ("" = ARM for every pass; "base base t07 t07" = pass i gets word i) · LANE_CONC (1; lane.sh's eval concurrency).
 set -uo pipefail
 cd "$(dirname "$0")/.."
 STAGE="${1:?build|gold|gen|data}"
@@ -23,13 +27,30 @@ IDS_FILE="${IDS_FILE:-splits/rebench_kit81.txt}"; OUT="${OUT:-runs/rebench}"; AR
 GPUS=(${GPUS:-0 1 2 3}); TIME_MIN="${TIME_MIN:-7}"; MODEL="${MODEL:-google/gemma-4-31B-it-qat-w4a16-ct}"
 TOK="${TOK:-$MODEL}"; PY=.venv-eval/bin/python; SFT="${SFT:-runs/sft/rebench31b}"; MAX_TURNS="${MAX_TURNS:-80}"
 GTAG="${GTAG:-g}"; KEEP="${KEEP:-resolved}"; SRC="${SRC:-31b_teacher}"; POLICY="${POLICY:-gemma-4-31b-it-qat-w4a16-ct}"
+BUILD_JOBS="${BUILD_JOBS:-1}"; LEAN="${LEAN:-0}"; MIN_FREE_GB="${MIN_FREE_GB:-0}"; SNAP_MAX_MB="${SNAP_MAX_MB:-0}"; UV_CACHE="${UV_CACHE:-}"
+KILL_VLLM="${KILL_VLLM:-1}"; ARM_BY_PASS=(${ARM_BY_PASS:-}); export LANE_CONC="${LANE_CONC:-1}"
+arm_of() { local w="${ARM_BY_PASS[$(( $1 - 1 ))]:-}"; echo "${w:-$ARM}"; }
 export TASKS_FILE="$OUT/tasks.jsonl" SNAPSHOTS_DIR="$OUT/snapshots" REBENCH_SITE="$OUT/site"
-echo "rebench_gen $STAGE · ids $IDS_FILE · out $OUT · arm $ARM · passes $PASSES on GPUs ${GPUS[*]} · TIME_MIN $TIME_MIN · MAX_TURNS $MAX_TURNS · model $MODEL · tags $GTAG<i> · keep $KEEP · sft $SFT ($SRC, $POLICY) · LATEST ${LATEST:-31b} ADAPTER ${ADAPTER-unset}"
+echo "rebench_gen $STAGE · ids $IDS_FILE · out $OUT · arm $ARM · arms by pass [${ARM_BY_PASS[*]:-}] · passes $PASSES on GPUs ${GPUS[*]} · lane concurrency $LANE_CONC · kill vllm $KILL_VLLM · TIME_MIN $TIME_MIN · MAX_TURNS $MAX_TURNS · model $MODEL · tags $GTAG<i> · keep $KEEP · sft $SFT ($SRC, $POLICY) · LATEST ${LATEST:-31b} ADAPTER ${ADAPTER-unset} · build jobs $BUILD_JOBS lean $LEAN min free ${MIN_FREE_GB} GB snapshot max ${SNAP_MAX_MB} MB uv cache ${UV_CACHE:-default}"
 
 case "$STAGE" in
 build)
-  $PY scripts/rebench_build.py --ids "$IDS_FILE" --out "$OUT" 2>&1 | tee "$OUT.build.log" | grep -E "^rebench_build|NO ROW|snapshot:|FAILED|partial|^TOTAL"
-  echo "📷 the lines above (every failed/partial task + TOTAL); full log $OUT.build.log" ;;
+  mkdir -p "$OUT"; BF=(--ids "$IDS_FILE" --out "$OUT" --min-free-gb "$MIN_FREE_GB" --max-snapshot-mb "$SNAP_MAX_MB")
+  [ "$LEAN" = 1 ] && BF+=(--lean); [ -n "$UV_CACHE" ] && BF+=(--uv-cache "$UV_CACHE")
+  if [ "$BUILD_JOBS" -le 1 ]; then
+    $PY scripts/rebench_build.py "${BF[@]}" 2>&1 | tee "$OUT.build.log" | grep -E "^rebench_build|NO ROW|snapshot:|FAILED|partial|dropped|^STOP|^TOTAL"
+  else
+    rm -f "$OUT"/tasks.shard*.jsonl "$OUT"/built.shard*.txt
+    for k in $(seq 0 $(( BUILD_JOBS - 1 ))); do
+      $PY scripts/rebench_build.py "${BF[@]}" --shard "$k" --nshards "$BUILD_JOBS" > "$OUT.build$k.log" 2>&1 &
+    done
+    echo "  $BUILD_JOBS build processes (logs $OUT.build<k>.log; progress: tail -1 $OUT.build*.log)"; wait
+    cat "$OUT".build[0-9]*.log > "$OUT.build.log"
+    grep -hE "NO ROW|snapshot:|FAILED|partial|dropped|^STOP|^TOTAL" "$OUT".build[0-9]*.log | cut -c1-200
+    cat "$OUT"/tasks.shard*.jsonl > "$OUT/tasks.jsonl"; cat "$OUT"/built.shard*.txt > "$OUT/built.txt"
+    echo "== build: $(wc -l < "$OUT/built.txt") of $(grep -vc '^#' "$IDS_FILE") tasks built → $OUT/tasks.jsonl · site $(du -sh "$OUT/site" | cut -f1) · snapshots $(du -sh "$OUT/snapshots" | cut -f1) · $(df -h "$OUT" | tail -1 | awk '{print $4}') free"
+  fi
+  echo "📷 the lines above (every failed/partial/dropped task + TOTAL / == build); full log $OUT.build.log" ;;
 gold)
   [ -s "$OUT/built.txt" ] || { echo "run build first"; exit 1; }
   OUT_G="$OUT/gold"; rm -rf "$OUT_G"
@@ -41,19 +62,20 @@ gold)
   echo "📷 the == line + the NOT list" ;;
 gen)
   [ -s "$OUT/ok.txt" ] || { echo "run gold first"; exit 1; }
-  pkill -f "vllm serve" 2>/dev/null; sleep 5
+  [ "$KILL_VLLM" = 1 ] && { pkill -f "vllm serve" 2>/dev/null; sleep 5; }
   for i in $(seq 1 "$PASSES"); do
     g=${GPUS[$(( (i - 1) % ${#GPUS[@]} ))]}
     if [ "$i" -gt "${#GPUS[@]}" ]; then echo "PASSES > cards: pass $i waits for nothing — run it after the first wave"; continue; fi
-    GPU=$g TAG=$GTAG$i TIME_MIN=$TIME_MIN MAX_TURNS=$MAX_TURNS MODEL=$MODEL ARMS="$ARM" SPLIT="$OUT/ok.txt" SUBMISSION="${SUBMISSION:-runs/base_lb024}" TRAJ=1 \
+    A=$(arm_of $i)
+    GPU=$g TAG=$GTAG$i TIME_MIN=$TIME_MIN MAX_TURNS=$MAX_TURNS MODEL=$MODEL ARMS="$A" SPLIT="$OUT/ok.txt" SUBMISSION="${SUBMISSION:-runs/base_lb024}" TRAJ=1 \
       nohup bash scripts/lane.sh run > "runs/rebench_lane$g.log" 2>&1 &
-    echo "  pass $GTAG$i → GPU $g · runs/dev33_${ARM}_$GTAG$i · log runs/rebench_lane$g.log"
+    echo "  pass $GTAG$i → GPU $g · arm $A · runs/dev33_${A}_$GTAG$i · log runs/rebench_lane$g.log"
   done
   echo "📷 these lines; progress: tail -2 runs/rebench_lane*.log · when all lanes end: bash scripts/rebench_gen.sh data" ;;
 data)
   rm -rf "$SFT" "$SFT"_pass*; mkdir -p "$SFT"
   for i in $(seq 1 "$PASSES"); do
-    R="runs/dev33_${ARM}_$GTAG$i"; [ -d "$R/traj" ] || { echo "  missing $R/traj"; continue; }
+    R="runs/dev33_$(arm_of $i)_$GTAG$i"; [ -d "$R/traj" ] || { echo "  missing $R/traj"; continue; }
     python3 train/convert_traj.py --run "$R" --source "$SRC" --policy "$POLICY" --tasks "$TASKS_FILE" \
       --out "${SFT}_pass$i" | tail -1
     python3 - "$R" "${SFT}_pass$i" "$SFT" "$GTAG$i" "$KEEP" <<'PY'

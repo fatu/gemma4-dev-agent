@@ -41,6 +41,83 @@ dropped too.
 
 ---
 
+## B-7 · More tasks for E4B's own rollouts: 450 more public SWE-rebench tasks → build → gold → 4 E4B passes (2026-11-11) — ▶ alongside / after B-6-D (step 1 is CPU + network; steps 2–3 after B-6-D's photo)
+
+**Why.** Line 5 (user, 2026-11-11: "这个会话做5，数据肯定是要增强的" → "box用4个GPU，扩题到300题"): fix E4B's edit-copy errors with
+labels made from its OWN rollouts: every failed `edit_file` gets a corrected call (the true span of the file at that moment, the
+wrong quote in the thought fixed), every ok edit is a positive. The 67 kit tasks gave ~29 not-found edits per pass; that is too
+little, so first more tasks. This step only makes the rollouts; the relabel stage is written on the laptop after the photos.
+Building a task needs CPU + network only (rows from the pinned parquet, a git snapshot, `uv pip install --target`); the GPU is
+needed only for the rollouts.
+
+**The task list** (laptop, pushed): `splits/rebench_more450.txt` = `scripts/rebench_select.py` (seed 0, deterministic): 450 tasks
+in 349 repos, ≤ 2 per repo, none of the kit's 81, not fastapi / rich / requests / httpx / the two named OOD-45 repos; Python
+3.9–3.12, pip-only installs (pre_install at most `apt-get install -y gcc`), gold patch 1–3 files and ≤ 80 lines, 1–20 pytest
+FAIL_TO_PASS ids, SWE-rebench's own LLM grades issue ≤ 2 / tests ≤ 2 / difficulty 0–2, created ≥ 2020. Expect about 2/3 to
+survive build + gold → ~300.
+
+New knobs (all printed in the header line): `BUILD_JOBS` (build processes, tasks dealt by repo) · `LEAN=1` (blobless clones,
+deleted after use) · `MIN_FREE_GB` (the build stops, keeping what it built, below this) · `SNAP_MAX_MB` (bigger snapshots are
+dropped) · `UV_CACHE` (one hard-linked wheel cache on the same disk: on the laptop 3 tasks took 1.0 GB instead of 1.6) ·
+`KILL_VLLM=0` (leave other servers alone) · `ARM_BY_PASS` (pass i gets word i: `base` = temp 0.2, `t07` = temp 0.7) ·
+`LANE_CONC` (tasks at once inside a lane; 2 here: data, not a score). Laptop test: 6 tasks, 3 build processes, merge OK, one
+147 MB snapshot dropped by the cap.
+
+**Step 0 · checks (no GPU, 1 min)**
+```
+cd gemma4-dev-agent && git pull && git log --oneline -1
+df -h . | tail -1; nproc; which uv; grep -vc '^#' splits/rebench_more450.txt     # 450
+du -sh runs/rebench/site runs/rebench/snapshots runs/rebench/git 2>/dev/null
+```
+📷. Stop + photo if less than **60 GB** free: then `du -sh runs/* ~/.cache/huggingface/hub/* 2>/dev/null | sort -h | tail -15`
+(📷) and the laptop says what can go. Nothing is deleted in this step.
+
+**Step 1 · build (CPU + network, ~1–1.5 h; may run while B-6-D's lanes run)**
+```
+OUT=runs/rebench2 IDS_FILE=splits/rebench_more450.txt BUILD_JOBS=6 LEAN=1 MIN_FREE_GB=20 SNAP_MAX_MB=60 UV_CACHE=runs/rebench2/uvcache \
+  nohup bash scripts/rebench_gen.sh build > runs/rebench2_build.out 2>&1 &
+tail -3 runs/rebench2.build*.log          # progress
+cat runs/rebench2_build.out               # 📷 at the end: the header, the failed / partial / dropped lines, 6 TOTAL lines, the == build line
+```
+`runs/rebench` (the kit's 67) is not touched. Read: built ≥ 350 → go on. A `STOP: … GB free` line → stop + photo.
+BUILD_JOBS=6 if `nproc` ≥ 32, else 3.
+
+**Step 2 · gold (CPU, ~1–2 h; after B-6-D's lanes have ended: the test runs would slow its lanes)**
+```
+OUT=runs/rebench2 CONC_GOLD=16 bash scripts/rebench_gen.sh gold      # 📷 the == gold line + the NOT list (long: the first 40 lines are enough)
+```
+CONC_GOLD=16 if `nproc` ≥ 32, else 8. Read: ok ≥ 250 → step 3. 150–249 → step 3 anyway, say so. < 150 → stop + photo of
+`grep -E "NOT" runs/rebench2/gold.log | head -40`.
+
+**Step 3 · rollouts: 4 E4B passes, one per card, no adapter (~5–6 h; after B-6-D's photo)**
+```
+nvidia-smi --query-gpu=index,memory.used --format=csv,noheader          # 📷 cards 0–3 must be free (< 2,000 MiB)
+E4B=google/gemma-4-E4B-it-qat-w4a16-ct
+OUT=runs/rebench2 GPUS="0 1 2 3" PASSES=4 ARM_BY_PASS="base base t07 t07" LANE_CONC=2 KILL_VLLM=0 LATEST=e4b ADAPTER= MODEL=$E4B TOK=$E4B \
+  GTAG=m KEEP=all SFT=runs/sft/rebenche4b_more SRC=e4b_onpolicy POLICY=gemma-4-e4b-it-qat-w4a16-ct bash scripts/rebench_gen.sh gen   # 📷 the 4 pass lines
+```
+Same settings as the e/f passes otherwise (TIME_MIN 7, MAX_TURNS 80, NO_TESTDEPS as then). Runs: `runs/dev33_base_m1`,
+`runs/dev33_base_m2` (temp 0.2), `runs/dev33_t07_m3`, `runs/dev33_t07_m4` (temp 0.7). The lane logs are `runs/rebench_lane0..3.log`
+(the same names B-6-D used: read B-6-D's lora line before this step). When all 4 lanes have ended:
+```
+for r in runs/dev33_base_m1 runs/dev33_base_m2 runs/dev33_t07_m3 runs/dev33_t07_m4; do echo "$r results $(wc -l < $r/task_results.jsonl) resolved $(grep -c '"resolved": true' $r/task_results.jsonl)"; done
+grep -hE "eval concurrency|^== (base|t07):" runs/rebench_lane0.log runs/rebench_lane2.log | cut -c1-220     # concurrency 2 · temperature 0.2 / 0.7
+python3 scripts/edit_stats.py runs/dev33_base_m1 runs/dev33_base_m2 runs/dev33_t07_m3 runs/dev33_t07_m4
+```
+📷 all of it. Do NOT run the `data` stage (the relabel stage replaces it; written on the laptop after this photo).
+
+**Read it (set before the data).**
+- Every pass has as many results as `runs/rebench2/ok.txt` has lines; otherwise stop + photo of `tail -20` of that lane log.
+- The pooled block of edit_stats: not found + several matches = the raw material. ≥ 400 → the relabel stage is worth writing.
+  200–399 → it is, but say the number. < 200 → stop: more passes would be needed first (the laptop decides).
+- Resolved per pass: about a third (E4B resolved 24–29 of the kit's 67). Far below → check the lane log for a missing site or a
+  test that never ran.
+- Temp 0.7 vs 0.2 (m3/m4 vs m1/m2): the not-found rate per edit and resolved; just a record.
+
+Nothing goes to Kaggle. Cost: own box only, ≈ 4 cards × 5–6 h + ~3 h CPU.
+
+---
+
 ## B-6 · A LoRA from E4B's own resolved runs on the flip tasks (rejection-sampling fine-tune) (2026-11-10) — ✓ ran 2026-11-11: ■ STOP (51-task split, 4 vs 4 passes: no adapter 14.5, adapter 12.25)
 
 **Result (2026-11-11).** No adapter 12 · 16 · 15 · 15 (mean 14.5); `e4b_rft` 14 · 11 · 11 · 13 (mean 12.25): −2.25, rule needs ≥ +3 → stop.

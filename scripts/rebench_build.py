@@ -21,7 +21,10 @@ published, so this is our own version. Per task (internet needed; the lanes late
      not install, retried without it ("deps partial"). Python is the eval venv's (3.12), not the row's install_config
      python (e.g. 3.5): tasks that do not run here fail the gold check (step `gold` of rebench_gen.sh) and are dropped.
   meta/<id>.json keeps the row's install_config, test_cmd, docker_image, license and python version.
-Prints one line per task and a total (📷); every number is the record. Outputs quote task text → runs/ (gitignored).
+B-7 (more tasks): --shard/--nshards (tasks dealt by repo; outputs tasks.shard<k>.jsonl, merged by rebench_gen.sh) · --lean
+(blobless clones, each deleted after its repo's last task) · --min-free-gb (stop, keeping what is built) · --max-snapshot-mb ·
+--uv-cache (UV_CACHE_DIR there + UV_LINK_MODE=hardlink: one copy of each wheel on the disk of --out).
+Prints one line per task (snapshot MB, deps dists and MB, seconds, GB free) and a total (📷); every number is the record. Outputs quote task text → runs/ (gitignored).
 """
 import argparse
 import json
@@ -50,7 +53,7 @@ def load_rows(tag, ids):
         t = pq.read_table(path)
         col = t.column("instance_id").to_pylist()
         keep = [i for i, x in enumerate(col) if x in ids and x not in out]
-        for r in t.take(keep).to_pylist():
+        for r in (t.take(keep).to_pylist() if keep else []):      # take([]) fails in pyarrow (list → null type)
             out[r["instance_id"]] = (r, f"{ds}@{rev[:7]}:{os.path.basename(f).split('-')[0]}")
         print(f"  {ds}@{rev[:7]} {f}: {t.num_rows} rows, {len(keep)} of ours", flush=True)
     return out
@@ -73,15 +76,19 @@ def task_row(row, iid):
             "environment_setup_commit": row.get("environment_setup_commit") or row["base_commit"]}
 
 
-def sh(cmd, cwd=None, timeout=1800):
-    return subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, timeout=timeout)
+def sh(cmd, cwd=None, timeout=1800, env=None):
+    return subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, timeout=timeout, env=env)
 
 
-def snapshot(repo, sha, git_cache, out_tgz, work):
-    """tracked files at sha → fresh one-commit repo on main → tgz (entries ./…)"""
+UV_ENV = None   # set in main when --uv-cache is given: the cache on the same disk as site/ + hard links → each wheel once
+
+
+def snapshot(repo, sha, git_cache, out_tgz, work, lean=False):
+    """tracked files at sha → fresh one-commit repo on main → tgz (entries ./…); lean: blobless clone (blobs of sha only)"""
     cache = os.path.join(git_cache, repo.replace("/", "__"))
     if not os.path.isdir(os.path.join(cache, ".git")):
-        r = sh(["git", "clone", "-q", "--no-tags", f"https://github.com/{repo}.git", cache])
+        r = sh(["git", "clone", "-q", "--no-tags"] + (["--filter=blob:none", "--no-checkout"] if lean else [])
+               + [f"https://github.com/{repo}.git", cache])
         if r.returncode:
             return f"clone failed: {r.stderr.strip()[-120:]}"
     if sh(["git", "-C", cache, "cat-file", "-e", f"{sha}^{{commit}}"]).returncode:
@@ -103,6 +110,12 @@ def snapshot(repo, sha, git_cache, out_tgz, work):
     return None if r.returncode == 0 else f"tar failed: {r.stderr.strip()[-120:]}"
 
 
+def du(path):
+    """MB under path (hard links counted once per file here)"""
+    return sum(os.path.getsize(os.path.join(d, f)) for d, _, fs in os.walk(path) for f in fs
+               if not os.path.islink(os.path.join(d, f))) / 1e6
+
+
 def deps(src, cfg, site, py):
     """uv pip install --target site: project + pip_packages + reqs files; retry without the project"""
     pkgs = [p for p in (cfg.get("pip_packages") or []) if p]
@@ -111,12 +124,12 @@ def deps(src, cfg, site, py):
             for x in ("-r", os.path.join(src, rp))]
     shutil.rmtree(site, ignore_errors=True); os.makedirs(site)
     base = ["uv", "pip", "install", "-q", "--python", py, "--target", site]
-    r = sh(base + [src] + pkgs + reqs)
+    r = sh(base + [src] + pkgs + reqs, env=UV_ENV)
     how = "full"
     if r.returncode:
         err = (r.stderr or r.stdout).strip().splitlines()[-1:] or [""]
         shutil.rmtree(site, ignore_errors=True); os.makedirs(site)
-        r = sh(base + (pkgs or ["pytest"]) + reqs)
+        r = sh(base + (pkgs or ["pytest"]) + reqs, env=UV_ENV)
         how = f"partial (project not installable: {err[0][:70]})" if r.returncode == 0 else \
             f"FAILED: {((r.stderr or r.stdout).strip().splitlines() or [''])[-1][:90]}"
     n = sum(1 for d in os.listdir(site) if d.endswith(".dist-info"))
@@ -130,6 +143,12 @@ def main():
     ap.add_argument("--only", nargs="*", default=None, help="a subset of instance ids (smoke)")
     ap.add_argument("--python", default=sys.executable, help="interpreter the sandbox venvs are made from (the eval venv's)")
     ap.add_argument("--no-deps", action="store_true", help="skip step 4")
+    ap.add_argument("--shard", type=int, default=0, help="this process builds the tasks whose repo hashes to SHARD")
+    ap.add_argument("--nshards", type=int, default=1, help="> 1: outputs tasks.shard<k>.jsonl / built.shard<k>.txt (rebench_gen.sh merges)")
+    ap.add_argument("--lean", action="store_true", help="blobless git clones, each deleted after its repo's last task here")
+    ap.add_argument("--min-free-gb", type=float, default=0, help="stop (keeping what is built) when the disk of --out has less free")
+    ap.add_argument("--max-snapshot-mb", type=float, default=0, help="> 0: drop a task whose snapshot tgz is larger")
+    ap.add_argument("--uv-cache", default="", help="UV_CACHE_DIR for the installs (put it under --out: same disk) + UV_LINK_MODE=hardlink")
     a = ap.parse_args()
     for t in ("git", "tar") + (() if a.no_deps else ("uv",)):
         if not shutil.which(t):
@@ -137,17 +156,33 @@ def main():
     entries = [l.split() for l in open(a.ids) if l.strip() and not l.startswith("#")]
     if a.only:
         entries = [e for e in entries if e[1] in set(a.only)]
+    repo_of = lambda iid: iid.rsplit("-", 1)[0]                   # owner__name-<number> → one shard per repo
+    if a.nshards > 1:
+        import zlib
+        entries = [e for e in entries if zlib.crc32(repo_of(e[1]).encode()) % a.nshards == a.shard]
+    last = {repo_of(e[1]): i for i, e in enumerate(entries)}
     for d in ("snapshots", "site", "meta", "git"):
         os.makedirs(os.path.join(a.out, d), exist_ok=True)
     pyv = sh([a.python, "-c", "import sys; print('%d.%d' % sys.version_info[:2])"]).stdout.strip()
+    sfx = f".shard{a.shard}" if a.nshards > 1 else ""
+    global UV_ENV
+    if a.uv_cache:
+        os.makedirs(a.uv_cache, exist_ok=True)
+        UV_ENV = dict(os.environ, UV_CACHE_DIR=os.path.abspath(a.uv_cache), UV_LINK_MODE="hardlink")
+    free = lambda: shutil.disk_usage(a.out).free / 1e9
     print(f"rebench_build: {len(entries)} tasks from {a.ids} → {a.out} · deps for python {pyv} ({a.python})"
-          f"{' · deps skipped' if a.no_deps else ''}", flush=True)
+          f"{' · deps skipped' if a.no_deps else ''} · shard {a.shard}/{a.nshards} · lean git {'on' if a.lean else 'off'}"
+          f" · stop below {a.min_free_gb:g} GB free (now {free():.0f} GB) · max snapshot {a.max_snapshot_mb or 'none'} MB"
+          f" · uv cache {a.uv_cache + ' (hardlink)' if a.uv_cache else 'default'}", flush=True)
     rows = {}
     for tag in sorted({e[0] for e in entries}):
         rows.update(load_rows(tag, {e[1] for e in entries if e[0] == tag}))
     tasks, tot = [], {"tasks": 0, "rows": 0, "snapshots": 0, "deps full": 0, "deps partial": 0, "deps failed": 0}
     work = tempfile.mkdtemp(prefix="rebench_")
-    for tag, iid, *rest in entries:
+    for k, (tag, iid, *rest) in enumerate(entries):
+        if a.min_free_gb and free() < a.min_free_gb:
+            print(f"STOP: {free():.1f} GB free < {a.min_free_gb:g} GB — {len(entries) - k} tasks not built (kept the {len(tasks)} built)", flush=True)
+            break
         t0 = time.time(); tot["tasks"] += 1
         row, src_name = rows.get(iid, (None, None))
         if not row:
@@ -157,9 +192,14 @@ def main():
         if rest and rest[0] != t["base_commit"]:
             print(f"  {iid}: base_commit {t['base_commit'][:10]} ≠ list {rest[0][:10]} (the list's is the kit's)", flush=True)
         tgz = os.path.join(a.out, "snapshots", f"{iid}.tgz")
-        err = None if os.path.exists(tgz) else snapshot(t["repo"], t["base_commit"], os.path.join(a.out, "git"), tgz, work)
+        err = None if os.path.exists(tgz) else snapshot(t["repo"], t["base_commit"], os.path.join(a.out, "git"), tgz, work, a.lean)
+        if a.lean and last.get(repo_of(iid)) == k:
+            shutil.rmtree(os.path.join(a.out, "git", t["repo"].replace("/", "__")), ignore_errors=True)
         if err:
             print(f"{iid:<58} snapshot: {err}", flush=True); continue
+        if a.max_snapshot_mb and os.path.getsize(tgz) / 1e6 > a.max_snapshot_mb:
+            print(f"{iid:<58} snapshot {os.path.getsize(tgz) / 1e6:.0f} MB > {a.max_snapshot_mb:g}: dropped", flush=True)
+            os.remove(tgz); tot["too big"] = tot.get("too big", 0) + 1; continue
         tot["snapshots"] += 1
         cfg = row.get("install_config") or {}
         if isinstance(cfg, str):
@@ -180,14 +220,16 @@ def main():
                    "kit_list": rest}, open(os.path.join(a.out, "meta", f"{iid}.json"), "w"))
         tasks.append(t)
         print(f"{iid:<58} {src_name.split('/')[0]:<11} snapshot {os.path.getsize(tgz) / 1e6:6.1f} MB · F2P {len(t['FAIL_TO_PASS']):>3} "
-              f"P2P {len(t['PASS_TO_PASS']):>4} · py {cfg.get('python') or '?':<4} · deps {how} ({n} dists) · {time.time() - t0:.0f} s", flush=True)
+              f"P2P {len(t['PASS_TO_PASS']):>4} · py {cfg.get('python') or '?':<4} · deps {how} ({n} dists, {du(os.path.join(a.out, 'site', iid)):.0f} MB)"
+              f" · {time.time() - t0:.0f} s · {free():.0f} GB free", flush=True)
     shutil.rmtree(work, ignore_errors=True)
-    with open(os.path.join(a.out, "tasks.jsonl"), "w") as w:
+    with open(os.path.join(a.out, f"tasks{sfx}.jsonl"), "w") as w:
         for t in tasks:
             w.write(json.dumps(t, ensure_ascii=False) + "\n")
-    with open(os.path.join(a.out, "built.txt"), "w") as w:
+    with open(os.path.join(a.out, f"built{sfx}.txt"), "w") as w:
         w.write("".join(t["instance_id"] + "\n" for t in tasks))
-    print("TOTAL " + " · ".join(f"{k} {v}" for k, v in tot.items()) + f" → {a.out}/tasks.jsonl ({len(tasks)} lines), built.txt")
+    print("TOTAL " + " · ".join(f"{k} {v}" for k, v in tot.items()) + f" → {a.out}/tasks{sfx}.jsonl ({len(tasks)} lines), built{sfx}.txt"
+          f" · {free():.0f} GB free")
     return 0 if tasks else 1
 
 
