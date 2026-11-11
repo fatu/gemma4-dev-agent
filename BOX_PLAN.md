@@ -41,13 +41,17 @@ dropped too.
 
 ---
 
-## B-4 · Token-level distillation 31B → E4B, step S0: does the 31B point at E4B's own errors? (2026-11-10) — ✓ S0 and S0b done 2026-11-10 (S0b: no verdict, 17 determined births) · ▶ next: S0c below (more rollouts, pooled)
+## B-4 · Token-level distillation 31B → E4B, step S0: does the 31B point at E4B's own errors? (2026-11-10) — ✓ S0, S0b, S0c done 2026-11-10 · ■ STOPPED by the pre-set rule (pooled n 60: corrected 38 %, prefers 43 % < 60 %); S1 is not built
 
 **Status (2026-11-10).** S0 ran: of 88 not-found edits 56 were locatable; the 31B's top-1 continued the source at the first wrong
 token in 2 % (call) and 12 % (thought) → "stop" by S0's rule. But most measured positions repeat a wrong text that is already
 in the context (48 of 56 calls; 39 of 48 thoughts), where any model copies; only 9 were where the text is first written.
 
-### S0c · a second scored set, pooled with S0's (2026-11-10) — START HERE (about 3–4 h of all cards, then ~15 min)
+### S0c · a second scored set, pooled with S0's (2026-11-10) — ✓ ran 2026-11-10: STOP
+
+**Result.** Pooled determined first occurrences n 60: flagged 52 % · corrected 38 % · prefers 43 % · flagged 27× the control.
+Corrected is in the 30–50 % band, which needs prefers ≥ 60 % → STOP. Nothing further to run in B-4; do not write S1.
+Kept for later: where E4B submits after a failed last command (n 308) the 31B's top-1 is run in 71 %, submit in 16 %.
 
 **Why.** S0b ran (2026-11-10): every check passed, but only 17 determined births (19 measured) in 201 rollouts — under
 the rule's 20, so no verdict. Point values: corrected 47 %, prefers 47 %, flagged 47 % against 1.5 % on the 1,032
