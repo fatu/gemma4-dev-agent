@@ -41,7 +41,52 @@ dropped too.
 
 ---
 
-## B-5 · After B-4: is there room in E4B's own repeat passes, and does submitting on a failure cost anything? (2026-11-10) — START HERE: one command, CPU, about 1 min, no model
+## B-6 · A LoRA from E4B's own resolved runs on the flip tasks (rejection-sampling fine-tune) (2026-11-10) — START HERE: step 1 (CPU, ~10 min); one step at a time, 📷 after each
+
+**Why.** B-5: of the 67 tasks 12 are always resolved, 25 never, 30 flip; the flip tasks have 155 resolved runs of 330 (47 %),
+16 of them are resolved in at most half the passes. Mean 26.1 per pass; if every flip task always went right it would be
+42 (+15.9). That is the ceiling, not the expected gain: no adapter has beaten no adapter so far. What is new here: the
+states are E4B's own, the format is its own, every kept run passed the tests, and failed calls are not targets.
+
+**Step 0 · checks (no GPU)**
+```
+cd gemma4-dev-agent && git pull && git log --oneline -1
+ls -d runs/dev33_base_e{1..3} runs/dev33_base_f{1..8} | wc -l                       # 11
+ls .venv-train/bin/python runs/dequant/gemma-4-E4B-dq/config.json                   # missing → GPU=0 bash train/train_box.sh env dequant  (📷 its end)
+ls harness/tasks.jsonl splits/disc_e4b.txt && ls harness/snapshots | wc -l          # the 51-task split of step 4; missing → stop + photo
+df -h . | tail -1
+```
+**Step 1 · data (CPU, ~10 min)**
+```
+bash train/rft_box.sh data        # 📷 every line from 'rft_box data' down
+```
+Per flip task at most 4 resolved runs (fewest model calls first); 4 flip tasks are kept out whole (the eval loss).
+Stop + photo if: `rft_select` does not say flip 30 · train < 60 runs · a render line is not `RESULT PASS`.
+
+**Step 2 · train (all cards; the drill line's trainer on these files)**
+```
+ALL=$(nvidia-smi --query-gpu=index --format=csv,noheader | paste -sd, -)
+SET=_rft NAME=e4b_rft EPOCHS=3 LR=3e-5 EVAL_EVERY=25 GPUS=$ALL nohup bash train/drills_box.sh train > runs/rft_train.log 2>&1 &
+tail -5 runs/rft_train.log        # 📷 at the end: the schedule line, the eval[...] lines, every '== epoch' line, the checksum line
+```
+r16 α16, as the drill adapters. Epoch to use = the one with the lowest held-out loss (call it N). Stop + photo on `TRAIN FAILED`.
+```
+SET=_rft NAME=e4b_rft EPOCH=N bash train/drills_box.sh subs        # 📷 → runs/adapters/e4b_rft + the build check
+```
+**Step 3 · A/B on the 51-task split, tasks the adapter never saw: 4 passes without vs 4 with, one wave (8 cards, ~3–4 h)**
+```
+pkill -f "vllm serve"; sleep 5; E4B=google/gemma-4-E4B-it-qat-w4a16-ct
+for g in 0 1 2 3 4 5 6 7; do AD=$([ $((g % 2)) = 1 ] && echo e4b_rft); GPU=$g TAG=$([ -n "$AD" ] && echo t || echo u)$g TIME_MIN=8 MAX_TURNS=80 LATEST=e4b ADAPTER=$AD MODEL=$E4B SPLIT=splits/disc_e4b.txt SUBMISSION=runs/base_lb024 ARMS=base TRAJ=1 nohup bash scripts/lane.sh run > runs/lane$g.log 2>&1 & done
+# when all 8 lanes have ended:
+for k in u t; do python3 -c "import glob,json,sys; c=[sum(json.loads(l)['resolved'] for l in open(f)) for f in sorted(glob.glob(f'runs/dev33_base_{sys.argv[1]}[0-7]/task_results.jsonl'))]; print(sys.argv[1], c, 'mean', sum(c)/max(1,len(c)))" $k; done   # 📷  u = no adapter, t = adapter
+python3 scripts/rulestats.py runs/dev33_base_u0 runs/dev33_base_t1        # 📷
+```
+**Read it (set before the data).** The adapter counts only if its 4-pass mean beats no adapter's by ≥ 3 tasks AND its worst pass
+≥ no adapter's best − 1 (the rule of B-3o; no adapter was 12–16, mean 14.0 there). +1 to +2 → no verdict, say so. ≤ 0 → stop:
+one diagnostic may follow (4 adapter passes on the 67 training tasks: does it even reproduce its own successes?), on the user's word.
+Nothing goes to Kaggle from this step.
+
+## B-5 · After B-4: is there room in E4B's own repeat passes, and does submitting on a failure cost anything? (2026-11-10) — ✓ ran 2026-11-10: candidate 1 goes on (30 flip tasks, ceiling +15.9 per pass) → B-6 · candidate 2 dropped (ratio 0.80)
 
 **Why.** B-4 stopped. Two candidates are left that use what the box already has, and both need a count before any training:
 1. **Fine-tune on E4B's own resolved runs** (rejection sampling): the 11 base passes on the same tasks (3 of S0, 8 of S0c)
