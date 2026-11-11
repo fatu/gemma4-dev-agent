@@ -41,7 +41,7 @@ dropped too.
 
 ---
 
-## B-8 · SWE-bench Verified on the box, step 0: can the box run Docker, and is there disk? (2026-11-11) — ▶ any time (2 min, read-only, no GPU)
+## B-8 · SWE-bench Verified on the box (2026-11-11) — step 0 ✓ (Docker ok) · ▶ route B: E4B on Verified-mini, one card, ~1.5–2 h
 
 **Why.** The user wants E4B's SWE-bench Verified number (no public one: the Gemma 4 model card has LiveCodeBench, Codeforces,
 Tau2 only). Two routes, picked after this photo:
@@ -60,6 +60,43 @@ df -h . "$(docker info -f '{{.DockerRootDir}}' 2>/dev/null || echo /var/lib/dock
 📷 all of it. Read: `Hello from Docker!` printed → Docker works without sudo → route B possible if the Docker root's disk has
 ≥ 60 GB free. `permission denied` / `command not found` → route A only (or the user adds docker rights). The laptop then
 writes the chosen route's steps.
+
+**Step 0 result (user, 2026-11-11): "检查通过"** → route B. (The photo's numbers were not sent: Docker root free GB, nproc.)
+
+### B-8 route B · E4B on Verified-mini (50 tasks) with mini-swe-agent + the official grader (one card, ~1.5–2 h)
+
+What it is: `scripts/verified_box.sh` = vLLM (our `serve_vllm.sh`, no adapter, thinking on, tool parser gemma4) on ONE
+card + `mini-extra swebench` (mini-swe-agent 2.4.6: one `bash` tool, step limit 250, its own prompt) in the official
+per-task images (`swebench/sweb.eval.x86_64.*`, pulled on first use) + `swebench==4.1.0` grading. Dataset
+`MariusHobbhahn/swe-bench-verified-mini` (50 of the 500 Verified tasks, ≈ 5 GB of images; full Verified ≈ 120 GB). This is
+NOT our harness: the number is comparable to papers, not to our dev splits. Not tested on the laptop (would need the pip
+packages + Docker images here); the report parser was tested on fake files. Any free card works (GPU=).
+```
+cd gemma4-dev-agent && git pull && git log --oneline -1
+bash scripts/verified_box.sh setup                         # 📷 installed versions (PyPI: mini-swe-agent, swebench, litellm)
+nvidia-smi --query-gpu=index,memory.used --format=csv,noheader        # pick a free card, e.g. 7
+GPU=7 bash scripts/verified_box.sh serve                   # 📷 "vLLM up …"
+GPU=7 SLICE=0:2 WORKERS=2 TAG=vm_smoke bash scripts/verified_box.sh run       # smoke, ~5–15 min   📷 the == line
+TAG=vm_smoke bash scripts/verified_box.sh report           # 📷
+```
+**Smoke stop rules:** 0 predictions, or both exit statuses are errors (format / API / docker pull) → stop + photo of
+`tail -30 runs/verified/vm_smoke.run.log`. A `ContextWindowExceeded` or an empty patch on 2 tasks alone is not a stop.
+```
+GPU=7 TAG=vm_e4b bash scripts/verified_box.sh run          # 50 tasks, 8 workers, ~1 h          📷 the == line
+TAG=vm_e4b bash scripts/verified_box.sh eval               # Docker grading, ~20–40 min          📷 the tail
+TAG=vm_e4b bash scripts/verified_box.sh report             # 📷 the == block
+GPU=7 bash scripts/verified_box.sh stop
+```
+**Read it (set before the data).** No published number exists for E4B (the model card has LiveCodeBench 52 %, Tau2 42 %).
+For scale only: SWE-Gym's 32B Qwen base was ≈ 7 % on full Verified before fine-tuning, a LoRA study found 7B models near 0.
+- The report's `resolved n / 50` is E4B's Verified-mini pass@1 in mini-swe-agent; with n = 50 the 95 % interval is about
+  ± 10 pts, so it is a rough level, not an A/B measure.
+- Exit statuses: many `ContextWindowExceeded` → the 32K window, not the model, limits it (mini has no context guard);
+  many format errors → E4B's tool calls do not fit mini's bash tool; say which dominates.
+- ≥ 5 resolved → route A (our harness subset) is worth building next as the LoRA test bench; 0–2 → Verified is too hard
+  for E4B to show a LoRA effect in resolved counts; the laptop then proposes per-edit metrics instead.
+Optional reference, same steps on another free card: `MODEL=google/gemma-4-31B-it-qat-w4a16-ct GPU=6 PORT=8011 TAG=vm_31b`
+(serve, run, eval, report with those knobs) — the 31B on the same 50 tasks.
 
 ---
 
