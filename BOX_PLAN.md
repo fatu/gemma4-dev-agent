@@ -41,6 +41,31 @@ dropped too.
 
 ---
 
+## B-5 · After B-4: is there room in E4B's own repeat passes, and does submitting on a failure cost anything? (2026-11-10) — START HERE: one command, CPU, about 1 min, no model
+
+**Why.** B-4 stopped. Two candidates are left that use what the box already has, and both need a count before any training:
+1. **Fine-tune on E4B's own resolved runs** (rejection sampling): the 11 base passes on the same tasks (3 of S0, 8 of S0c)
+   are E4B's own states with labels checked by the tests. It only has data if tasks flip between passes.
+2. **The submit decision**: where E4B submits after a failed command the 31B would mostly run another command. That only
+   matters if those runs are resolved less often than the others. (The prompt rule against it, `failstop`, was already in
+   the `all` arm of B-3o: no gain, mostly not followed. A hard guard in the harness is not built.)
+
+```
+cd gemma4-dev-agent && git pull && git log --oneline -1
+python3 scripts/stab.py runs/dev33_base_e{1..3} runs/dev33_base_f{1..8}      # 📷 every line
+```
+
+**Read it (rules set before the data).**
+- STABILITY → candidate 1 goes on only if flip tasks ≥ 15 AND the ceiling line says ≥ +6 tasks per pass; else it is dropped.
+- SUBMIT (flip tasks only) → pool `hidden fail` + `exit != 0` (n ≥ 30 needed). Resolved rate ≤ half of `clean`'s → candidate 2
+  goes on (a hard guard first, then the decision arm). ≥ 0.8 × `clean`'s → dropped: holding the submission back cannot gain.
+  In between → no decision; say so.
+- Stop + photo: a pass with 0 traces, or fewer than 11 passes found (then list `ls -d runs/dev33_base_[ef]*`).
+- Nothing is started after this step; the next step is written on the laptop from the photo.
+
+**Laptop reading of the same script (one pass, the 129 evaluation tasks, not these tasks):** first submit after `exit != 0`
+51 runs, 16 % resolved; after a clean command 62 runs, 16 %; hidden fail 5 runs, 0 %; no command since the last edit 9 runs, 11 %.
+
 ## B-4 · Token-level distillation 31B → E4B, step S0: does the 31B point at E4B's own errors? (2026-11-10) — ✓ S0, S0b, S0c done 2026-11-10 · ■ STOPPED by the pre-set rule (pooled n 60: corrected 38 %, prefers 43 % < 60 %); S1 is not built
 
 **Status (2026-11-10).** S0 ran: of 88 not-found edits 56 were locatable; the 31B's top-1 continued the source at the first wrong
