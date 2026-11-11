@@ -46,19 +46,19 @@ dropped too.
 **Result (2026-11-11).** No adapter 12 · 16 · 15 · 15 (mean 14.5); `e4b_rft` 14 · 11 · 11 · 13 (mean 12.25): −2.25, rule needs ≥ +3 → stop.
 The user agreed to the diagnostic (2026-11-11): it is the block below.
 
-### B-6-D · Diagnostic: does `e4b_rft` reproduce its own successes on the 67 training tasks? (2026-11-11) — START HERE: 4 cards, about 3–4 h, then 1 min CPU
+### B-6-D · Diagnostic: does `e4b_rft` reproduce its own successes on the 67 training tasks? (2026-11-11) — START HERE: 8 cards, about 3–4 h, then 1 min CPU
 
-It explains the stop, it does not reopen it. Four adapter passes on the tasks the adapter was trained on, read per task
+It explains the stop, it does not reopen it. Eight adapter passes (one per card; user 2026-11-11: all 8 cards may be used) on the tasks the adapter was trained on, read per task
 class against the 11 no-adapter passes.
 ```
 cd gemma4-dev-agent && git pull && git log --oneline -1
 ls runs/adapters/e4b_rft/adapter_model.safetensors runs/rft/heldout | head -3; ls -d runs/dev33_base_e{1..3} runs/dev33_base_f{1..8} | wc -l    # 11
 E4B=google/gemma-4-E4B-it-qat-w4a16-ct
-GPUS="0 1 2 3" PASSES=4 LATEST=e4b ADAPTER=e4b_rft MODEL=$E4B TOK=$E4B ARM=base GTAG=rft KEEP=all SFT=runs/sft/rebenche4b_rft SRC=e4b_onpolicy POLICY=gemma-4-e4b-it-qat-w4a16-ct bash scripts/rebench_gen.sh gen     # 📷; same settings as the f passes (incl. NO_TESTDEPS as then)
-# when the 4 lanes have ended (do NOT run the `data` stage):
-grep -m1 -o " lora: [^·]*" runs/rebench_lane0.log; python3 scripts/stab.py runs/dev33_base_e{1..3} runs/dev33_base_f{1..8} --vs runs/dev33_base_rft{1..4} --held runs/rft/heldout     # 📷 every line from '== VS' down
+GPUS="0 1 2 3 4 5 6 7" PASSES=8 LATEST=e4b ADAPTER=e4b_rft MODEL=$E4B TOK=$E4B ARM=base GTAG=rft KEEP=all SFT=runs/sft/rebenche4b_rft SRC=e4b_onpolicy POLICY=gemma-4-e4b-it-qat-w4a16-ct bash scripts/rebench_gen.sh gen     # 📷; same settings as the f passes (incl. NO_TESTDEPS as then)
+# when the 8 lanes have ended (do NOT run the `data` stage):
+grep -m1 -o " lora: [^·]*" runs/rebench_lane0.log; python3 scripts/stab.py runs/dev33_base_e{1..3} runs/dev33_base_f{1..8} --vs runs/dev33_base_rft{1..8} --held runs/rft/heldout     # 📷 every line from '== VS' down
 ```
-**Read it (set before the data; 26 trained flip tasks × 4 passes ≈ 104 runs, so about ± 10 pts).**
+**Read it (set before the data; 26 trained flip tasks × 8 passes ≈ 208 runs, so about ± 7 pts).**
 - `flip, in training` difference ≥ +15 pts → the adapter did learn its own successes and they do not carry over to other
   tasks: the data is too narrow (30 tasks), not the method.
 - within ± 10 pts → it did not even make its own tasks more reliable: imitating the resolved runs does not remove the
