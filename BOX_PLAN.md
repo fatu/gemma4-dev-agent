@@ -41,6 +41,28 @@ dropped too.
 
 ---
 
+## B-8 · SWE-bench Verified on the box, step 0: can the box run Docker, and is there disk? (2026-11-11) — ▶ any time (2 min, read-only, no GPU)
+
+**Why.** The user wants E4B's SWE-bench Verified number (no public one: the Gemma 4 model card has LiveCodeBench, Codeforces,
+Tau2 only). Two routes, picked after this photo:
+- **B (comparable to papers):** the official per-task SWE-bench images + a small agent (mini-swe-agent) against vLLM E4B, graded
+  by the `swebench` harness, on Verified-mini (50 tasks) first. Needs Docker without sudo and ~60 GB for images.
+- **A (our harness, the LoRA test bench):** our tasks format + subprocess sandbox, like `rebench_build`. Our verify step runs
+  pytest, so django (231 of 500) and sympy (75) cannot be graded; compiled repos (matplotlib, scikit-learn, astropy) will
+  mostly fail on Python 3.12; requests is a competition repo → expect a biased 50–100-task subset. No Docker needed.
+Nothing is installed, pulled or deleted in this step except the tiny `hello-world` image.
+```
+cd gemma4-dev-agent && git pull && git log --oneline -1
+docker info 2>&1 | grep -E "Server Version|Storage Driver|Docker Root Dir|ERROR|permission" ; docker run --rm hello-world 2>&1 | tail -2
+docker images --format '{{.Repository}}:{{.Tag}} {{.Size}}' 2>&1 | head -8      # e.g. swebench-sandbox (B-3h never ran)
+df -h . "$(docker info -f '{{.DockerRootDir}}' 2>/dev/null || echo /var/lib/docker)" 2>&1 | tail -2; nproc; free -g | head -2
+```
+📷 all of it. Read: `Hello from Docker!` printed → Docker works without sudo → route B possible if the Docker root's disk has
+≥ 60 GB free. `permission denied` / `command not found` → route A only (or the user adds docker rights). The laptop then
+writes the chosen route's steps.
+
+---
+
 ## B-7 · More tasks for E4B's own rollouts: 450 more public SWE-rebench tasks → build → gold → 4 E4B passes (2026-11-11) — ▶ alongside / after B-6-D (step 1 is CPU + network; steps 2–3 after B-6-D's photo)
 
 **Why.** Line 5 (user, 2026-11-11: "这个会话做5，数据肯定是要增强的" → "box用4个GPU，扩题到300题"): fix E4B's edit-copy errors with
