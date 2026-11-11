@@ -41,7 +41,10 @@ dropped too.
 
 ---
 
-## B-6 · A LoRA from E4B's own resolved runs on the flip tasks (rejection-sampling fine-tune) (2026-11-10) — START HERE: step 1 (CPU, ~10 min); one step at a time, 📷 after each
+## B-6 · A LoRA from E4B's own resolved runs on the flip tasks (rejection-sampling fine-tune) (2026-11-10) — ✓ ran 2026-11-11: ■ STOP (51-task split, 4 vs 4 passes: no adapter 14.5, adapter 12.25)
+
+**Result (2026-11-11).** No adapter 12 · 16 · 15 · 15 (mean 14.5); `e4b_rft` 14 · 11 · 11 · 13 (mean 12.25): −2.25, rule needs ≥ +3 → stop.
+Nothing further to run here. The one diagnostic (4 adapter passes on the 67 training tasks) only on the user's word.
 
 **Why.** B-5: of the 67 tasks 12 are always resolved, 25 never, 30 flip; the flip tasks have 155 resolved runs of 330 (47 %),
 16 of them are resolved in at most half the passes. Mean 26.1 per pass; if every flip task always went right it would be
