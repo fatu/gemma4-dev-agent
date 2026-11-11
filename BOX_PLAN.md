@@ -100,7 +100,7 @@ Optional reference, same steps on another free card: `MODEL=google/gemma-4-31B-i
 
 ---
 
-## B-7 · More tasks for E4B's own rollouts: 450 more public SWE-rebench tasks → build → gold → 4 E4B passes (2026-11-11) — ▶ alongside / after B-6-D (step 1 is CPU + network; steps 2–3 after B-6-D's photo)
+## B-7 · More tasks for E4B's own rollouts: 450 more public SWE-rebench tasks → build → gold → 8 E4B passes (2026-11-11) — steps 1–2 ✓ (422 built, 161 pass gold) · ▶ step 3: 8 cards, 8 passes, ~3 h
 
 **Why.** Line 5 (user, 2026-11-11: "这个会话做5，数据肯定是要增强的" → "box用4个GPU，扩题到300题"): fix E4B's edit-copy errors with
 labels made from its OWN rollouts: every failed `edit_file` gets a corrected call (the true span of the file at that moment, the
@@ -148,20 +148,26 @@ OUT=runs/rebench2 CONC_GOLD=16 bash scripts/rebench_gen.sh gold      # 📷 the 
 CONC_GOLD=16 if `nproc` ≥ 32, else 8. Read: ok ≥ 250 → step 3. 150–249 → step 3 anyway, say so. < 150 → stop + photo of
 `grep -E "NOT" runs/rebench2/gold.log | head -40`.
 
-**Step 3 · rollouts: 4 E4B passes, one per card, no adapter (~5–6 h; after B-6-D's photo)**
+**Step 3 · rollouts: 8 E4B passes, one per card, no adapter (~3 h with the 161 tasks that passed gold; all 8 cards)**
+
+Changed 2026-11-11 (user: "你改一下，跑8张卡"): gold left 161 tasks, not ~300, so 4 passes would give about 300 failed edits
+(under the 400 line). Eight passes on eight cards take the same wall time and double the material. Nothing else may run
+on the cards meanwhile: the first line below must show all 8 free. If B-8 holds a card (it uses GPU 7), either wait for its
+`stop`, or leave that card out: `GPUS="0 1 2 3 4 5 6" PASSES=7 ARM_BY_PASS="base base base base t07 t07 t07"` (then m5–m7 are the
+temp-0.7 passes and the lines below take `m{5..7}`).
 ```
-nvidia-smi --query-gpu=index,memory.used --format=csv,noheader          # 📷 cards 0–3 must be free (< 2,000 MiB)
+nvidia-smi --query-gpu=index,memory.used --format=csv,noheader          # 📷 cards 0–7 must be free (< 2,000 MiB)
 E4B=google/gemma-4-E4B-it-qat-w4a16-ct
-OUT=runs/rebench2 GPUS="0 1 2 3" PASSES=4 ARM_BY_PASS="base base t07 t07" LANE_CONC=2 KILL_VLLM=0 LATEST=e4b ADAPTER= MODEL=$E4B TOK=$E4B \
-  GTAG=m KEEP=all SFT=runs/sft/rebenche4b_more SRC=e4b_onpolicy POLICY=gemma-4-e4b-it-qat-w4a16-ct bash scripts/rebench_gen.sh gen   # 📷 the 4 pass lines
+OUT=runs/rebench2 GPUS="0 1 2 3 4 5 6 7" PASSES=8 ARM_BY_PASS="base base base base t07 t07 t07 t07" LANE_CONC=2 KILL_VLLM=0 LATEST=e4b ADAPTER= MODEL=$E4B TOK=$E4B \
+  GTAG=m KEEP=all SFT=runs/sft/rebenche4b_more SRC=e4b_onpolicy POLICY=gemma-4-e4b-it-qat-w4a16-ct bash scripts/rebench_gen.sh gen   # 📷 the 8 pass lines
 ```
-Same settings as the e/f passes otherwise (TIME_MIN 7, MAX_TURNS 80, NO_TESTDEPS as then). Runs: `runs/dev33_base_m1`,
-`runs/dev33_base_m2` (temp 0.2), `runs/dev33_t07_m3`, `runs/dev33_t07_m4` (temp 0.7). The lane logs are `runs/rebench_lane0..3.log`
-(the same names B-6-D used: read B-6-D's lora line before this step). When all 4 lanes have ended:
+Same settings as the e/f passes otherwise (TIME_MIN 7, MAX_TURNS 80, NO_TESTDEPS as then). Runs: `runs/dev33_base_m1` …
+`runs/dev33_base_m4` (temp 0.2), `runs/dev33_t07_m5` … `runs/dev33_t07_m8` (temp 0.7). The lane logs are `runs/rebench_lane0..7.log`
+(the same names B-6-D used: read B-6-D's lora line before this step). When all 8 lanes have ended:
 ```
-for r in runs/dev33_base_m1 runs/dev33_base_m2 runs/dev33_t07_m3 runs/dev33_t07_m4; do echo "$r results $(wc -l < $r/task_results.jsonl) resolved $(grep -c '"resolved": true' $r/task_results.jsonl)"; done
-grep -hE "eval concurrency|^== (base|t07):" runs/rebench_lane0.log runs/rebench_lane2.log | cut -c1-220     # concurrency 2 · temperature 0.2 / 0.7
-python3 scripts/edit_stats.py runs/dev33_base_m1 runs/dev33_base_m2 runs/dev33_t07_m3 runs/dev33_t07_m4
+for r in runs/dev33_base_m{1..4} runs/dev33_t07_m{5..8}; do echo "$r results $(wc -l < $r/task_results.jsonl) resolved $(grep -c '"resolved": true' $r/task_results.jsonl)"; done
+grep -hE "eval concurrency|^== (base|t07):" runs/rebench_lane0.log runs/rebench_lane4.log | cut -c1-220     # concurrency 2 · temperature 0.2 / 0.7
+python3 scripts/edit_stats.py runs/dev33_base_m{1..4} runs/dev33_t07_m{5..8}
 ```
 📷 all of it. Do NOT run the `data` stage (the relabel stage replaces it; written on the laptop after this photo).
 
@@ -171,9 +177,9 @@ python3 scripts/edit_stats.py runs/dev33_base_m1 runs/dev33_base_m2 runs/dev33_t
   200–399 → it is, but say the number. < 200 → stop: more passes would be needed first (the laptop decides).
 - Resolved per pass: about a third (E4B resolved 24–29 of the kit's 67). Far below → check the lane log for a missing site or a
   test that never ran.
-- Temp 0.7 vs 0.2 (m3/m4 vs m1/m2): the not-found rate per edit and resolved; just a record.
+- Temp 0.7 vs 0.2 (m5–m8 vs m1–m4): the not-found rate per edit and resolved; just a record.
 
-Nothing goes to Kaggle. Cost: own box only, ≈ 4 cards × 5–6 h + ~3 h CPU.
+Nothing goes to Kaggle. Cost: own box only, ≈ 8 cards × ~3 h (161 tasks) + ~3 h CPU.
 
 ---
 
