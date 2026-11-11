@@ -13,6 +13,12 @@ Part 2 SUBMIT: every run's first submit_patch, classed by the last run_command s
 and per class how many of those runs were resolved, over all tasks and over flip tasks only (always / never tasks have
 no room). If runs that submit on a failure are resolved about as often as the others, holding the submission back
 cannot gain much. Prints no task ids unless --ids is given.
+
+    python3 scripts/stab.py <reference passes> --vs <other passes> [--held runs/rft/heldout]      # BOX_PLAN B-6 diagnostic
+
+--vs: the task classes (always / never / flip) come from the reference passes; per class the resolved rate of the
+reference and of the --vs passes. --held <dir of <task>.p<k>.json files>: the flip tasks named there were kept out of
+the training and get their own line.
 """
 import collections
 import json
@@ -60,8 +66,18 @@ def submit_class(steps):
 
 
 def main():
-    args = [a for a in sys.argv[1:] if not a.startswith("--")]
-    ids = "--ids" in sys.argv
+    argv = sys.argv[1:]; ids = "--ids" in argv; held_dir = None; args, vs, cur = [], [], None
+    for a in argv:
+        if a in ("--vs", "--held"):
+            cur = a
+        elif a.startswith("--"):
+            cur = None
+        elif cur == "--held":
+            held_dir = a; cur = None
+        elif cur == "--vs":
+            vs.append(a)
+        else:
+            args.append(a)
     runs = [pathlib.Path(a) for a in args] or sys.exit(__doc__)
     data = [(r.name, *load(r)) for r in runs]
     print(f"stab · {len(runs)} passes [{' '.join(r.name for r in runs)}] · task ids printed: {'yes' if ids else 'no'} · "
@@ -84,6 +100,22 @@ def main():
           f"+{best - mean:.1f} tasks per pass)")
     if ids:
         print("   flip: " + " ".join(f"{t}({k_of[t]}/{n_of[t]})" for t in flip))
+    if vs:
+        held = {f.name.split(".p")[0] for f in pathlib.Path(held_dir).glob("*.json")} if held_dir else set()
+        other = [(pathlib.Path(v).name, *load(pathlib.Path(v))) for v in vs]
+        print(f"== VS {len(other)} passes [{' '.join(n for n, _, _ in other)}] against the {len(data)} reference passes · held-out "
+              f"tasks from {held_dir or '–'}: {len(held)} ({len(held & set(flip))} of them flip)")
+        for n, res, _ in other:
+            print(f"  {n}: {sum(bool(x.get('resolved')) for x in res.values())} / {len(res)} resolved")
+        groups = [("always", always), ("flip, in training", [t for t in flip if t not in held]),
+                  ("flip, held out", [t for t in flip if t in held]), ("never", never), ("all", tasks)]
+        for g, ts in groups:
+            r1 = sum(k_of[t] for t in ts); r0 = sum(n_of[t] for t in ts)
+            v1 = sum(bool(res.get(t, {}).get("resolved")) for _, res, _ in other for t in ts if t in res)
+            v0 = sum(t in res for _, res, _ in other for t in ts)
+            print(f"   {g:18} {len(ts):3} tasks · reference {r1:4} / {r0:4} = {100 * r1 / max(r0, 1):3.0f} % · vs {v1:4} / {v0:4} = "
+                  f"{100 * v1 / max(v0, 1):3.0f} % · difference {100 * v1 / max(v0, 1) - 100 * r1 / max(r0, 1):+.0f} pts")
+        return
     fl = set(flip)
     for label, keep in (("all tasks", lambda t: True), ("flip tasks only", lambda t: t in fl)):
         C = collections.defaultdict(lambda: [0, 0]); nosub = [0, 0]; notrace = 0
