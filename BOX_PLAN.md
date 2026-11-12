@@ -41,7 +41,7 @@ dropped too.
 
 ---
 
-## B-8 · SWE-bench Verified on the box (2026-11-11) — step 0 ✓ (Docker ok) · ▶ route B: E4B on Verified-mini, one card, ~1.5–2 h
+## B-8 · SWE-bench Verified on the box (2026-11-11) — step 0 ✓ (Docker ok) · route B ✓ **E4B 3 / 50 on Verified-mini**
 
 **Why.** The user wants E4B's SWE-bench Verified number (no public one: the Gemma 4 model card has LiveCodeBench, Codeforces,
 Tau2 only). Two routes, picked after this photo:
@@ -97,6 +97,13 @@ For scale only: SWE-Gym's 32B Qwen base was ≈ 7 % on full Verified before fine
   for E4B to show a LoRA effect in resolved counts; the laptop then proposes per-edit metrics instead.
 Optional reference, same steps on another free card: `MODEL=google/gemma-4-31B-it-qat-w4a16-ct GPU=6 PORT=8011 TAG=vm_31b`
 (serve, run, eval, report with those knobs) — the 31B on the same 50 tasks.
+
+**Result (photo, 2026-11-11): resolved 3 / 50 (6 %; Wilson 95 % ≈ 2–16 %).** Grading: submitted 50, completed 39, empty patch
+11, errors 0. Exit statuses: 47 `Submitted`, 3 `ContextWindowExceededError` (so ≥ 8 tasks submitted an empty diff). Model
+calls per task p50 16, p90 39. The eval image pulls took the disk from ~100 to ~80 GB free. Reading: 3 falls in the gap
+between the pre-set bands (0–2 / ≥ 5), on the low side; at this level a 50-task resolved count cannot show a LoRA effect
+(+2 tasks is inside the noise), so route A is NOT built now, and the LoRA test stays on our harness (rebench split, per-edit
+metrics + resolved). Not yet read: why the 11 patches are empty (format, give-up, or edits outside the repo).
 
 ---
 
