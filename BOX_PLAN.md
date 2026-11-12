@@ -41,7 +41,7 @@ dropped too.
 
 ---
 
-## B-8 · SWE-bench Verified on the box (2026-11-11) — step 0 ✓ (Docker ok) · route B ✓ **E4B 3 / 50 on Verified-mini**
+## B-8 · SWE-bench Verified on the box (2026-11-11) — step 0 ✓ (Docker ok) · route B ✓ **E4B 3 / 50 on Verified-mini** · ▶ route A on 4 cards
 
 **Why.** The user wants E4B's SWE-bench Verified number (no public one: the Gemma 4 model card has LiveCodeBench, Codeforces,
 Tau2 only). Two routes, picked after this photo:
@@ -104,6 +104,41 @@ calls per task p50 16, p90 39. The eval image pulls took the disk from ~100 to ~
 between the pre-set bands (0–2 / ≥ 5), on the low side; at this level a 50-task resolved count cannot show a LoRA effect
 (+2 tasks is inside the noise), so route A is NOT built now, and the LoRA test stays on our harness (rebench split, per-edit
 metrics + resolved). Not yet read: why the 11 patches are empty (format, give-up, or edits outside the repo).
+
+### B-8 route A · Verified in OUR harness on 4 cards (user: "a的代码帮忙写好，用4张卡加速", 2026-11-11)
+
+What it is: `scripts/verified_a.sh` = the SWE-rebench pipeline (rebench_build → gold → lane.sh) on SWE-bench Verified
+(princeton-nlp/SWE-bench_Verified @c104f84). Our prompt, our 9 tools, the subprocess sandbox, pytest verify, the E4B
+latest setting with NO adapter (ADAPTER=) — the bench a LoRA trained on our format can be tested on (route B cannot).
+Skipped repos: django + sympy (not pytest), requests (competition repo), and by default astropy / matplotlib /
+scikit-learn (C extensions are not built in the workspace the sandbox imports first → cannot pass gold; `SKIP_REPOS=""`
+tries them at hours of failed compiles). Expected kept ≈ 98 tasks (sphinx 44 · xarray 22 · pytest 19 · pylint 10 ·
+seaborn 2 · flask 1; `prep` prints the real counts). Install specs come from swebench 4.1.0 itself (`.venv-swe` of route B):
+pinned first, then unpinned (numpy < 2) because the sandbox Python is 3.12, not the specs' 3.9–3.11. "4 cards" = one
+full pass per card in parallel: 4 seeds in the wall time of one (a bench needs the mean; one pass split 4 ways is not built).
+Tested on the laptop: syntax, the specs conversion on swebench 4.1.0's constants source, `prep` on a fake parquet, the
+install fallback chain offline on a tiny project, `report` on fake runs. Not tested: a real build / gold / lane.
+```
+cd gemma4-dev-agent && git pull && git log --oneline -1
+GPU=3 bash scripts/verified_box.sh stop                    # route B's vLLM still holds card 3
+df -h . | tail -1                                          # ≥ 40 GB free wanted (build stops itself at 20)
+bash scripts/verified_a.sh prep                            # ~1 min, internet               📷 all
+bash scripts/verified_a.sh build                           # ~30–60 min, CPU + internet     📷 == build + deps lines
+bash scripts/verified_a.sh gold                            # ~10–20 min, CPU                📷 == gold + per repo
+nvidia-smi --query-gpu=index,memory.used --format=csv,noheader     # 4 free cards; else GPUS="4 5 6 7"
+GPUS="0 1 2 3" bash scripts/verified_a.sh run              # 4 passes at once, ~1–2 h       📷 the 4 pass lines
+bash scripts/verified_a.sh report                          # after all 4 lanes end          📷 == block + edit stats
+```
+Progress while the lanes run: `tail -2 runs/verified_a_lane*.log`. Faster but not the scorer's shape: `LANE_CONC=2`.
+**Stop rules (set before the data).** prep: kept far from ≈ 98 or many "without a spec" → photo. build: `== build` < 80
+built → photo of the deps lines. gold: ok < 30 → stop (bench too small to show a LoRA effect; the laptop then decides
+between SKIP_REPOS="" and dropping route A); 30–49 → go and say so; ≥ 50 → go. run: any pass with fewer results than
+ok.txt has lines → photo of `tail -20` of that lane log.
+**Read it.** A useful LoRA bench needs room both ways: E4B's mean resolved between ~15 % and ~70 % of ok, and a pass-to-pass
+spread small next to the effect we hope for (the report prints min–max). The pooled edit stats (not-found rate, loops) are
+the primary readout of the edit-copy LoRA (line 5); resolved is the guard. Repo overlap: B-7's 450 tasks include 2 seaborn,
+1 xarray, 2 sphinx tasks (prep prints the overlap) → a LoRA tested here must be trained without those repos' tasks.
+A LoRA A/B later: `ADAPTER=<name> GTAG=vb bash scripts/verified_a.sh run` on the same ok.txt, then report with GTAG=vb.
 
 ---
 

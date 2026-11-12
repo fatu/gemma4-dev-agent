@@ -24,6 +24,11 @@ published, so this is our own version. Per task (internet needed; the lanes late
 B-7 (more tasks): --shard/--nshards (tasks dealt by repo; outputs tasks.shard<k>.jsonl, merged by rebench_gen.sh) · --lean
 (blobless clones, each deleted after its repo's last task) · --min-free-gb (stop, keeping what is built) · --max-snapshot-mb ·
 --uv-cache (UV_CACHE_DIR there + UV_LINK_MODE=hardlink: one copy of each wheel on the disk of --out).
+B-8 route A (SWE-bench Verified in our harness): dataset tag `verified` (princeton-nlp/SWE-bench_Verified, pinned) · --specs
+<json> ({repo: {version: install_config}}, written by scripts/verified_a.sh prep from swebench's own install specs; used
+when a row has no install_config) · such a config may add extras (".[test]"), pip_packages_unpinned (tried when the pinned
+install fails: old pins rarely install on 3.12) and pre_install_sed (the specs' `sed -i` lines, run on the install copy
+only, never on the snapshot) · --deps-timeout (s per install command; a timeout counts as a failed attempt).
 Prints one line per task (snapshot MB, deps dists and MB, seconds, GB free) and a total (📷); every number is the record. Outputs quote task text → runs/ (gitignored).
 """
 import argparse
@@ -39,7 +44,9 @@ DATASETS = {"nebius": ("nebius/SWE-rebench", "89cdfbab4ab1bd8f5a658bb212d1b63624
                        ("data/test-00000-of-00002.parquet", "data/test-00001-of-00002.parquet",
                         "data/filtered-00000-of-00001.parquet")),
             "whitecircle": ("whitecircle/swe-rebench-v2-clean-python-tasks", "17038e42a5a92252531a7fa4be271cb97c6a936d",
-                            ("data/train-00000-of-00001.parquet", "data/test-00000-of-00001.parquet"))}
+                            ("data/train-00000-of-00001.parquet", "data/test-00000-of-00001.parquet")),
+            "verified": ("princeton-nlp/SWE-bench_Verified", "c104f840cc67f8b6eec6f759ebc8b2693d585d4a",
+                         ("data/test-00000-of-00001.parquet",))}
 
 
 def load_rows(tag, ids):
@@ -76,8 +83,14 @@ def task_row(row, iid):
             "environment_setup_commit": row.get("environment_setup_commit") or row["base_commit"]}
 
 
+DEPS_TIMEOUT = 1800   # --deps-timeout
+
+
 def sh(cmd, cwd=None, timeout=1800, env=None):
-    return subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, timeout=timeout, env=env)
+    try:
+        return subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, timeout=timeout, env=env)
+    except subprocess.TimeoutExpired:
+        return subprocess.CompletedProcess(cmd, 124, "", f"timed out after {timeout} s")
 
 
 UV_ENV = None   # set in main when --uv-cache is given: the cache on the same disk as site/ + hard links → each wheel once
@@ -117,21 +130,39 @@ def du(path):
 
 
 def deps(src, cfg, site, py):
-    """uv pip install --target site: project + pip_packages + reqs files; retry without the project"""
+    """uv pip install --target site: project + pip_packages + reqs files; retry without the project. A config from --specs
+    may add extras, an unpinned package list and sed lines; then the attempts are tried in order, the first that installs wins"""
     pkgs = [p for p in (cfg.get("pip_packages") or []) if p]
+    loose = [p for p in (cfg.get("pip_packages_unpinned") or []) if p]
     rps = cfg.get("reqs_path") or []
     reqs = [x for rp in (rps if isinstance(rps, list) else [rps]) if os.path.isfile(os.path.join(src, rp))
             for x in ("-r", os.path.join(src, rp))]
-    shutil.rmtree(site, ignore_errors=True); os.makedirs(site)
+    for c in cfg.get("pre_install_sed") or []:                      # install copy only (the snapshot tgz is already made)
+        sh(["bash", "-c", c], cwd=src, timeout=60)
+    proj = src + (f"[{cfg['extras']}]" if cfg.get("extras") else "")
+    tries = [("full", [proj] + pkgs + reqs)]
+    if cfg.get("extras"):
+        tries.append(("full (no extras)", [src] + pkgs + reqs))
+    if loose and loose != pkgs:
+        tries.append(("full (unpinned)", [proj] + loose + reqs))
+    tries.append(("partial", (pkgs or ["pytest"]) + reqs))
+    if loose and loose != pkgs:
+        tries.append(("partial (unpinned)", loose + reqs))
+        if reqs:
+            tries.append(("partial (unpinned, no reqs files)", loose))
     base = ["uv", "pip", "install", "-q", "--python", py, "--target", site]
-    r = sh(base + [src] + pkgs + reqs, env=UV_ENV)
-    how = "full"
-    if r.returncode:
-        err = (r.stderr or r.stdout).strip().splitlines()[-1:] or [""]
+    first_err = ""
+    for how, args in tries:
         shutil.rmtree(site, ignore_errors=True); os.makedirs(site)
-        r = sh(base + (pkgs or ["pytest"]) + reqs, env=UV_ENV)
-        how = f"partial (project not installable: {err[0][:70]})" if r.returncode == 0 else \
-            f"FAILED: {((r.stderr or r.stdout).strip().splitlines() or [''])[-1][:90]}"
+        r = sh(base + args, env=UV_ENV, timeout=DEPS_TIMEOUT)
+        if r.returncode == 0:
+            break
+        err = ((r.stderr or r.stdout).strip().splitlines() or [""])[-1]
+        first_err = first_err or err
+    else:
+        how = f"FAILED: {err[:90]}"
+    if how.startswith("partial") and how != "FAILED":
+        how = f"{how} (project not installable: {first_err[:70]})"
     n = sum(1 for d in os.listdir(site) if d.endswith(".dist-info"))
     return how, n
 
@@ -149,6 +180,8 @@ def main():
     ap.add_argument("--min-free-gb", type=float, default=0, help="stop (keeping what is built) when the disk of --out has less free")
     ap.add_argument("--max-snapshot-mb", type=float, default=0, help="> 0: drop a task whose snapshot tgz is larger")
     ap.add_argument("--uv-cache", default="", help="UV_CACHE_DIR for the installs (put it under --out: same disk) + UV_LINK_MODE=hardlink")
+    ap.add_argument("--specs", default="", help="json {repo: {version: install_config}} for rows without install_config (verified)")
+    ap.add_argument("--deps-timeout", type=int, default=1800, help="seconds per install command (a timeout = a failed attempt)")
     a = ap.parse_args()
     for t in ("git", "tar") + (() if a.no_deps else ("uv",)):
         if not shutil.which(t):
@@ -165,7 +198,9 @@ def main():
         os.makedirs(os.path.join(a.out, d), exist_ok=True)
     pyv = sh([a.python, "-c", "import sys; print('%d.%d' % sys.version_info[:2])"]).stdout.strip()
     sfx = f".shard{a.shard}" if a.nshards > 1 else ""
-    global UV_ENV
+    global UV_ENV, DEPS_TIMEOUT
+    DEPS_TIMEOUT = a.deps_timeout
+    specs = json.load(open(a.specs)) if a.specs else {}
     if a.uv_cache:
         os.makedirs(a.uv_cache, exist_ok=True)
         UV_ENV = dict(os.environ, UV_CACHE_DIR=os.path.abspath(a.uv_cache), UV_LINK_MODE="hardlink")
@@ -173,7 +208,8 @@ def main():
     print(f"rebench_build: {len(entries)} tasks from {a.ids} → {a.out} · deps for python {pyv} ({a.python})"
           f"{' · deps skipped' if a.no_deps else ''} · shard {a.shard}/{a.nshards} · lean git {'on' if a.lean else 'off'}"
           f" · stop below {a.min_free_gb:g} GB free (now {free():.0f} GB) · max snapshot {a.max_snapshot_mb or 'none'} MB"
-          f" · uv cache {a.uv_cache + ' (hardlink)' if a.uv_cache else 'default'}", flush=True)
+          f" · uv cache {a.uv_cache + ' (hardlink)' if a.uv_cache else 'default'} · specs {a.specs or 'none'}"
+          f" ({sum(len(v) for v in specs.values())} repo versions) · deps timeout {a.deps_timeout} s", flush=True)
     rows = {}
     for tag in sorted({e[0] for e in entries}):
         rows.update(load_rows(tag, {e[1] for e in entries if e[0] == tag}))
@@ -201,7 +237,9 @@ def main():
             print(f"{iid:<58} snapshot {os.path.getsize(tgz) / 1e6:.0f} MB > {a.max_snapshot_mb:g}: dropped", flush=True)
             os.remove(tgz); tot["too big"] = tot.get("too big", 0) + 1; continue
         tot["snapshots"] += 1
-        cfg = row.get("install_config") or {}
+        cfg = row.get("install_config") or specs.get(row["repo"], {}).get(str(row.get("version") or ""), {})
+        if specs and not row.get("install_config") and not cfg:
+            print(f"  {iid}: no spec for {row['repo']} version {row.get('version')} (project + pytest only)", flush=True)
         if isinstance(cfg, str):
             try:
                 cfg = json.loads(cfg)
@@ -213,7 +251,7 @@ def main():
             if not os.path.isdir(src) or not os.listdir(src):            # snapshot existed: unpack it for the install
                 shutil.rmtree(src, ignore_errors=True); os.makedirs(src); sh(["tar", "xzf", tgz, "-C", src])
             how, n = deps(src, cfg, os.path.join(a.out, "site", iid), a.python)
-            tot["deps full" if how == "full" else "deps partial" if how.startswith("partial") else "deps failed"] += 1
+            tot["deps full" if how.startswith("full") else "deps partial" if how.startswith("partial") else "deps failed"] += 1
         shutil.rmtree(os.path.join(work, "src"), ignore_errors=True)
         json.dump({"source": src_name, "install_config": cfg, "python": cfg.get("python"), "test_cmd": cfg.get("test_cmd"),
                    "docker_image": row.get("docker_image") or row.get("image_name"), "license": row.get("license_name") or row.get("license"),

@@ -20,6 +20,8 @@
 # 1 = blobless git clones deleted after use) · MIN_FREE_GB (0 = no guard) · SNAP_MAX_MB (0 = any size) · UV_CACHE ("";
 # a dir under OUT = one hard-linked wheel cache) · KILL_VLLM (1; 0 = leave other lanes' servers alone) · ARM_BY_PASS
 # ("" = ARM for every pass; "base base t07 t07" = pass i gets word i) · LANE_CONC (1; lane.sh's eval concurrency).
+# SWE-bench Verified in our harness (BOX_PLAN B-8 route A, via scripts/verified_a.sh): SPECS ("" = none; a json of install
+# configs per repo/version) · DEPS_TIMEOUT (1800 s per install command).
 set -uo pipefail
 cd "$(dirname "$0")/.."
 STAGE="${1:?build|gold|gen|data}"
@@ -28,14 +30,15 @@ GPUS=(${GPUS:-0 1 2 3}); TIME_MIN="${TIME_MIN:-7}"; MODEL="${MODEL:-google/gemma
 TOK="${TOK:-$MODEL}"; PY=.venv-eval/bin/python; SFT="${SFT:-runs/sft/rebench31b}"; MAX_TURNS="${MAX_TURNS:-80}"
 GTAG="${GTAG:-g}"; KEEP="${KEEP:-resolved}"; SRC="${SRC:-31b_teacher}"; POLICY="${POLICY:-gemma-4-31b-it-qat-w4a16-ct}"
 BUILD_JOBS="${BUILD_JOBS:-1}"; LEAN="${LEAN:-0}"; MIN_FREE_GB="${MIN_FREE_GB:-0}"; SNAP_MAX_MB="${SNAP_MAX_MB:-0}"; UV_CACHE="${UV_CACHE:-}"
-KILL_VLLM="${KILL_VLLM:-1}"; ARM_BY_PASS=(${ARM_BY_PASS:-}); export LANE_CONC="${LANE_CONC:-1}"
+SPECS="${SPECS:-}"; DEPS_TIMEOUT="${DEPS_TIMEOUT:-1800}"; KILL_VLLM="${KILL_VLLM:-1}"; ARM_BY_PASS=(${ARM_BY_PASS:-}); export LANE_CONC="${LANE_CONC:-1}"
 arm_of() { local w="${ARM_BY_PASS[$(( $1 - 1 ))]:-}"; echo "${w:-$ARM}"; }
 export TASKS_FILE="$OUT/tasks.jsonl" SNAPSHOTS_DIR="$OUT/snapshots" REBENCH_SITE="$OUT/site"
-echo "rebench_gen $STAGE · ids $IDS_FILE · out $OUT · arm $ARM · arms by pass [${ARM_BY_PASS[*]:-}] · passes $PASSES on GPUs ${GPUS[*]} · lane concurrency $LANE_CONC · kill vllm $KILL_VLLM · TIME_MIN $TIME_MIN · MAX_TURNS $MAX_TURNS · model $MODEL · tags $GTAG<i> · keep $KEEP · sft $SFT ($SRC, $POLICY) · LATEST ${LATEST:-31b} ADAPTER ${ADAPTER-unset} · build jobs $BUILD_JOBS lean $LEAN min free ${MIN_FREE_GB} GB snapshot max ${SNAP_MAX_MB} MB uv cache ${UV_CACHE:-default}"
+echo "rebench_gen $STAGE · ids $IDS_FILE · out $OUT · arm $ARM · arms by pass [${ARM_BY_PASS[*]:-}] · passes $PASSES on GPUs ${GPUS[*]} · lane concurrency $LANE_CONC · kill vllm $KILL_VLLM · TIME_MIN $TIME_MIN · MAX_TURNS $MAX_TURNS · model $MODEL · tags $GTAG<i> · keep $KEEP · sft $SFT ($SRC, $POLICY) · LATEST ${LATEST:-31b} ADAPTER ${ADAPTER-unset} · build jobs $BUILD_JOBS lean $LEAN min free ${MIN_FREE_GB} GB snapshot max ${SNAP_MAX_MB} MB uv cache ${UV_CACHE:-default} specs ${SPECS:-none} deps timeout ${DEPS_TIMEOUT} s"
 
 case "$STAGE" in
 build)
-  mkdir -p "$OUT"; BF=(--ids "$IDS_FILE" --out "$OUT" --min-free-gb "$MIN_FREE_GB" --max-snapshot-mb "$SNAP_MAX_MB")
+  mkdir -p "$OUT"; BF=(--ids "$IDS_FILE" --out "$OUT" --min-free-gb "$MIN_FREE_GB" --max-snapshot-mb "$SNAP_MAX_MB" --deps-timeout "$DEPS_TIMEOUT")
+  [ -n "$SPECS" ] && BF+=(--specs "$SPECS")
   [ "$LEAN" = 1 ] && BF+=(--lean); [ -n "$UV_CACHE" ] && BF+=(--uv-cache "$UV_CACHE")
   if [ "$BUILD_JOBS" -le 1 ]; then
     $PY scripts/rebench_build.py "${BF[@]}" 2>&1 | tee "$OUT.build.log" | grep -E "^rebench_build|NO ROW|snapshot:|FAILED|partial|dropped|^STOP|^TOTAL"
