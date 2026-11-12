@@ -107,7 +107,7 @@ metrics + resolved). Not yet read: why the 11 patches are empty (format, give-up
 
 ---
 
-## B-7 · More tasks for E4B's own rollouts: 450 more public SWE-rebench tasks → build → gold → 8 E4B passes (2026-11-11) — steps 1–3 ✓ (422 built, 161 pass gold, 8 passes: 1,277 failed edits ≥ 400) · next: the relabel stage (laptop, not written yet)
+## B-7 · More tasks for E4B's own rollouts: 450 more public SWE-rebench tasks → build → gold → 8 E4B passes (2026-11-11) — steps 1–3 ✓ (422 built, 161 pass gold, 8 passes: 1,277 failed edits ≥ 400) · ▶ step 4: the relabel stage (CPU, ~10 min) → step 5 train → step 6 A/B
 
 **Why.** Line 5 (user, 2026-11-11: "这个会话做5，数据肯定是要增强的" → "box用4个GPU，扩题到300题"): fix E4B's edit-copy errors with
 labels made from its OWN rollouts: every failed `edit_file` gets a corrected call (the true span of the file at that moment, the
@@ -200,6 +200,74 @@ Nothing goes to Kaggle. Cost: own box only, ≈ 8 cards × ~3 h (161 tasks) + ~3
 - Temp 0.2 vs 0.7: resolved 115 vs 116; not-found share about 34 % in both.
 - Laptop note for the relabel stage (not measured on the box): 608 of the failed edits repeat the previous `old_string`, so
   the number of different failed quotes is well under 1,277. Count them after de-duplication before sizing the training.
+
+**The relabel stage (laptop, 2026-11-11; this session took B-7 over).** `train/relabel_edits.py` (no model): every trajectory
+is replayed on its snapshot (write_file, the diff of each ok edit; a command that may write files → the files are unknown
+until read whole), so the true text of the file at the moment of each failed edit is known. A not-found edit then gets
+`old_string` := the true span closest to the model's quote, and `new_string` := the model's own change carried over to it,
+line by line; the wrong line in the thought is replaced too. It is kept only if the corrected call would apply exactly once,
+a `.py` file still parses, and every corrected line was in a tool output of the model's context. Left out: the change is
+already in the file · no span close enough (an invented quote) · two equally close spans · file state unknown.
+A corrected call is a training target on its own sequence (the history is E4B's own, up to that call); ok edits are added
+1 : 1 as native targets; no other call is a target. 10 % of the repos are held out (the eval loss).
+
+Laptop run on the 11 no-adapter passes of the first 67 tasks (the trajectories from the private dataset, snapshots rebuilt
+here; 20 s):
+- Replay check: 1,644 of 1,644 `read_file` results equal the replayed file lines.
+- 345 not-found edits (edit_stats says 401: it counts a tool result again each time the history is re-sent after a
+  compaction, so the 1,277 of step 3 is too high by about the same share) → corrected 123 (36 %) · no anchor 52 · already
+  applied 66 · file state unknown 44 · conflict 18 · not visible 15 · syntax broken 15 · ambiguous 12.
+- 123 corrected = 76 different calls → 108 kept (at most 2 per call: one first failure, one after an error) on 28 tasks.
+  What was wrong in the quote: 1 line 49 · 2–3 lines 33 · 4+ lines 18 · lines left out 6 · whitespace only 2. 50 of the 345
+  quotes had escape junk (`\"` for `"`, `\\` for `\`). In 42 of the 108 the wrong line was the one being changed (mostly a file E4B had
+  already edited, quoted as it was before). The thought quoted the wrong line in 103 of 108.
+- Rendered: 199 sequences, 2.19 M tokens, 270 K label tokens, `RESULT PASS`; longest 20,205 tokens.
+- Expected on the box (8 new passes + these 11): roughly 450–550 corrected, ~800 sequences, ~50 optimizer steps per epoch.
+
+**Step 4 · data (CPU, ~10 min; nothing else needed)**
+```
+cd gemma4-dev-agent && git pull && git log --oneline -1
+ls -d runs/dev33_base_m{1..4} runs/dev33_t07_m{5..8} runs/dev33_base_e{1..3} runs/dev33_base_f{1..8} | wc -l      # 19
+ls runs/rebench2/snapshots | wc -l; ls runs/rebench/snapshots | wc -l                                              # 422 · the first task set (≥ 67)
+bash train/relabel_box.sh data        # 📷 every line from 'relabel_box data' down
+```
+If the 11 e/f passes or `runs/rebench/snapshots` are gone: `RUNS="$(echo runs/dev33_base_m{1..4} runs/dev33_t07_m{5..8})"
+TASKS=runs/rebench2/tasks.jsonl SNAP=runs/rebench2/snapshots bash train/relabel_box.sh data` (say so).
+**Read it (set before the data).**
+- `replay check` ≥ 99 % of the reads equal. Lower → stop + photo: the replay is not the file the model saw.
+- `corrected … kept` ≥ 300 → go on. 150–299 → go on, say the number. < 150 → stop + photo (too little to train on).
+- Both render lines `RESULT PASS`; `trajectories … raised 0`. Else stop + photo of `tail -5 runs/sft/e4b_relabel.render.log`.
+- The last `== optimizer steps` line names the EPOCHS for ≥ 150 steps. "still under 150" → stop + photo.
+
+**Step 5 · train (all cards; the drill line's trainer on these files)** — EPOCHS = the number the steps line named.
+```
+ALL=$(nvidia-smi --query-gpu=index --format=csv,noheader | paste -sd, -)
+SET=_relab NAME=e4b_relab EPOCHS=<from the steps line> LR=3e-5 EVAL_EVERY=25 GPUS=$ALL nohup bash train/drills_box.sh train > runs/relab_train.log 2>&1 &
+tail -5 runs/relab_train.log        # 📷 at the end: the schedule line, the eval[...] lines, every '== epoch' line, the checksum line
+```
+r16 α16, as the drill adapters. Epoch to use = the one with the lowest held-out loss (call it N). Stop + photo on
+`TRAIN FAILED`, or if the schedule line shows fewer than 150 steps (B-6's adapter had 33 and did not move).
+```
+SET=_relab NAME=e4b_relab EPOCH=N bash train/drills_box.sh subs        # 📷 → runs/adapters/e4b_relab + the build check
+```
+**Step 6 · A/B on the 51-task split (tasks of neither task set): 4 passes without vs 4 with, one wave (8 cards, ~3–4 h)**
+```
+ls -d runs/dev33_base_[xy][0-7] 2>/dev/null        # must list nothing (else stop + photo: the tags are taken)
+pkill -f "vllm serve"; sleep 5; E4B=google/gemma-4-E4B-it-qat-w4a16-ct
+for g in 0 1 2 3 4 5 6 7; do AD=$([ $((g % 2)) = 1 ] && echo e4b_relab); GPU=$g TAG=$([ -n "$AD" ] && echo y || echo x)$g TIME_MIN=8 MAX_TURNS=80 LATEST=e4b ADAPTER=$AD MODEL=$E4B SPLIT=splits/disc_e4b.txt SUBMISSION=runs/base_lb024 ARMS=base TRAJ=1 nohup bash scripts/lane.sh run > runs/lane$g.log 2>&1 & done
+# when all 8 lanes have ended:
+for k in x y; do python3 -c "import glob,json,sys; c=[sum(json.loads(l)['resolved'] for l in open(f)) for f in sorted(glob.glob(f'runs/dev33_base_{sys.argv[1]}[0-7]/task_results.jsonl'))]; print(sys.argv[1], c, 'mean', sum(c)/max(1,len(c)))" $k; done   # 📷  x = no adapter, y = adapter
+python3 scripts/edit_stats.py --pooled runs/dev33_base_x{0,2,4,6}; python3 scripts/edit_stats.py --pooled runs/dev33_base_y{1,3,5,7}   # 📷 both blocks
+grep -m1 -o " lora: [^·]*" runs/lane1.log
+```
+If B-8 holds a card, run 3 vs 3 on six cards (drop g = 6 7) and say so.
+**Read it (set before the data).**
+- Edit level (moves first): the adapter's `not_found` share of the edit calls is lower than no adapter's by ≥ 8 points
+  (pooled, 4 passes each) → the adapter fixes the quoting. Within ± 4 → it does not. In between → no verdict.
+- Tasks: the rule of B-3o. The adapter counts only if its 4-pass mean beats no adapter's by ≥ 3 tasks AND its worst pass ≥
+  no adapter's best − 1. +1 to +2 → no verdict. ≤ 0 with the edit level moved → the quoting was not what costs tasks.
+- Stop + photo if a lane log shows no adapter mounted on an odd card, or a pass has fewer than 51 results.
+Nothing goes to Kaggle from this step. Cost: own box only, ≈ 10 min CPU + training (8 cards, about 1 h) + 8 cards × 3–4 h.
 
 ---
 
