@@ -41,6 +41,77 @@ dropped too.
 
 ---
 
+## B-9 · All 500 of SWE-bench Verified: 31B on the 8-card box, E4B on the 4-card box (2026-11-11) — ▶ step 0 on both boxes
+
+**Why.** The user wants the full Verified number (all 500 tasks, the usual way to report it) for both models. Same agent
+and grader as B-8 route B: `mini-swe-agent 2.4.6` (bash tool only, step limit 250) against our vLLM (thinking on, tool
+parser gemma4, 32K window, temperature 0.2, 8,192 tokens per reply, one pass), official `swebench 4.1.0` grading in the
+per-task images. The label to quote: "Gemma 4 <31B | E4B> (w4a16 QAT) + mini-swe-agent, 1 pass". Not our harness; nothing
+here tests a LoRA.
+How (new step `full` in `verified_box.sh`): the 500 tasks in chunks of CHUNK (100). Each chunk is split over the box's
+cards (one vLLM + one slice per card, run in parallel) → graded → its images deleted → next chunk. Only one chunk's images
+are on the disk at a time (all 500 ≈ 120 GB would not fit). A chunk that has a grading report is skipped, so after any
+crash the same two commands (serve, full) resume. Tested on the laptop with a fake agent, grader and docker (chunks,
+slices, ports, resume, the disk guard, deletion of only `sweb.eval.x86_64.*` images, the summed report); not with real
+vLLM / Docker. Time (a guess, not measured): E4B on 4 cards ~4–6 h; 31B on 8 cards ~5–8 h. Both boxes run at the same time.
+Supersedes "the 31B reference on 4 cards" in B-8 (the 500 include the 50 Verified-mini tasks; `report` prints those 50 too).
+
+**Step 0 · on EACH box (read only, 1 min).**
+```
+cd gemma4-dev-agent && git pull && git log --oneline -1
+ls .venv-eval/bin/vllm .venv-swe/bin/mini-extra 2>&1 | cut -c1-80
+docker run --rm hello-world 2>&1 | grep -m1 Hello; docker info 2>/dev/null | grep -E "Username|Docker Root Dir"
+df -h "$(docker info -f '{{.DockerRootDir}}' 2>/dev/null || echo /var/lib/docker)" | tail -1; nproc
+nvidia-smi --query-gpu=index,memory.used --format=csv,noheader
+ls ~/.cache/huggingface/hub | grep -i gemma-4
+```
+📷 both boxes. Read it:
+- `.venv-eval/bin/vllm` missing → this box was never set up for our harness → stop, photo (the laptop writes its setup).
+- `.venv-swe/bin/mini-extra` missing → `bash scripts/verified_box.sh setup` (📷 its versions line).
+- No "Hello from Docker" → stop (Docker without sudo is required).
+- Free on the Docker root ≥ 60 GB → CHUNK=100 (default) · 30–59 GB → `CHUNK=50 MIN_FREE_GB=25` · < 30 GB → stop.
+- No "Username" → Docker Hub pulls are anonymous and rate-limited; 500 images may hit "toomanyrequests". Optional:
+  `docker login` with a free Docker account (the user types it in; nothing else needs it).
+- `nproc` ≥ 32 → EVAL_JOBS=16, else 8. A card busy → stop that job first (e.g. `GPU=3 bash scripts/verified_box.sh stop`).
+- The model not in the HF cache → serve downloads it (an HF token with the Gemma licence accepted; 31B ≈ 20 GB).
+
+**Step 1 · 8-card box: 31B.**
+```
+export MODEL=google/gemma-4-31B-it-qat-w4a16-ct GPUS="0 1 2 3 4 5 6 7" PORT=8011 TAG=vf_31b SUBSET=verified WORKERS=6 EVAL_JOBS=16
+bash scripts/verified_box.sh serve                                        # 8 × "vLLM up"     📷
+nohup bash scripts/verified_box.sh full > runs/verified/vf_31b.full.log 2>&1 &
+```
+**Step 1 · 4-card box: E4B.**
+```
+export MODEL=google/gemma-4-E4B-it-qat-w4a16-ct GPUS="0 1 2 3" PORT=8010 TAG=vf_e4b SUBSET=verified WORKERS=8 EVAL_JOBS=16
+bash scripts/verified_box.sh serve                                        # 4 × "vLLM up"     📷
+nohup bash scripts/verified_box.sh full > runs/verified/vf_e4b.full.log 2>&1 &
+```
+Use the CHUNK / MIN_FREE_GB / EVAL_JOBS values step 0 picked (add them to the export line). Progress, any time:
+`grep -E '^-- chunk|^== chunk|graded|STOP' runs/verified/$TAG.full.log` — one `== chunk` line per graded chunk.
+
+**Step 2 · check after chunk 0 (📷 the grep lines).** Stop (`pkill -f "verified_box.sh full"; pkill -f mini-extra`) and
+photo `tail -20 runs/verified/$TAG/c0.part0.run.log` if chunk 0 has < 90 predictions (< 45 with CHUNK=50), or `graded`
+shows errors > 10 or NO REPORT, or a part line says 0 predictions. Otherwise let it run.
+
+**Step 3 · when `== full … done` is printed (📷 the grep lines + the report).**
+```
+bash scripts/verified_box.sh report                                       # 📷 the == block (per repo + the 50 mini tasks)
+bash scripts/verified_box.sh stop                                         # frees the cards (same exports)
+```
+If it stopped early (STOP line, crash, reboot): free disk or lower CHUNK, `serve` again if the vLLMs are gone, run the same
+`full` line: graded chunks are skipped. Delete `runs/verified/$TAG/c<k>/` only to redo chunk k.
+
+**Read it (set before the data).**
+- Each number is pass@1 on 500 tasks: the 95 % interval is about ± 2 pts at 6 %, ± 4 pts at 50 %.
+- E4B: B-8 had 3 / 50 on Verified-mini. The report's "on the 50 Verified-mini tasks" line is the same model again
+  (sampling noise only): 0–7 of 50 is consistent; more → say so.
+- 31B against the only public figure (Vals AI: 53.92 % on its Verified subset, full precision via Google, its own harness;
+  not this setup): ≥ 40 % → our setup is near that level; 25–39 % → the setup costs some (count ContextWindowExceeded in
+  the exit statuses: the 32K window); < 25 % → our setup, not the model, dominates — read the exit statuses before quoting it.
+- E4B vs 31B on the same 500 tasks is the size gap within one setup; the per-repo line shows where it comes from.
+- Costs: box time only (free); no token totals (mini's cost tracking is off for local models).
+
 ## B-8 · SWE-bench Verified on the box (2026-11-11) — step 0 ✓ (Docker ok) · route B ✓ **E4B 3 / 50 on Verified-mini** · ▶ 31B reference on 4 cards
 
 **Why.** The user wants E4B's SWE-bench Verified number (no public one: the Gemma 4 model card has LiveCodeBench, Codeforces,
@@ -104,7 +175,7 @@ between the pre-set bands (0–2 / ≥ 5), on the low side; at this level a 50-t
 (+2 tasks is inside the noise), so route A is NOT built now, and the LoRA test stays on our harness (rebench split, per-edit
 metrics + resolved). Not yet read: why the 11 patches are empty (format, give-up, or edits outside the repo).
 
-### B-8 route B · the 31B reference on 4 cards (user: "31B 对照 … 帮我写个使用4张GPU加速的script", 2026-11-11)
+### B-8 route B · the 31B reference on 4 cards (user: "31B 对照 … 帮我写个使用4张GPU加速的script", 2026-11-11) — superseded by B-9 (31B on all 500 on the 8-card box); run it only if B-9 is dropped
 
 Same 50 tasks, same agent, same grader as the E4B row, model = 31B. `verified_box.sh` now takes GPUS: one vLLM per card
 (ports PORT, PORT+1, …), the 50 tasks split into 4 contiguous slices (0:12, 12:25, 25:37, 37:50), one mini-extra per slice
