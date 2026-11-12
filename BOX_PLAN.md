@@ -100,7 +100,7 @@ Optional reference, same steps on another free card: `MODEL=google/gemma-4-31B-i
 
 ---
 
-## B-7 · More tasks for E4B's own rollouts: 450 more public SWE-rebench tasks → build → gold → 8 E4B passes (2026-11-11) — steps 1–2 ✓ (422 built, 161 pass gold) · ▶ step 3: 8 cards, 8 passes, ~3 h
+## B-7 · More tasks for E4B's own rollouts: 450 more public SWE-rebench tasks → build → gold → 8 E4B passes (2026-11-11) — steps 1–3 ✓ (422 built, 161 pass gold, 8 passes: 1,277 failed edits ≥ 400) · next: the relabel stage (laptop, not written yet)
 
 **Why.** Line 5 (user, 2026-11-11: "这个会话做5，数据肯定是要增强的" → "box用4个GPU，扩题到300题"): fix E4B's edit-copy errors with
 labels made from its OWN rollouts: every failed `edit_file` gets a corrected call (the true span of the file at that moment, the
@@ -180,6 +180,19 @@ python3 scripts/edit_stats.py runs/dev33_base_m{1..4} runs/dev33_t07_m{5..8}
 - Temp 0.7 vs 0.2 (m5–m8 vs m1–m4): the not-found rate per edit and resolved; just a record.
 
 Nothing goes to Kaggle. Cost: own box only, ≈ 8 cards × ~3 h (161 tasks) + ~3 h CPU.
+
+**Step 3 result (box photo, 2026-11-11 18:34; 8 cards, ~58 min, not the ~3 h planned).**
+- Every pass has 161 / 161 results.
+- Edits, pooled: 3,468 = ok 2,055 (59 %) · not found 1,189 (34 %) · several matches 88 (3 %) · other 136 (4 %). Not found +
+  several = **1,277 ≥ 400 → the relabel stage is worth writing.**
+- The first edit of a file fails with not-found in 16 %. After a failed edit, the next edit repeats the same `old_string` 608
+  times (49 %). Runs of ≥ 2 failed edits in a row: 310, in 288 task runs (22 %), longest 12.
+- Resolved 25–31 of 161 per pass, 231 / 1,288 (18 %), under the "about a third" of the read rule, so the plan's check was
+  made: 12 of 1,288 runs ended in a run error (4 session timeouts, 4 without a submission, 2 context limit, 1 patch that did
+  not apply, 1 call cap); no missing site, no test that never ran. Per task: 111 never solved, 50 at least once, 11 in all 8.
+- Temp 0.2 vs 0.7: resolved 115 vs 116; not-found share about 34 % in both.
+- Laptop note for the relabel stage (not measured on the box): 608 of the failed edits repeat the previous `old_string`, so
+  the number of different failed quotes is well under 1,277. Count them after de-duplication before sizing the training.
 
 ---
 
