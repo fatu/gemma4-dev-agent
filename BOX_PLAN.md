@@ -41,7 +41,7 @@ dropped too.
 
 ---
 
-## B-8 · SWE-bench Verified on the box (2026-11-11) — step 0 ✓ (Docker ok) · route B ✓ **E4B 3 / 50 on Verified-mini** · ▶ route A on 4 cards
+## B-8 · SWE-bench Verified on the box (2026-11-11) — step 0 ✓ (Docker ok) · route B ✓ **E4B 3 / 50 on Verified-mini** · ▶ 31B reference on 4 cards
 
 **Why.** The user wants E4B's SWE-bench Verified number (no public one: the Gemma 4 model card has LiveCodeBench, Codeforces,
 Tau2 only). Two routes, picked after this photo:
@@ -95,8 +95,7 @@ For scale only: SWE-Gym's 32B Qwen base was ≈ 7 % on full Verified before fine
   many format errors → E4B's tool calls do not fit mini's bash tool; say which dominates.
 - ≥ 5 resolved → route A (our harness subset) is worth building next as the LoRA test bench; 0–2 → Verified is too hard
   for E4B to show a LoRA effect in resolved counts; the laptop then proposes per-edit metrics instead.
-Optional reference, same steps on another free card: `MODEL=google/gemma-4-31B-it-qat-w4a16-ct GPU=6 PORT=8011 TAG=vm_31b`
-(serve, run, eval, report with those knobs) — the 31B on the same 50 tasks.
+Optional reference: the 31B on the same 50 tasks — on 4 cards, see "the 31B reference on 4 cards" below.
 
 **Result (photo, 2026-11-11): resolved 3 / 50 (6 %; Wilson 95 % ≈ 2–16 %).** Grading: submitted 50, completed 39, empty patch
 11, errors 0. Exit statuses: 47 `Submitted`, 3 `ContextWindowExceededError` (so ≥ 8 tasks submitted an empty diff). Model
@@ -105,7 +104,31 @@ between the pre-set bands (0–2 / ≥ 5), on the low side; at this level a 50-t
 (+2 tasks is inside the noise), so route A is NOT built now, and the LoRA test stays on our harness (rebench split, per-edit
 metrics + resolved). Not yet read: why the 11 patches are empty (format, give-up, or edits outside the repo).
 
-### B-8 route A · Verified in OUR harness on 4 cards (user: "a的代码帮忙写好，用4张卡加速", 2026-11-11)
+### B-8 route B · the 31B reference on 4 cards (user: "31B 对照 … 帮我写个使用4张GPU加速的script", 2026-11-11)
+
+Same 50 tasks, same agent, same grader as the E4B row, model = 31B. `verified_box.sh` now takes GPUS: one vLLM per card
+(ports PORT, PORT+1, …), the 50 tasks split into 4 contiguous slices (0:12, 12:25, 25:37, 37:50), one mini-extra per slice
+in parallel (WORKERS = 8 each, 32 agents in all), predictions merged into one preds.json, then one eval and one report.
+The images are already on the disk from the E4B run. Tested on the laptop with a fake mini-extra and fake servers (slices,
+ports in each config, merge, report over the parts); not with real vLLM / Docker.
+```
+cd gemma4-dev-agent && git pull && git log --oneline -1
+GPU=3 bash scripts/verified_box.sh stop                    # the E4B vLLM of route B still holds card 3
+nvidia-smi --query-gpu=index,memory.used --format=csv,noheader        # 4 free cards; else another GPUS=
+export MODEL=google/gemma-4-31B-it-qat-w4a16-ct GPUS="0 1 2 3" PORT=8011 TAG=vm_31b
+bash scripts/verified_box.sh serve                         # 4 × "vLLM up", ~3–10 min        📷
+bash scripts/verified_box.sh run                           # ~1 h (guess)                   📷 part lines + == line
+bash scripts/verified_box.sh eval                          # ~20 min                        📷 the tail
+bash scripts/verified_box.sh report                        # 📷 the == block
+bash scripts/verified_box.sh stop                          # frees the 4 cards
+```
+**Stop rules.** A vLLM does not come up → photo of `tail -30 runs/verified/vllm_gpu<card>.log`. A part with 0 predictions
+→ photo of `tail -20 runs/verified/vm_31b.part<k>.run.log` (the other parts' results still count; say how many merged).
+**Read it.** Next to E4B's 3 / 50 (same tasks, so a paired comparison): 31B ≥ 11 → the model size, not the agent/setup,
+limits E4B here; 31B ≤ 5 → mini-swe-agent + this setup is hard for Gemma 4 in general (look at the exit statuses and empty
+patches before blaming the model). 6–10 → in between, say so. One pass each, n = 50: a level, not a precise gap.
+
+### B-8 route A · Verified in OUR harness on 4 cards — written on a misread request (the user meant the 31B reference below); do NOT run unless the user asks
 
 What it is: `scripts/verified_a.sh` = the SWE-rebench pipeline (rebench_build → gold → lane.sh) on SWE-bench Verified
 (princeton-nlp/SWE-bench_Verified @c104f84). Our prompt, our 9 tools, the subprocess sandbox, pytest verify, the E4B
