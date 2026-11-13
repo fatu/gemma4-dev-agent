@@ -41,10 +41,125 @@ dropped too.
 
 ---
 
-## B-9 · All 500 of SWE-bench Verified: 31B on the 8-card box, E4B on the 4-card box (2026-11-11) — 31B ✓ 272 / 500 (54.4 %) · E4B ▶ running (another session)
+## B-10 · Our own MetaCurate-style data for Gemma: teacher trajectories from GLM-5.3 / Kimi K3 through an OpenAI-compatible gateway (plan 2026-11-13) — ▶ step 0 after the user's go (paid tokens)
+
+**Why.** B-9 part 2 tests the public DeepSeek V4 Pro pool. B-10 makes the same kind of data with teachers we can call,
+shaped for Gemma from the start, and asks whether the teacher matters for Gemma (DSv4Pro vs GLM-5.3 vs Kimi K3 on the
+same tasks). **Method = MetaCurate App. A**: tasks from SWE-rebench, SWE-rebench-V2 and SWE-Gym (prebuilt per-task
+images) · mini-swe-agent · temperature 0.7 · 3 attempts per task · resolved = fail-to-pass and pass-to-pass tests pass in
+the task's container. **Shaped for Gemma** (each printed): the B-9 prompt and agent (`swebench.yaml` of mini-swe-agent
+2.4.6) · teacher replies capped at 8,192 tokens (Gemma's cap in B-9) · step limit 60 (in DSv4Pro shard 0 the resolved
+runs that fit 32K had calls p50 27, p90 44; longer runs are dropped anyway and cost the most tokens) · kept only if every
+model turn has a thought and the peak context is ≤ 30,720 Gemma tokens · first on the **same 1,415 tasks as MetaCurate**,
+so the teacher is the only difference from B-9 part 2's data.
+**Where.** The 8-card box, no GPU: the teacher is remote, the box runs the containers and the grading, so B-10 runs beside
+B-9 part 2's training (shared disk: the chunked image deletion of `verified_box.sh full` is reused).
+**Secrets.** `GATEWAY_BASE_URL`, `GATEWAY_API_KEY` and `TEACHER=<gateway model name>` are typed by the user on the box;
+never echoed, never written to a file under git. mini's model config: `openai/$TEACHER`, `api_base: $GATEWAY_BASE_URL`.
+
+**Step 0 · Gateway check (box, 5 min, a few cents).** New `scripts/teacher_probe.py`: one chat call with mini's `bash`
+tool per teacher. Prints: tool call returned (yes / no, how many) · reasoning returned and under which field
+(`reasoning_content` / `reasoning` / thinking blocks) · usage (prompt, cached, completion tokens) · latency. A teacher whose
+reasoning does not come back is dropped (thought-less data is the canary failure mode). Laptop, same day: each model's
+licence must allow training on its outputs before any larger spend.
+
+**Step 1 · SWE-rebench in mini-swe-agent (box, ~1 h).** New `scripts/rebench_mini.sh` (setup | run | grade | report, same
+chunk / resume / disk guard as `verified_box.sh full`): rows → per-task image names → `mini-extra swebench` on a local
+dataset file; grading = the task's F2P + P2P tests in its image (SWE-rebench's harness fork if it runs here, else our own
+runner). Check on 5 tasks: the gold patch passes, an empty patch fails. 📷 the 5 lines.
+
+**Step 2 · Pilot (box, ~1–2 h, paid).** 30 of the 1,415 tasks (stratified by source, seed 0) × 1 attempt × each teacher.
+📷 per teacher: resolved / 30 · runs that fit (≤ 30,720 Gemma tokens) · turns with a thought · thought tokens p50 / max ·
+calls p50 / p90 · prompt / cached / completion tokens per run · cost per run (gateway price × usage) · wall s per run ·
+errors; plus DSv4Pro's public runs on the same 30 tasks as the reference. **Rule set before the data:** drop a teacher
+with thoughts in < 90 % of turns or < 0.15 usable runs (resolved ∧ fits ∧ thoughts) per attempt; of the rest, take the
+cheapest per usable run. The scale step's cost estimate comes from these numbers and needs the user's go.
+For scale: DSv4Pro shard 0 used 0.65 M prompt tokens per run (median; 98 % cached), 10.6 K completion tokens, 200 s.
+
+**Step 3 · Scale (box, paid).** The chosen teacher on the 1,415 tasks × 3 attempts (1 attempt first if the estimate is
+high), chunked and resumable. Target ≥ 1,000 usable runs. Data stays on the box (`runs/`, gitignored).
+
+**Step 4 · Curate (box CPU).** Resolved → our deterministic version of the Nemotron-style rule filter (invalid submission,
+git restore / stash misuse, repeated edit–test or self-revert loops, much exploration with little editing, malformed tool
+calls, debug artifacts in the patch, edits without tests), each rule's count printed → ≤ 3 per task → arm **G1k** = 1,000.
+MetaCurate's filter search itself only later: it needs the Codex CLI and a paid judge (their code has an OpenAI-compatible
+client, so the gateway could be the judge).
+
+**Step 5 · Train and evaluate exactly as B-9 part 2 steps 2–5** (same renderer, recipe, ADAPTER eval, paired.py), E4B
+first. **Read it (set before the data):** G1k vs base by gate G1; G1k vs R1k on the same 500 tasks: G1k ≥ R1k + 3 pts →
+our own generation becomes the data source for the Kaggle-harness stage (plan 24 P2); otherwise the public pool stays.
+**Optional:** Gemma 31B as the teacher for E4B (free, GPU) on the same tasks, if step 2 shows teacher thoughts far from
+Gemma's style (native thoughts; distillation inside the family).
+
+**Timeline.** 11-14 steps 0–1 · 11-15 pilot · 11-16 → 11-18 scale (beside B-9 part 2) · 11-19 → 11-21 train + eval E4B.
+Final submission 12-02. **Risks:** token cost; gateway rate limits; reasoning not returned; ~1,400 image pulls (Docker Hub
+limits, disk); teacher licences.
+
+## B-9 · All 500 of SWE-bench Verified: 31B on the 8-card box, E4B on the 4-card box (2026-11-11) — 31B ✓ 272 / 500 (54.4 %) · E4B ▶ running (another session) · part 2 (a LoRA on MetaCurate's data) planned
 
 **31B result (photo 2026-11-13).** 272 / 500 resolved = **54.4 %** (Wilson 95 % ≈ 50.0–58.7 %), one pass, all 500 predictions (no duplicates or gaps; merged from three runs over task ranges 0–249, 250–274 and 275–499, 16 grading reports). Exit statuses: Submitted 385, ContextWindowExceededError 115. The 115 empty patches are exactly the context-window exits; no other failure type. Among the 385 submitted: 272 resolved (70.6 %). Model calls per task: median 32, p90 56, max 158. Per repo (resolved / tasks): django 128/231, sympy 40/75, sphinx 20/44, matplotlib 18/34, scikit-learn 26/32, astropy 12/22, xarray 14/22, pytest 12/19, pylint 1/10, requests 0/8, seaborn 0/2, flask 1/1.
 Read by the rule set before the data: ≥ 40 % → our setup is near the public level (Vals AI 53.92 % on its subset, a different setup: close, not equivalent). The 32K window is the one visible cost: 23 % of tasks (115) ended on it. Missing: the 50 Verified-mini line (the box could not load the HF dataset: a self-signed certificate; set `SSL_CERT_FILE` and run `report` again, no rerun). The box copy of `verified_box.sh` has two changes not in this repo (MIRROR, START).
+
+### B-9 part 2 · Does a LoRA on MetaCurate's public data beat the B-9 baseline? (plan 2026-11-13, nothing built yet) — ▶ the laptop builds it step by step after the user's go
+
+**Question.** Train a LoRA on the public `furiosa-ai/MetaCurate-DeepSeekV4Pro` trajectories (arXiv 2610.23134) and evaluate it
+under exactly the B-9 setup (mini-swe-agent 2.4.6, thinking on, 32K, temperature 0.2, 250 steps, 8,192 tokens per reply,
+Verified 500, official grading), paired task by task against the B-9 baseline of the same model. E4B first, then 31B.
+**Why this data** (checked on the laptop, shard 0 of 4 = 1,072 rows, 2026-11-13): same agent and the same first prompt as
+B-9 (100 / 100 sampled trajectories match the 2.4.6 `swebench.yaml`); 97 % of model turns carry `reasoning_content`
+(B-9 runs with thinking on); 0 trajectories from the 12 Verified repos; 417 resolved, 275 of them fit 32K in Gemma tokens
+(≈ 1,100 in all 4 shards, ≈ 660 tasks). It is the only public multi-run LoRA gain on Verified (Qwen3.5-27B, LoRA r64:
+72.3 ± 0.6 → 74.3 ± 0.6). **Their training code is not public** (GitHub history, Hugging Face and the web were searched
+2026-11-13; the authors' mirror README: "Consumers should apply their own chat-template and loss-masking policy"), so we
+render and train with our own tools; the hyperparameters are the paper's Table 6 LoRA row.
+**Where.** E4B: everything on the 4-card box (its B-9 baseline lives there; results are paired on one box) once its B-9
+run is done; steps 0–3 can run on the 8-card box meanwhile. 31B: everything on the 8-card box. Costs: box time only.
+
+**Step 0 · What does Gemma see at call k? (8-card box, 1 card, ~20 min)** — decides the renderer's history rule.
+New `scripts/req_log.py`: a logging pass-through proxy (port PORT+100 → vLLM) that saves each chat request. Two Verified
+tasks with E4B through it (`TAG=vf_probe SLICE=0:2`); for 3 calls per task the saved messages go to vLLM's `/tokenize`.
+Prints: earlier `reasoning_content` present in the request (yes / no) · rendered by the Gemma template (yes / no) · how a
+turn with several tool calls and a turn with text + a tool call render · Gemma tokens per call. 📷 the summary line.
+
+**Step 1 · Data (box CPU, ~15 min).** Download the 4 parquet shards (~0.5 GB, HF token typed by the user; the box needs
+`SSL_CERT_FILE` or its mirror for HF). New `train/mc_prep.py`, each filter prints its count: resolved → drop the 12
+Verified repos → peak context ≤ 30,720 Gemma tokens under step 0's rule (2K margin under 32K) → every thought ≤ 8,192
+tokens → drop trajectories with a multi-tool-call turn unless step 0 shows the template and the gemma4 parser handle them
+→ licence `custom-check-github` dropped → strip the terminal `exit` event → ≤ 3 per task. Arm **R1k** = 1,000 of what is
+left (seed 0); **R500** = a 500 subset (learning-curve point, trained only if R1k passes).
+
+**Step 2 · Render (box CPU).** New `train/mc_render.py` (label logic from `render.py`): the `-ct` tokenizer's Gemma chat
+template, tools = mini's one `bash` tool; one sequence per trajectory with several label spans if step 0 says earlier
+thoughts stay in the prompt, else one sample per call; labels = each model turn's thought + text + tool calls + end of turn;
+system, user, tool output masked. Gate R (all must pass): for every probe call, our rendered prefix = vLLM `/tokenize`
+token for token; 50 decoded targets = the source text; every trajectory's label share printed.
+
+**Step 3 · Pipeline check (P1.0, ~1 h per model).** Overfit 50 trajectories × 10 epochs → teacher-forced top-1 through
+vLLM + `-ct` + adapter ≥ 90 % on them (base printed); PEFT vs vLLM greedy / top-1 agreement ≥ 95 % on 20 prompts. 31B has
+never had this check. Fail → stop and fix.
+
+**Step 4 · Train E4B (4-card box).** `train/sft_lora.py` (exists; `--world 4` data-parallel, bf16 base from
+`dequant_ct.py`) with the paper's LoRA recipe: r64 · α128 · attention + MLP projections · dropout 0 · lr 1e-4 · cosine to
+1e-6 with 10 % warmup · AdamW β (0.9, 0.95), wd 0.01 · 32 sequences per step · 3 epochs (≈ 94 steps for 1,000) · max len
+32,768 · clip 1.0. New knobs (warmup ratio, min lr, betas, wd, MLP targets) print their values. Time: a guess, 2–4 h.
+
+**Step 5 · Evaluate.** New knob `ADAPTER=<dir>` in `verified_box.sh` (serve mounts it; mini asks for the adapter's name;
+printed) → `full` on Verified 500 with every other B-9 setting unchanged. New `scripts/paired.py`: per-task table against
+the B-9 report of the same model on the same box, exact McNemar, and the ContextWindowExceeded / empty-patch counts.
+**Gate G1 (set before the data):** resolved ≥ base + 20 tasks (+4 pts) **and** McNemar p < 0.05 **and** context-window
+exits ≤ base + 15. Pass → step 6. Fail → re-run step 3; if the pipeline is clean, one full-FT E4B control separates "LoRA"
+from "data"; both fail → this data does not move E4B; B-10 decides what comes next.
+
+**Step 6 · 31B (8-card box).** Same data and recipe. One bf16 31B copy (~62 GB) per card may not leave room for 32K
+sequences with checkpointing on a 96 GB card: step 3 on 31B measures the peak memory; if it does not fit, the plan is QLoRA
+nf4 (sft_lora.py needs that mode) rather than FSDP. Same gate against 272 / 500. Read it knowing the paper's 27B LoRA gain
+was +2.0 pts, below what one 500-task pass can detect: "no detectable gain" is the likely outcome, not "harm".
+
+**Timeline.** 11-13 laptop: req_log, mc_prep, mc_render, the ADAPTER knob, paired.py (tested on fakes). 11-14 box: steps
+0–3. 11-15 E4B train + eval. 11-16 G1. 11-17 → 11-19 31B.
+
+
+### B-9 part 1 · the baselines
 
 **Why.** The user wants the full Verified number (all 500 tasks, the usual way to report it) for both models. Same agent
 and grader as B-8 route B: `mini-swe-agent 2.4.6` (bash tool only, step limit 250) against our vLLM (thinking on, tool
