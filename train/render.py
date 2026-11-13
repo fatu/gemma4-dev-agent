@@ -19,6 +19,12 @@ reply. Checks (all printed; any failure → exit 1):
       reply token incl. the stop token is a label; the label share per call is printed. A call with
       `label_scope: tool_call` (train/edit_drills.py) keeps labels on its tool call + stop token only.
 Outputs quote task text → keep them under runs/ (gitignored).
+Large sets (B-9 part 2, mini-swe-agent trajectories): `--wire mini` keeps a string system message as it is (mini sends
+a plain string; the ADK harness sent parts); `--shard i/n` renders every n-th record from i (run n processes, then
+concatenate the outputs); `--pack --split-runs` starts a new packed sequence at each expected prefix break (a text +
+tool-call reply in the history, a no-thought reply) instead of one sample per call for the whole segment — the
+"segments unpacked …" counts are then counts of such breaks; the output is written record by record and A3 keeps a reservoir of --sample calls, so memory
+stays at one record's calls.
 """
 import argparse
 import copy
@@ -34,12 +40,15 @@ STOP_TOOL, STOP_TURN = "<|tool_response>", "<turn|>"
 CTRL = {"<|channel>", "<channel|>", "<|tool_call>", "<tool_call|>", "<|tool_response>", "<turn|>", "<|turn>"}
 
 
+WIRE = {"mode": "adk"}      # --wire: "adk" (the competition harness) or "mini" (mini-swe-agent through litellm)
+
+
 def normalise(messages):
     """the wire format of the traj log → what the template expects (and what vLLM rendered)"""
     out = []
     for i, m in enumerate(messages):
         m = copy.deepcopy(m)
-        if i == 0 and m.get("role") == "system" and isinstance(m.get("content"), str):
+        if WIRE["mode"] == "adk" and i == 0 and m.get("role") == "system" and isinstance(m.get("content"), str):
             m["content"] = [{"type": "text", "text": m["content"]}]
         for tc in m.get("tool_calls") or []:
             fn = tc.get("function") or {}
@@ -184,15 +193,34 @@ def main():
     ap.add_argument("--sample", type=int, default=50, help="calls decoded back for A3")
     ap.add_argument("--out", default=None, help="rendered jsonl (one line per call, or per segment with --pack)")
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--wire", choices=["adk", "mini"], default="adk", help="how the client sent the system message")
+    ap.add_argument("--split-runs", action="store_true",
+                    help="with --pack: where the prefix property breaks (an expected break), start a new packed sequence "
+                         "instead of unpacking the whole segment into one sample per call (exact either way)")
+    ap.add_argument("--shard", default="0/1", help="i/n: render records i, i+n, i+2n, … (sorted by file name)")
     a = ap.parse_args()
+    WIRE["mode"] = a.wire
+    sh_i, sh_n = (int(x) for x in a.shard.split("/"))
+    print(f"render · wire {a.wire} · shard {sh_i}/{sh_n} · pack {a.pack} · split runs {a.split_runs} · check {a.check or 'none'} · sample {a.sample}")
     tok = AutoTokenizer.from_pretrained(a.tokenizer)
     R = Renderer(tok)
     fails, n_calls, n_targets, label_tot, packed_tot = [], 0, 0, 0, 0
-    rendered, shares, a3_pool, mism, malformed = [], [], [], [], []
+    shares, a3_pool, mism, malformed = [], [], [], []
+    n_rendered, n_a3_seen = 0, 0
+    random.seed(a.seed)
+    w_out = open(a.out, "w") if a.out else None
+
+    def emit(row):
+        nonlocal n_rendered
+        n_rendered += 1
+        if w_out:
+            w_out.write(json.dumps(row) + "\n")
     n_src = {"delta": 0, "synthetic": 0, "mixed": 0, "delta!=synthetic": 0, "pack_fallback_mixed": 0, "pack_fallback_nothought": 0,
              "content_control_tokens": 0, "scope_tool_call": 0}
     ref_checked = ref_ok = 0
-    for f in sorted(glob.glob(os.path.join(a.records, "*.json"))):
+    for fi, f in enumerate(sorted(glob.glob(os.path.join(a.records, "*.json")))):
+        if fi % sh_n != sh_i:
+            continue
         rec = json.load(open(f))
         if not isinstance(rec, dict) or not isinstance(rec.get("calls"), list):   # a summary / verdict json beside the records
             continue
@@ -266,7 +294,13 @@ def main():
                         r["labels"][P + s:P + e] = [-100] * (e - s)
                 kept = sum(1 for x in r["labels"][P:] if x != -100)
                 label_tot += kept - len(r["reply_ids"]); n_src["scope_tool_call"] += 1
-            a3_pool.append((rec["instance_id"], c, r, sp))
+            n_a3_seen += 1                       # reservoir sample of --sample calls (memory: one record at a time)
+            if len(a3_pool) < a.sample:
+                a3_pool.append((rec["instance_id"], c, r, sp))
+            else:
+                j = random.randrange(n_a3_seen)
+                if j < a.sample:
+                    a3_pool[j] = (rec["instance_id"], c, r, sp)
             rows.append((c, r))
         # --pack: one sequence per segment when the token prefix property holds for every call
         if a.pack and rows:
@@ -274,9 +308,11 @@ def main():
             for c, r in rows:
                 by_seg.setdefault(c["segment"], []).append((c, r))
             for seg, items in by_seg.items():
-                ok = True
+                ok, runs, cur = True, [], [items[0]]
                 for (c0, r0), (c1, r1) in zip(items, items[1:]):
-                    if r1["prompt_ids"][:len(r0["input_ids"])] != r0["input_ids"]:
+                    if r1["prompt_ids"][:len(r0["input_ids"])] == r0["input_ids"]:
+                        cur.append((c1, r1))
+                    else:
                         ok = False
                         mixed_hist = any(m.get("role") == "assistant" and m.get("tool_calls") and (m.get("content") or "").strip()
                                          for m in c0["input_messages"])
@@ -292,28 +328,31 @@ def main():
                         else:
                             fails.append(f"PACK {rec['instance_id']} segment {seg}: call {c1['call']} does not "
                                          f"extend call {c0['call']} (prefix property broken)")
-                        break
-                if ok:
-                    c_last, r_last = items[-1]
-                    ids = r_last["input_ids"]; labels = [-100] * len(ids)
-                    for c, r in items:
-                        s = len(r["prompt_ids"]); e = len(r["input_ids"])
-                        labels[s:e] = r["labels"][s:e]          # = ids[s:e] unless label_scope masked a span
-                    packed_tot += sum(1 for x in labels if x != -100)
-                    rendered.append({"instance_id": rec["instance_id"], "segment": seg,
-                                     "calls": [c["call"] for c, _ in items], "input_ids": ids, "labels": labels})
+                        if not a.split_runs:
+                            break
+                        runs.append(cur); cur = [(c1, r1)]      # --split-runs: a new sequence starts at the break
+                runs.append(cur)
+                if ok or a.split_runs:
+                    for run in runs:                            # each run: the last call's tokens, every reply labelled
+                        c_last, r_last = run[-1]
+                        ids = r_last["input_ids"]; labels = [-100] * len(ids)
+                        for c, r in run:
+                            s = len(r["prompt_ids"]); e = len(r["input_ids"])
+                            labels[s:e] = r["labels"][s:e]      # = ids[s:e] unless label_scope masked a span
+                        packed_tot += sum(1 for x in labels if x != -100)
+                        emit({"instance_id": rec["instance_id"], "segment": seg,
+                              "calls": [c["call"] for c, _ in run], "input_ids": ids, "labels": labels})
                 else:
                     for c, r in items:
                         packed_tot += sum(1 for x in r["labels"][len(r["prompt_ids"]):] if x != -100)
-                        rendered.append({"instance_id": rec["instance_id"], "segment": seg, "calls": [c["call"]],
-                                         "input_ids": r["input_ids"], "labels": r["labels"]})
+                        emit({"instance_id": rec["instance_id"], "segment": seg, "calls": [c["call"]],
+                              "input_ids": r["input_ids"], "labels": r["labels"]})
         elif rows:
             for c, r in rows:
-                rendered.append({"instance_id": rec["instance_id"], "segment": c["segment"], "calls": [c["call"]],
-                                 "input_ids": r["input_ids"], "labels": r["labels"]})
+                emit({"instance_id": rec["instance_id"], "segment": c["segment"], "calls": [c["call"]],
+                      "input_ids": r["input_ids"], "labels": r["labels"]})
     # A3 sample: decode spans back and compare with the target
-    random.seed(a.seed)
-    for task, c, r, sp in random.sample(a3_pool, min(a.sample, len(a3_pool))):
+    for task, c, r, sp in a3_pool:
         t = c["target"]
         got_thought = "".join(tok.decode(r["reply_ids"][(s if s == 0 and r["prompt"].endswith("<|channel>thought\n") else s + 1):e - 1])
                               for k, s, e in sp if k == "thought")
@@ -333,18 +372,16 @@ def main():
                 fails.append(f"A3 {task} call {c['call']}: decoded tool call lacks {tc['name']}")
         if len(got_calls) != len(t.get("tool_calls") or []):
             fails.append(f"A3 {task} call {c['call']}: {len(got_calls)} tool-call spans vs {len(t.get('tool_calls') or [])}")
-    if a.out:
-        with open(a.out, "w") as w:
-            for row in rendered:
-                w.write(json.dumps(row) + "\n")
+    if w_out:
+        w_out.close()
     print(f"calls {n_calls} · targets {n_targets} · label tokens {label_tot}"
-          + (f" · packed label tokens {packed_tot} (sequences {len(rendered)}, segments unpacked because of a mixed reply {n_src['pack_fallback_mixed']} / a no-thought reply after a tool response {n_src['pack_fallback_nothought']})" if a.pack else "")
+          + (f" · packed label tokens {packed_tot} (sequences {n_rendered}, segments unpacked because of a mixed reply {n_src['pack_fallback_mixed']} / a no-thought reply after a tool response {n_src['pack_fallback_nothought']})" if a.pack else "")
           + (f" · A2 server-rendered prompts equal {ref_ok}/{ref_checked}" if a.check else "")
           + f" · reply from delta {n_src['delta']} / synthetic {n_src['synthetic']} / mixed text+tool {n_src['mixed']} / delta≠synthetic {n_src['delta!=synthetic']}"
           + (f" e.g. {mism[:5]}" if mism else "")
           + f" · text replies with stray channel tags (stripped like the template) {n_src['content_control_tokens']}"
           + f" · label_scope tool_call (thought/text masked) {n_src['scope_tool_call']}"
-          + f" · A3 sampled {min(a.sample, len(a3_pool))}"
+          + f" · A3 sampled {len(a3_pool)}"
           + (f" · A4 label share per call min {min(shares):.3f} median {sorted(shares)[len(shares)//2]:.3f} max {max(shares):.3f}" if shares else ""))
     if a.pack and packed_tot != label_tot:
         fails.append(f"PACK label total {packed_tot} != per-call total {label_tot}")

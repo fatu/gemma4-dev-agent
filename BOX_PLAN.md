@@ -100,7 +100,7 @@ limits, disk); teacher licences.
 **31B result (photo 2026-11-13).** 272 / 500 resolved = **54.4 %** (Wilson 95 % ≈ 50.0–58.7 %), one pass, all 500 predictions (no duplicates or gaps; merged from three runs over task ranges 0–249, 250–274 and 275–499, 16 grading reports). Exit statuses: Submitted 385, ContextWindowExceededError 115. The 115 empty patches are exactly the context-window exits; no other failure type. Among the 385 submitted: 272 resolved (70.6 %). Model calls per task: median 32, p90 56, max 158. Per repo (resolved / tasks): django 128/231, sympy 40/75, sphinx 20/44, matplotlib 18/34, scikit-learn 26/32, astropy 12/22, xarray 14/22, pytest 12/19, pylint 1/10, requests 0/8, seaborn 0/2, flask 1/1.
 Read by the rule set before the data: ≥ 40 % → our setup is near the public level (Vals AI 53.92 % on its subset, a different setup: close, not equivalent). The 32K window is the one visible cost: 23 % of tasks (115) ended on it. Missing: the 50 Verified-mini line (the box could not load the HF dataset: a self-signed certificate; set `SSL_CERT_FILE` and run `report` again, no rerun). The box copy of `verified_box.sh` has two changes not in this repo (MIRROR, START).
 
-### B-9 part 2 · Does a LoRA on MetaCurate's public data improve on the B-9 baseline? (plan 2026-11-13, revised the same day by the user: 31B first, our own LoRA recipe, no pipeline check, no QLoRA, any free box, the criterion is "improved or not") — ▶ the laptop builds it step by step after the user's go
+### B-9 part 2 · Does a LoRA on MetaCurate's public data improve on the B-9 baseline? (plan 2026-11-13, revised the same day by the user: 31B first, our own LoRA recipe, no pipeline check, no QLoRA, any free box, the criterion is "improved or not") — ▶ steps 0–2 built: run them on the free box (31B)
 
 **Question.** Train a LoRA on the public `furiosa-ai/MetaCurate-DeepSeekV4Pro` trajectories (arXiv 2610.23134) and evaluate it
 under exactly the B-9 setup (mini-swe-agent 2.4.6, thinking on, 32K, temperature 0.2, 250 steps, 8,192 tokens per reply,
@@ -114,6 +114,26 @@ authors' mirror README: "Consumers should apply their own chat-template and loss
 with our own tools and our own LoRA recipe.
 **Where.** Any free box (8-card or 4-card) for training and evaluation; a model is trained and evaluated on the same box.
 Costs: box time only.
+
+**▶ Steps 0–2 are built (2026-11-13): `scripts/req_log.py`, `train/mc_prep.py`, `train/mc_box.sh`, `render.py --wire mini
+--split-runs --shard`, `verified_box.sh` knob `API_PORT_OFFSET`.** Laptop tests: a fake vLLM + a replayed trajectory
+through the logger (4/4 requests rebuilt from the traj file with history keep, 1/4 with drop; A2 4/4; one packed
+sequence); 20 real DSv4Pro rows → render PASS; `render.py` on the old w7 set gives byte-identical output (A2 427/427).
+Not tested: real mini-swe-agent, real vLLM, the HF download. On the free box (31B first; any free card):
+```
+cd gemma4-dev-agent && git pull && git log --oneline -1
+MODEL=google/gemma-4-31B-it-qat-w4a16-ct GPU=0 PORT=8011 bash scripts/verified_box.sh serve     # one card, "vLLM up" 📷
+MODEL=google/gemma-4-31B-it-qat-w4a16-ct GPU=0 PORT=8011 bash train/mc_box.sh probe             # step 0, ~20 min 📷
+MODEL=google/gemma-4-31B-it-qat-w4a16-ct bash train/mc_box.sh data                              # step 1, ~15 min 📷
+MODEL=google/gemma-4-31B-it-qat-w4a16-ct bash train/mc_box.sh render                            # step 2, ~10–40 min 📷
+MODEL=google/gemma-4-31B-it-qat-w4a16-ct GPU=0 PORT=8011 bash scripts/verified_box.sh stop      # free the card
+```
+Read the probe 📷: `earlier reasoning sent: yes|no` sets HISTORY (keep|drop) for step 1; `text+call turns 0` sets
+T2T=on (a text + tool-call reply's text goes into its thought: Gemma does not write such turns, and they break packing:
+on 20 rows 172 → 36 sequences, 2.9 M → 0.6 M tokens); `== verify …: n / n` and `RESULT PASS` (A2 = our renderer equals
+the server token for token) must both hold, else stop and photo `grep -E "DIFF|FAIL" -m5` of the output. Step 1 needs the
+HF token; if the download fails on the certificate, set `SSL_CERT_FILE` / `REQUESTS_CA_BUNDLE` to the box's CA file first.
+Step 2 must end `→ PASS`. Steps 3–4 (training, the ADAPTER eval, paired.py) are built after these photos.
 
 **Step 0 · What does Gemma see at call k? (free box, 1 card, ~20 min)** — decides the renderer's history rule.
 New `scripts/req_log.py`: a logging pass-through proxy (port PORT+100 → vLLM) that saves each chat request. Two Verified
