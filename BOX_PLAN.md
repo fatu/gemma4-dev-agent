@@ -179,19 +179,27 @@ cd gemma4-dev-agent && git pull && git log --oneline -1
 MODEL=google/gemma-4-31B-it-qat-w4a16-ct GPU=0 PORT=8011 bash scripts/verified_box.sh serve
 MODEL=google/gemma-4-31B-it-qat-w4a16-ct GPU=0 PORT=8011 bash train/mc_box.sh probe        # THINK_HIST=1 by default → runs/verified/probe_th
 ```
-📷 the `== probe` line + the `generated thoughts …` line, `== verify`, `calls … A2 …`, `RESULT`. Go on only if: rendered by
+Sampling of the probe and of the new baselines (user, 2026-11-13): **8,192 tokens per reply · top_p 0.95 · thinking budget
+4,096** (vLLM's per-request `thinking_token_budget`, sent through mini's `extra_body`, the field the Kaggle harness sends;
+our Kaggle latest has 6,144 / 4,096 / 0.95; temperature 0.2 everywhere). mc_box's probe passes MAX_TOK / TOP_P /
+THINK_BUDGET (defaults 8192 / 0.95 / 4096) to verified_box.sh, which writes them into mini's model config and prints them;
+the probe prints a `sampling sent by mini (as the server got it)` line — check it shows top_p 0.95 and
+thinking_token_budget 4096 (laptop: config and proxy tested with a stub mini; whether litellm forwards extra_body is only
+visible on the box).
+📷 the `== probe` line + the `sampling sent by mini …` line + the `generated thoughts …` line, `== verify`, `calls … A2 …`, `RESULT`. Go on only if: rendered by
 the template **yes**, verify n / n, A2 n / n, RESULT PASS. If many generated thoughts end with a newline, stop: the
 template would re-render them with two (photo the line; the reply targets would need a rule for that).
 
 **Step 1b · the new baselines, all 500, THINK_HIST=1** (31B on the 8-card box; E4B on whichever box is free; same
 commands as part 1 plus the knob and new tags; ~ the part-1 times):
 ```
-export MODEL=google/gemma-4-31B-it-qat-w4a16-ct GPUS="0 1 2 3 4 5 6 7" PORT=8011 TAG=vf_31b_th SUBSET=verified WORKERS=6 EVAL_JOBS=16 THINK_HIST=1
+export MODEL=google/gemma-4-31B-it-qat-w4a16-ct GPUS="0 1 2 3 4 5 6 7" PORT=8011 TAG=vf_31b_th SUBSET=verified WORKERS=6 EVAL_JOBS=16 THINK_HIST=1 MAX_TOK=8192 TOP_P=0.95 THINK_BUDGET=4096
 bash scripts/verified_box.sh serve && nohup bash scripts/verified_box.sh full > runs/verified/vf_31b_th.full.log 2>&1 &
 # E4B: MODEL=google/gemma-4-E4B-it-qat-w4a16-ct PORT=8010 TAG=vf_e4b_th (GPUS = that box's cards), the rest the same
 ```
 📷 the `report` block of each. Read: resolved vs 272 / 500 (31B, old setup) is the effect of seeing its own thoughts;
-count ContextWindowExceeded. Steps 1–2 below (`mc_box.sh data`, `render`) then run with THINK_HIST=1 (default), and the
+count ContextWindowExceeded. Step 1's filter prints (does not drop) the turns a 4,096 thinking budget or an 8,192
+reply cap could not have produced (shard 0 on the laptop: 0 and 0 among 223 picked rows). Steps 1–2 below (`mc_box.sh data`, `render`) then run with THINK_HIST=1 (default), and the
 adapters are evaluated with THINK_HIST=1 against these baselines.
 
 **Step 0 · What does Gemma see at call k? (free box, 1 card, ~20 min)** — decides the renderer's history rule.

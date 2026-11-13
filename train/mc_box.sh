@@ -17,6 +17,8 @@ GPU="${GPU:-0}"; PORT="${PORT:-8011}"; PROBE_SLICE="${PROBE_SLICE:-0:2}"
 N="${N:-1000}"; SEED="${SEED:-0}"; MAX_CTX="${MAX_CTX:-30720}"; ARM="${ARM:-r1k}"; RENDER_PROCS="${RENDER_PROCS:-16}"
 PY=.venv-eval/bin/python; MC=runs/sft/mc
 THINK_HIST="${THINK_HIST:-1}"                     # option ③ (user, 2026-11-13): the server sees earlier thoughts
+# the probe's sampling = the new baselines' (user, 2026-11-13): 8,192 tokens per reply, top_p 0.95, thinking budget 4,096
+MAX_TOK="${MAX_TOK:-8192}"; TOP_P="${TOP_P:-0.95}"; THINK_BUDGET="${THINK_BUDGET:-4096}"
 PR=runs/verified/probe$([ "$THINK_HIST" = 1 ] && echo _th); WIRE=$([ "$THINK_HIST" = 1 ] && echo mini-think || echo mini)
 HISTORY="${HISTORY:-$($PY -c "import json; print(json.load(open('$PR/probe_summary.json'))['history_rule'])" 2>/dev/null || echo unset)}"
 # T2T: move the text of text + tool-call replies into the thought. On by the user's decision after the 31B probe
@@ -26,7 +28,7 @@ T2T="${T2T:-on}"
 # reasoning_content (probe 2026-11-13: 0 blocks), so then every call is its own sample (render.py without --pack).
 PACK="${PACK:-$($PY -c "import json; print('on' if json.load(open('$PR/probe_summary.json')).get('server renders earlier thoughts') else 'off')" 2>/dev/null || echo off)}"
 tokdir() { $PY -c "from huggingface_hub import snapshot_download as s; print(s('$MODEL', allow_patterns=['*.json', '*.jinja']))" 2>/dev/null | tail -1; }
-echo "mc_box $STEP · model $MODEL (served $SERVED) · gpu $GPU port $PORT (logger $(( PORT + 100 ))) · probe slice $PROBE_SLICE · think hist $THINK_HIST (wire $WIRE, probe dir $PR) · history $HISTORY · text to thought $T2T · pack $PACK · n $N seed $SEED max ctx $MAX_CTX · arm $ARM · render procs $RENDER_PROCS · code $(git log --oneline -1 | cut -c1-40)"
+echo "mc_box $STEP · model $MODEL (served $SERVED) · gpu $GPU port $PORT (logger $(( PORT + 100 ))) · probe slice $PROBE_SLICE · think hist $THINK_HIST (wire $WIRE, probe dir $PR) · max tok $MAX_TOK · top_p $TOP_P · thinking budget $THINK_BUDGET · history $HISTORY · text to thought $T2T · pack $PACK · n $N seed $SEED max ctx $MAX_CTX · arm $ARM · render procs $RENDER_PROCS · code $(git log --oneline -1 | cut -c1-40)"
 T0=$(date +%s)
 
 case "$STEP" in
@@ -37,7 +39,7 @@ probe)
   python3 scripts/req_log.py proxy --listen $(( PORT + 100 )) --upstream "http://127.0.0.1:$PORT" --out "$PR/requests" \
     $([ "$THINK_HIST" = 1 ] && echo --rename-reasoning) > "$PR/proxy.log" 2>&1 &
   PX=$!; sleep 2
-  MODEL=$MODEL GPU=$GPU PORT=$PORT TAG=$PT SLICE=$PROBE_SLICE WORKERS=2 API_PORT_OFFSET=100 THINK_HIST=$THINK_HIST bash scripts/verified_box.sh run | grep -E "^verified_box|^== run"
+  MODEL=$MODEL GPU=$GPU PORT=$PORT TAG=$PT SLICE=$PROBE_SLICE WORKERS=2 API_PORT_OFFSET=100 THINK_HIST=$THINK_HIST MAX_TOK=$MAX_TOK TOP_P=$TOP_P THINK_BUDGET=$THINK_BUDGET bash scripts/verified_box.sh run | grep -E "^verified_box|^== run"
   kill $PX 2>/dev/null
   echo "  $(ls "$PR"/requests/req_*.json 2>/dev/null | wc -l) chat requests logged"
   python3 scripts/req_log.py summarize --dir "$PR/requests" --upstream "http://127.0.0.1:$PORT" --model "$SERVED" --out "$PR" || exit 1
@@ -52,7 +54,7 @@ data)
   [ "$T2T" = on ] || [ "$T2T" = off ] || { echo "run probe first (or set T2T=on|off)"; exit 1; }
   $PY train/mc_prep.py download --dir "$MC/raw" || exit 1
   $PY train/mc_prep.py build --raw "$MC/raw" --tokenizer "$(tokdir)" --history "$HISTORY" --wire "$WIRE" --out "$MC/$ARM" \
-    --n "$N" --seed "$SEED" --max-ctx "$MAX_CTX" $([ "$T2T" = on ] && echo --text-to-thought) || exit 1
+    --n "$N" --seed "$SEED" --max-ctx "$MAX_CTX" --think-budget "$THINK_BUDGET" --reply-cap "$MAX_TOK" $([ "$T2T" = on ] && echo --text-to-thought) || exit 1
   du -sh "$MC/$ARM" | sed 's/^/  records on disk: /'
   echo "📷 the rows → … line, the printed-only line and the == line ($(( $(date +%s) - T0 )) s)" ;;
 render)

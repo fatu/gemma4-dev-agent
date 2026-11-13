@@ -109,6 +109,7 @@ def cmd_summarize(a):
     S = collections.Counter()
     keys = collections.defaultdict(set)
     toks, examples = [], {}
+    sampling = collections.Counter()
     for ci, (sha, xs) in enumerate(sorted(convs.items())):
         xs.sort(key=lambda x: len(x["request"].get("messages") or []))
         cid = f"conv{ci:02d}"
@@ -116,6 +117,9 @@ def cmd_summarize(a):
         for k, x in enumerate(xs, 1):
             rq = x["request"]
             msgs, tools = rq.get("messages") or [], rq.get("tools")
+            sampling[json.dumps({k: rq.get(k) for k in ("temperature", "top_p", "top_k", "max_tokens", "max_completion_tokens",
+                                                        "thinking_token_budget", "chat_template_kwargs") if k in rq},
+                                sort_keys=True)] += 1
             for m in msgs:
                 keys[m.get("role")] |= set(m)
             prev = [m for m in msgs if m.get("role") == "assistant"]
@@ -163,6 +167,7 @@ def cmd_summarize(a):
           f"· text+call turns {S['text+call turns in history']} · tokens p50 {summ['tokens p50']} max {summ['tokens max']} "
           f"· server usage = /tokenize {S['usage == tokenize']}/{S['calls']}")
     print("   message keys: " + " · ".join(f"{k}: {','.join(v)}" for k, v in summ["message keys per role"].items()))
+    print("   sampling sent by mini (as the server got it): " + " | ".join(f"{k} ×{v}" for k, v in sampling.most_common(3)))
     print(f"   generated thoughts {S['generated thoughts']} · ending with a newline {S['... ending with a newline']} · empty {S['... empty']}"
           " (a newline before <channel|> would be re-rendered as two by the template)")
 

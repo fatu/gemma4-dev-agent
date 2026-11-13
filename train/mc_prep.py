@@ -34,7 +34,7 @@ SHARDS = [f"data/train-0000{i}-of-00004.parquet" for i in range(4)]
 VERIFIED_REPOS = {"django/django", "sympy/sympy", "sphinx-doc/sphinx", "matplotlib/matplotlib", "scikit-learn/scikit-learn",
                   "astropy/astropy", "pydata/xarray", "pytest-dev/pytest", "pylint-dev/pylint", "psf/requests",
                   "mwaskom/seaborn", "pallets/flask"}
-REPLY_CAP = 8192                                                # B-9 MAX_TOK: tokens per reply, thought included
+
 
 
 def wire(m, history):
@@ -111,7 +111,7 @@ def cmd_build(a):
     tok = AutoTokenizer.from_pretrained(a.tokenizer)
     R = render.Renderer(tok)
     tools = json.load(open(os.path.join(a.raw, "tools.json")))
-    print(f"mc_prep build · {REPO_ID}@{REVISION[:12]} · history {a.history} · wire {a.wire} · text to thought {a.text_to_thought} · max ctx {a.max_ctx} · n {a.n} · seed {a.seed}"
+    print(f"mc_prep build · {REPO_ID}@{REVISION[:12]} · history {a.history} · wire {a.wire} · think budget {a.think_budget} · reply cap {a.reply_cap} · text to thought {a.text_to_thought} · max ctx {a.max_ctx} · n {a.n} · seed {a.seed}"
           f" · tokenizer {a.tokenizer} · limit {a.limit or 'all'} · out {a.out}")
     rows = load_rows(a.raw)
     if a.limit:
@@ -119,7 +119,7 @@ def cmd_build(a):
     n0 = len(rows)
     res = [r for r in rows if str(r.get("resolved")) == "True"]
     fit, peaks, stats = [], [], collections.Counter()
-    long_thought = 0
+    over = collections.Counter()
     for r in res:
         calls = to_calls(r["messages"], a.history, a.text_to_thought)
         if not calls:
@@ -131,8 +131,7 @@ def cmd_build(a):
         t = last["target"]
         reply = (t["reasoning"] + t["content"] + "".join(tc["args"] for tc in t["tool_calls"]))
         peak = len(R.ids(p)) + len(R.ids(reply)) + 16 * (1 + len(t["tool_calls"]))
-        if any(len(R.ids(c["target"]["reasoning"])) > REPLY_CAP for c in calls):
-            long_thought += 1
+
         peaks.append(peak)
         if peak <= a.max_ctx:
             fit.append((r, calls, peak))
@@ -143,6 +142,13 @@ def cmd_build(a):
     info = collections.Counter()
     per_task = collections.Counter(r["instance_id"] for r, _, _ in pick)
     for r, calls, peak in pick:
+        # turns the Kaggle-like sampling could not have produced (printed only; the user decides on removal)
+        th = [len(R.ids(c["target"]["reasoning"])) for c in calls]
+        rp = [t + len(R.ids(c["target"]["content"] + "".join(tc["args"] for tc in c["target"]["tool_calls"])))
+              + 16 * len(c["target"]["tool_calls"]) for t, c in zip(th, calls)]
+        n_th, n_rp = sum(x > a.think_budget for x in th), sum(x > a.reply_cap for x in rp)
+        over[f"turns with a thought > {a.think_budget}"] += n_th; over[f"trajectories with such a turn"] += n_th > 0
+        over[f"turns with a reply > {a.reply_cap}"] += n_rp; over[f"trajectories with such a reply"] += n_rp > 0
         asst = [m for m in r["messages"] if m.get("role") == "assistant"]
         info["calls"] += len(calls)
         info["multi-tool-call turns"] += sum(1 for m in asst if len(m.get("tool_calls") or []) > 1)
@@ -157,7 +163,7 @@ def cmd_build(a):
     sp = sorted(peaks)
     q = (lambda v, x: v[min(len(v) - 1, int(x * len(v)))]) if sp else (lambda v, x: None)
     summ = {"rows": n0, "resolved": len(res), "fit": len(fit), "picked": len(pick), "tasks": len(per_task),
-            "peak p50": q(sp, .5), "peak p90": q(sp, .9), "thought > 8192 (resolved rows)": long_thought,
+            "peak p50": q(sp, .5), "peak p90": q(sp, .9), **dict(over),
             "licences": dict(collections.Counter(r["license"] for r, _, _ in pick)),
             "rows per task": dict(collections.Counter(per_task.values())), **dict(info), **dict(stats)}
     json.dump(summ, open(os.path.join(a.out, "_prep_summary.json"), "w"), indent=1)
@@ -228,6 +234,8 @@ def main():
     b.add_argument("--history", choices=["keep", "drop"], required=True); b.add_argument("--out", required=True)
     b.add_argument("--n", type=int, default=1000); b.add_argument("--seed", type=int, default=0)
     b.add_argument("--wire", choices=["mini", "mini-think"], default="mini", help="how the server renders (render.py --wire)")
+    b.add_argument("--think-budget", type=int, default=4096, help="count (not drop) turns whose thought is longer")
+    b.add_argument("--reply-cap", type=int, default=8192, help="count (not drop) turns whose whole reply is longer")
     b.add_argument("--text-to-thought", action="store_true", help="move the text of text + tool-call replies into the thought")
     b.add_argument("--max-ctx", type=int, default=30720); b.add_argument("--limit", type=int, default=0, help="debug: first rows only")
     v = sub.add_parser("verify")
