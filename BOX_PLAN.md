@@ -71,6 +71,21 @@ never echoed, never written to a file under git. mini's model config: `openai/$T
 tool for the teacher. Prints: tool call returned (yes / no, how many) · reasoning returned and under which field
 (`reasoning_content` / `reasoning` / thinking blocks) · usage (prompt, cached, completion tokens) · latency. If the
 reasoning does not come back: stop + photo (thought-less data is the canary failure mode).
+Written and tested against a local stand-in (2026-11-13). On the box, after typing the three values (not in a script, not
+in a file under git; put a space before each `export` so the shell history does not keep it if `HISTCONTROL` ignores
+space-led lines):
+```
+cd gemma4-dev-agent && git pull && git log --oneline -1
+ export GATEWAY_BASE_URL=…   # ends in /v1
+ export GATEWAY_API_KEY=…
+ export TEACHER=…            # the gateway's name for GLM-5.3
+.venv-swe/bin/python scripts/teacher_probe.py
+```
+Three turns with canned tool results (nothing is executed), then one call through litellm (the route mini uses). 📷 every
+line. `RESULT go` = a tool call in every turn and reasoning returned in at least two of three. If the reasoning is NOT
+RETURNED, try once with `--effort high`, then with the gateway's own thinking switch via `--extra '{"…": …}'`; still
+nothing → stop + photo. If "history with reasoning accepted" prints NO, say so with the photo: step 1's config then has to
+drop the reasoning from the history.
 
 **Step 1 · SWE-rebench in mini-swe-agent (box, ~1 h).** New `scripts/rebench_mini.sh` (setup | run | grade | report, same
 chunk / resume / disk guard as `verified_box.sh full`): rows → per-task image names → `mini-extra swebench` on a local
