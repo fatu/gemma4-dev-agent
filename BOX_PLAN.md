@@ -85,8 +85,8 @@ calls, debug artifacts in the patch, edits without tests), each rule's count pri
 MetaCurate's filter search itself only later: it needs the Codex CLI and a paid judge (their code has an OpenAI-compatible
 client, so the gateway could be the judge).
 
-**Step 5 · Train and evaluate exactly as B-9 part 2 steps 2–5** (same renderer, recipe, ADAPTER eval, paired.py), E4B
-first. **Read it (set before the data):** G1k vs base by gate G1; G1k vs R1k on the same 500 tasks: G1k ≥ R1k + 3 pts →
+**Step 5 · Train and evaluate exactly as B-9 part 2 steps 2–4** (same renderer, recipe, ADAPTER eval, paired.py), 31B
+first, any free box. **Read it (set before the data):** G1k vs base by B-9 part 2's criterion (improved or not); G1k vs R1k on the same 500 tasks: G1k ≥ R1k + 3 pts →
 our own generation becomes the data source for the Kaggle-harness stage (plan 24 P2); otherwise the public pool stays.
 **Optional:** Gemma 31B as the teacher for E4B (free, GPU) on the same tasks, if step 2 shows teacher thoughts far from
 Gemma's style (native thoughts; distillation inside the family).
@@ -95,38 +95,43 @@ Gemma's style (native thoughts; distillation inside the family).
 Final submission 12-02. **Risks:** token cost; gateway rate limits; reasoning not returned; ~1,400 image pulls (Docker Hub
 limits, disk); teacher licences.
 
-## B-9 · All 500 of SWE-bench Verified: 31B on the 8-card box, E4B on the 4-card box (2026-11-11) — 31B ✓ 272 / 500 (54.4 %) · E4B ▶ running (another session) · part 2 (a LoRA on MetaCurate's data) planned
+## B-9 · All 500 of SWE-bench Verified: 31B on the 8-card box, E4B on the 4-card box (2026-11-11) — 31B ✓ 272 / 500 (54.4 %) · E4B ▶ running (another session) · part 2 (a LoRA on MetaCurate's data, 31B first) planned
 
 **31B result (photo 2026-11-13).** 272 / 500 resolved = **54.4 %** (Wilson 95 % ≈ 50.0–58.7 %), one pass, all 500 predictions (no duplicates or gaps; merged from three runs over task ranges 0–249, 250–274 and 275–499, 16 grading reports). Exit statuses: Submitted 385, ContextWindowExceededError 115. The 115 empty patches are exactly the context-window exits; no other failure type. Among the 385 submitted: 272 resolved (70.6 %). Model calls per task: median 32, p90 56, max 158. Per repo (resolved / tasks): django 128/231, sympy 40/75, sphinx 20/44, matplotlib 18/34, scikit-learn 26/32, astropy 12/22, xarray 14/22, pytest 12/19, pylint 1/10, requests 0/8, seaborn 0/2, flask 1/1.
 Read by the rule set before the data: ≥ 40 % → our setup is near the public level (Vals AI 53.92 % on its subset, a different setup: close, not equivalent). The 32K window is the one visible cost: 23 % of tasks (115) ended on it. Missing: the 50 Verified-mini line (the box could not load the HF dataset: a self-signed certificate; set `SSL_CERT_FILE` and run `report` again, no rerun). The box copy of `verified_box.sh` has two changes not in this repo (MIRROR, START).
 
-### B-9 part 2 · Does a LoRA on MetaCurate's public data beat the B-9 baseline? (plan 2026-11-13, nothing built yet) — ▶ the laptop builds it step by step after the user's go
+### B-9 part 2 · Does a LoRA on MetaCurate's public data improve on the B-9 baseline? (plan 2026-11-13, revised the same day by the user: 31B first, our own LoRA recipe, no pipeline check, no QLoRA, any free box, the criterion is "improved or not") — ▶ the laptop builds it step by step after the user's go
 
 **Question.** Train a LoRA on the public `furiosa-ai/MetaCurate-DeepSeekV4Pro` trajectories (arXiv 2610.23134) and evaluate it
 under exactly the B-9 setup (mini-swe-agent 2.4.6, thinking on, 32K, temperature 0.2, 250 steps, 8,192 tokens per reply,
-Verified 500, official grading), paired task by task against the B-9 baseline of the same model. E4B first, then 31B.
+Verified 500, official grading). **31B first, then E4B.**
 **Why this data** (checked on the laptop, shard 0 of 4 = 1,072 rows, 2026-11-13): same agent and the same first prompt as
 B-9 (100 / 100 sampled trajectories match the 2.4.6 `swebench.yaml`); 97 % of model turns carry `reasoning_content`
 (B-9 runs with thinking on); 0 trajectories from the 12 Verified repos; 417 resolved, 275 of them fit 32K in Gemma tokens
-(≈ 1,100 in all 4 shards, ≈ 660 tasks). It is the only public multi-run LoRA gain on Verified (Qwen3.5-27B, LoRA r64:
-72.3 ± 0.6 → 74.3 ± 0.6). **Their training code is not public** (GitHub history, Hugging Face and the web were searched
-2026-11-13; the authors' mirror README: "Consumers should apply their own chat-template and loss-masking policy"), so we
-render and train with our own tools; the hyperparameters are the paper's Table 6 LoRA row.
-**Where.** E4B: everything on the 4-card box (its B-9 baseline lives there; results are paired on one box) once its B-9
-run is done; steps 0–3 can run on the 8-card box meanwhile. 31B: everything on the 8-card box. Costs: box time only.
+(≈ 1,100 in all 4 shards). It is the only public multi-run LoRA gain on Verified (Qwen3.5-27B, LoRA r64: 72.3 ± 0.6 →
+74.3 ± 0.6). **Their training code is not public** (GitHub history, Hugging Face and the web searched 2026-11-13; the
+authors' mirror README: "Consumers should apply their own chat-template and loss-masking policy"), so we render and train
+with our own tools and our own LoRA recipe.
+**Where.** Any free box (8-card or 4-card) for training and evaluation; a model is trained and evaluated on the same box.
+Costs: box time only.
 
-**Step 0 · What does Gemma see at call k? (8-card box, 1 card, ~20 min)** — decides the renderer's history rule.
+**Step 0 · What does Gemma see at call k? (free box, 1 card, ~20 min)** — decides the renderer's history rule.
 New `scripts/req_log.py`: a logging pass-through proxy (port PORT+100 → vLLM) that saves each chat request. Two Verified
-tasks with E4B through it (`TAG=vf_probe SLICE=0:2`); for 3 calls per task the saved messages go to vLLM's `/tokenize`.
+tasks with 31B through it (`TAG=vf_probe SLICE=0:2`); for 3 calls per task the saved messages go to vLLM's `/tokenize`.
 Prints: earlier `reasoning_content` present in the request (yes / no) · rendered by the Gemma template (yes / no) · how a
 turn with several tool calls and a turn with text + a tool call render · Gemma tokens per call. 📷 the summary line.
 
 **Step 1 · Data (box CPU, ~15 min).** Download the 4 parquet shards (~0.5 GB, HF token typed by the user; the box needs
-`SSL_CERT_FILE` or its mirror for HF). New `train/mc_prep.py`, each filter prints its count: resolved → drop the 12
-Verified repos → peak context ≤ 30,720 Gemma tokens under step 0's rule (2K margin under 32K) → every thought ≤ 8,192
-tokens → drop trajectories with a multi-tool-call turn unless step 0 shows the template and the gemma4 parser handle them
-→ licence `custom-check-github` dropped → strip the terminal `exit` event → ≤ 3 per task. Arm **R1k** = 1,000 of what is
-left (seed 0); **R500** = a 500 subset (learning-curve point, trained only if R1k passes).
+`SSL_CERT_FILE` or its mirror for HF). New `train/mc_prep.py`. The paper's comparable arm is **Resolved** ("retains only
+trajectories that pass the execution-based evaluation", then 1,000 per arm); its best arm (MetaCurate-selected) cannot be
+rebuilt because the selected subsets are not published. Filters, each count printed:
+1. resolved only (as the paper's Resolved arm);
+2. peak context ≤ 30,720 Gemma tokens under step 0's history rule — **not in the paper** (it trained at 128K and evaluated
+   with a 262K window); needed because B-9 and Kaggle run at 32K;
+3. arm **R1k** = 1,000 at random (seed 0) from what is left (all of it if fewer, printed).
+Printed only, nothing removed: trajectories from Verified repos (expected 0), thoughts over 8,192 Gemma tokens (B-9's reply
+cap), licence values, trajectories per task, multi-tool-call turns. The terminal `exit` event is not a filter: the renderer
+leaves it out of the sequence (dataset card: "account for the terminal `exit` event when applying a chat template").
 
 **Step 2 · Render (box CPU).** New `train/mc_render.py` (label logic from `render.py`): the `-ct` tokenizer's Gemma chat
 template, tools = mini's one `bash` tool; one sequence per trajectory with several label spans if step 0 says earlier
@@ -134,30 +139,24 @@ thoughts stay in the prompt, else one sample per call; labels = each model turn'
 system, user, tool output masked. Gate R (all must pass): for every probe call, our rendered prefix = vLLM `/tokenize`
 token for token; 50 decoded targets = the source text; every trajectory's label share printed.
 
-**Step 3 · Pipeline check (P1.0, ~1 h per model).** Overfit 50 trajectories × 10 epochs → teacher-forced top-1 through
-vLLM + `-ct` + adapter ≥ 90 % on them (base printed); PEFT vs vLLM greedy / top-1 agreement ≥ 95 % on 20 prompts. 31B has
-never had this check. Fail → stop and fix.
+**Step 3 · Train 31B, then E4B (free box, all its cards).** `train/sft_lora.py` (exists; `--world <cards>`, one model copy
+per card, data-parallel; bf16 base from `dequant_ct.py`; no QLoRA) with **our own recipe = its defaults**: r32 · α32 ·
+dropout 0 · every language-model projection present in the checkpoint · lr 3e-5 · 5 % warmup then cosine to 10 % · 16
+sequences per optimizer step · 2 epochs · clip 1.0; `--max-len 30720` (matches the filter; the default is 26,624). 31B:
+`--ct google/gemma-4-31B-it-qat-w4a16-ct --alias gemma-4-31b-it-qat-w4a16-ct`. 31B in bf16 is ~62 GB per card before
+activations; the first step prints the peak memory. If one copy per card does not fit, the fix is to split one copy over
+two cards (`--device-map`, a new knob) — not QLoRA. Time: a guess, 31B 6–10 h, E4B 2–4 h.
 
-**Step 4 · Train E4B (4-card box).** `train/sft_lora.py` (exists; `--world 4` data-parallel, bf16 base from
-`dequant_ct.py`) with the paper's LoRA recipe: r64 · α128 · attention + MLP projections · dropout 0 · lr 1e-4 · cosine to
-1e-6 with 10 % warmup · AdamW β (0.9, 0.95), wd 0.01 · 32 sequences per step · 3 epochs (≈ 94 steps for 1,000) · max len
-32,768 · clip 1.0. New knobs (warmup ratio, min lr, betas, wd, MLP targets) print their values. Time: a guess, 2–4 h.
+**Step 4 · Evaluate (the same box).** New knob `ADAPTER=<dir>` in `verified_box.sh` (serve mounts it; mini asks for the
+adapter's name; printed) → `full` on Verified 500 with every other B-9 setting unchanged. New `scripts/paired.py`: adapter
+vs the B-9 baseline of the same model. **Criterion (set before the data): improved or not = adapter resolved > baseline
+resolved** (31B: > 272 / 500). Printed with it: the difference with its 95 % interval; exact McNemar p and the per-task
+win / loss counts when the baseline's report is on the same box (else the unpaired interval only); ContextWindowExceeded
+and empty-patch counts. Expect small differences to sit inside the noise (one 500-task pass: ± 4.4 pts at 54 %; the
+paper's 27B LoRA gain was +2.0 pts), so the report says whether the gain is significant, not only its sign.
 
-**Step 5 · Evaluate.** New knob `ADAPTER=<dir>` in `verified_box.sh` (serve mounts it; mini asks for the adapter's name;
-printed) → `full` on Verified 500 with every other B-9 setting unchanged. New `scripts/paired.py`: per-task table against
-the B-9 report of the same model on the same box, exact McNemar, and the ContextWindowExceeded / empty-patch counts.
-**Gate G1 (set before the data):** resolved ≥ base + 20 tasks (+4 pts) **and** McNemar p < 0.05 **and** context-window
-exits ≤ base + 15. Pass → step 6. Fail → re-run step 3; if the pipeline is clean, one full-FT E4B control separates "LoRA"
-from "data"; both fail → this data does not move E4B; B-10 decides what comes next.
-
-**Step 6 · 31B (8-card box).** Same data and recipe. One bf16 31B copy (~62 GB) per card may not leave room for 32K
-sequences with checkpointing on a 96 GB card: step 3 on 31B measures the peak memory; if it does not fit, the plan is QLoRA
-nf4 (sft_lora.py needs that mode) rather than FSDP. Same gate against 272 / 500. Read it knowing the paper's 27B LoRA gain
-was +2.0 pts, below what one 500-task pass can detect: "no detectable gain" is the likely outcome, not "harm".
-
-**Timeline.** 11-13 laptop: req_log, mc_prep, mc_render, the ADAPTER knob, paired.py (tested on fakes). 11-14 box: steps
-0–3. 11-15 E4B train + eval. 11-16 G1. 11-17 → 11-19 31B.
-
+**Timeline.** 11-13 laptop: req_log, mc_prep, mc_render, the ADAPTER knob, `--device-map`, paired.py (tested on fakes).
+11-14 box: steps 0–2, 31B training starts. 11-15 → 11-16 31B eval; E4B train + eval on whichever box is free.
 
 ### B-9 part 1 · the baselines
 
