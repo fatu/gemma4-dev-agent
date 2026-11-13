@@ -41,49 +41,79 @@ dropped too.
 
 ---
 
-## B-10 · Our own MetaCurate-style data for Gemma: teacher trajectories from GLM-5.3 / Kimi K3 through an OpenAI-compatible gateway (plan 2026-11-13) — ▶ step 0 after the user's go (paid tokens)
+## B-10 · Our own MetaCurate-style data for Gemma: teacher trajectories from GLM-5.3 through an OpenAI-compatible gateway (plan 2026-11-13, revised the same day: generation settings as the paper, GLM-5.3 only, the official rule logic) — ▶ step 0 after the user's go (paid tokens)
 
 **Why.** B-9 part 2 tests the public DeepSeek V4 Pro pool. B-10 makes the same kind of data with teachers we can call,
-shaped for Gemma from the start, and asks whether the teacher matters for Gemma (DSv4Pro vs GLM-5.3 vs Kimi K3 on the
-same tasks). **Method = MetaCurate App. A**: tasks from SWE-rebench, SWE-rebench-V2 and SWE-Gym (prebuilt per-task
+shaped for Gemma from the start, and asks whether the teacher matters for Gemma (DSv4Pro vs GLM-5.3 on the
+same tasks; user 2026-11-13: no teacher comparison, GLM-5.3 first). **Method = MetaCurate App. A**: tasks from SWE-rebench, SWE-rebench-V2 and SWE-Gym (prebuilt per-task
 images) · mini-swe-agent · temperature 0.7 · 3 attempts per task · resolved = fail-to-pass and pass-to-pass tests pass in
-the task's container. **Shaped for Gemma** (each printed): the B-9 prompt and agent (`swebench.yaml` of mini-swe-agent
-2.4.6) · teacher replies capped at 8,192 tokens (Gemma's cap in B-9) · step limit 60 (in DSv4Pro shard 0 the resolved
-runs that fit 32K had calls p50 27, p90 44; longer runs are dropped anyway and cost the most tokens) · kept only if every
-model turn has a thought and the peak context is ≤ 30,720 Gemma tokens · first on the **same 1,415 tasks as MetaCurate**,
-so the teacher is the only difference from B-9 part 2's data.
+the task's container. **Generation settings = the paper's** (user 2026-11-13: "照论文"). The generation code is not
+published (repo = the filter search only; the dataset's release note gives the harness revision as unknown), so the
+settings are read from the dataset itself, all 4,286 rows: `swebench.yaml` of mini-swe-agent with three edits to the
+instance prompt (an added "the environment is offline: do not install, clone or download" line · "create new local
+scripts" · the "you can also install it" sentence removed) · step limit 250 (the only limit-exceeded rows end at 249–250)
+· replies capped at 4,096 tokens (the largest reply is exactly 4,096) · command timeout 60 s · parallel tool calls on
+(15 % of turns carry 2–11 calls) · observations cut at 10,000 characters. Not recoverable, built here: the images for
+the three sources (SWE-Gym rows carry no image name), the grader (the dataset gives the expected F2P / P2P test names
+per row: used to check ours), the exact mini-swe-agent revision (2.4.6 is used), the reasoning request parameter.
+**Added for Gemma at curation, not at generation** (each printed): kept only if resolved, every model turn has a thought
+and the peak context is ≤ 30,720 Gemma tokens · first on the **same 1,415 tasks as MetaCurate**, so the teacher is the
+only difference from B-9 part 2's data.
 **Where.** The 8-card box, no GPU: the teacher is remote, the box runs the containers and the grading, so B-10 runs beside
 B-9 part 2's training (shared disk: the chunked image deletion of `verified_box.sh full` is reused).
+**Teacher.** GLM-5.3 only. Background (web, 2026-11-13): no public comparison of the candidate teachers as teachers; a
+controlled study on terminal tasks found the weakest of its teachers gave the best students, so benchmark rank is not a
+selection criterion; the licence text of GLM-5.3 has no clause on outputs (the gateway's own terms: the user checks).
 **Secrets.** `GATEWAY_BASE_URL`, `GATEWAY_API_KEY` and `TEACHER=<gateway model name>` are typed by the user on the box;
 never echoed, never written to a file under git. mini's model config: `openai/$TEACHER`, `api_base: $GATEWAY_BASE_URL`.
 
 **Step 0 · Gateway check (box, 5 min, a few cents).** New `scripts/teacher_probe.py`: one chat call with mini's `bash`
-tool per teacher. Prints: tool call returned (yes / no, how many) · reasoning returned and under which field
-(`reasoning_content` / `reasoning` / thinking blocks) · usage (prompt, cached, completion tokens) · latency. A teacher whose
-reasoning does not come back is dropped (thought-less data is the canary failure mode). Laptop, same day: each model's
-licence must allow training on its outputs before any larger spend.
+tool for the teacher. Prints: tool call returned (yes / no, how many) · reasoning returned and under which field
+(`reasoning_content` / `reasoning` / thinking blocks) · usage (prompt, cached, completion tokens) · latency. If the
+reasoning does not come back: stop + photo (thought-less data is the canary failure mode).
 
 **Step 1 · SWE-rebench in mini-swe-agent (box, ~1 h).** New `scripts/rebench_mini.sh` (setup | run | grade | report, same
 chunk / resume / disk guard as `verified_box.sh full`): rows → per-task image names → `mini-extra swebench` on a local
 dataset file; grading = the task's F2P + P2P tests in its image (SWE-rebench's harness fork if it runs here, else our own
 runner). Check on 5 tasks: the gold patch passes, an empty patch fails. 📷 the 5 lines.
 
-**Step 2 · Pilot (box, ~1–2 h, paid).** 30 of the 1,415 tasks (stratified by source, seed 0) × 1 attempt × each teacher.
-📷 per teacher: resolved / 30 · runs that fit (≤ 30,720 Gemma tokens) · turns with a thought · thought tokens p50 / max ·
+**Step 2 · Pilot (box, ~1–2 h, paid).** 30 of the 1,415 tasks (stratified by source, seed 0) × 1 attempt, GLM-5.3.
+📷: resolved / 30 · runs that fit (≤ 30,720 Gemma tokens) · turns with a thought · thought tokens p50 / max ·
 calls p50 / p90 · prompt / cached / completion tokens per run · cost per run (gateway price × usage) · wall s per run ·
-errors; plus DSv4Pro's public runs on the same 30 tasks as the reference. **Rule set before the data:** drop a teacher
-with thoughts in < 90 % of turns or < 0.15 usable runs (resolved ∧ fits ∧ thoughts) per attempt; of the rest, take the
-cheapest per usable run. The scale step's cost estimate comes from these numbers and needs the user's go.
+errors; plus DSv4Pro's public runs on the same 30 tasks as the reference. **Rule set before the data:** go on if
+thoughts are in ≥ 90 % of turns and usable runs (resolved ∧ fits ∧ thoughts) are ≥ 0.15 per attempt; otherwise stop +
+photo. The scale step's cost estimate comes from these numbers and needs the user's go.
 For scale: DSv4Pro shard 0 used 0.65 M prompt tokens per run (median; 98 % cached), 10.6 K completion tokens, 200 s.
 
-**Step 3 · Scale (box, paid).** The chosen teacher on the 1,415 tasks × 3 attempts (1 attempt first if the estimate is
-high), chunked and resumable. Target ≥ 1,000 usable runs. Data stays on the box (`runs/`, gitignored).
+**Step 3 · Scale (box, paid).** GLM-5.3 on the 1,415 tasks × 3 attempts (1 attempt first if the estimate is
+high), chunked and resumable. Target ≥ 1,000 usable runs; the public pool itself gives fewer after the rule filter (table
+below), so a fourth attempt or more tasks may be needed: decided from the pilot's yield. Data stays on the box (`runs/`,
+gitignored).
 
-**Step 4 · Curate (box CPU).** Resolved → our deterministic version of the Nemotron-style rule filter (invalid submission,
-git restore / stash misuse, repeated edit–test or self-revert loops, much exploration with little editing, malformed tool
-calls, debug artifacts in the patch, edits without tests), each rule's count printed → ≤ 3 per task → arm **G1k** = 1,000.
-MetaCurate's filter search itself only later: it needs the Codex CLI and a paid judge (their code has an OpenAI-compatible
-client, so the gateway could be the judge).
+**Step 4 · Curate (box CPU).** `train/mc_rules.py` = the paper's rule filter, a port of the released seed rules
+(`filters/initial_ranking_nometa/rules.py`, MIT): the same seven signals, patterns and six thresholds, no model and no
+execution labels. Reject: (1) the submission is not a git diff · (2) a disallowed git command (push, pull, fetch, clone,
+cherry-pick, reflog, fsck, remote, ls-remote) · (3) ≥ 8 returns from a test run to editing, or ≥ 3 self-reverts
+(`git checkout --`, restore, stash, `reset --hard`) · (4) no edit at all, or ≥ 20 commands with ≥ 85 % exploration and ≤ 2
+edits. Flag, counted and printed only (the paper's text; the released file rejects on these too): (5) > 10 % of turns
+without a command · (6) `print(`, `pdb` or `breakpoint()` on an added line of the patch · (7) edits but no test runner.
+Not published, chosen here: one turn per assistant message (`--turns msg`); 1,000 drawn at random (seed 0) from the
+survivors that are also resolved, fit and have thoughts → arm **G1k**. MetaCurate's own filter search only later: it
+needs a paid judge model (their code has an OpenAI-compatible client, so the gateway could be the judge).
+
+The rule filter on the public DSv4Pro pool (laptop, 2026-11-13, all 4,286 trajectories; fit = the teacher's own token
+count of the last call ≤ 30,720, a proxy for Gemma tokens):
+
+| | trajectories | resolved | resolved ∧ fits |
+|---|---|---|---|
+| pool | 4,286 | 1,760 | 1,027 |
+| passes signals 1–4 (the paper's text) | 3,725 (87 %) | 1,549 | 949 |
+| passes all seven (the released file) | 2,296 (54 %) | 921 | 507 |
+
+Per signal, share of the pool: not a diff 0.8 % · disallowed git 0.7 % · loops 3.8 % · exploration 8.2 % · turns without a
+command 0 % · debug lines 1.5 % · edits without a test runner 40.6 %. The filter does not separate resolved from
+unresolved runs: resolved share 41.6 % among the survivors of signals 1–4, 41.1 % in the pool. With one turn per tool call
+(`--turns call`) the exploration signal fires on 12.6 % and 3,540 pass signals 1–4.
 
 **Step 5 · Train and evaluate exactly as B-9 part 2 steps 2–4** (same renderer, recipe, ADAPTER eval, paired.py), 31B
 first, any free box. **Read it (set before the data):** G1k vs base by B-9 part 2's criterion (improved or not); G1k vs R1k on the same 500 tasks: G1k ≥ R1k + 3 pts →
