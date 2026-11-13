@@ -128,12 +128,21 @@ MODEL=google/gemma-4-31B-it-qat-w4a16-ct bash train/mc_box.sh data              
 MODEL=google/gemma-4-31B-it-qat-w4a16-ct bash train/mc_box.sh render                            # step 2, ~10–40 min 📷
 MODEL=google/gemma-4-31B-it-qat-w4a16-ct GPU=0 PORT=8011 bash scripts/verified_box.sh stop      # free the card
 ```
-Read the probe 📷: `earlier reasoning sent: yes|no` sets HISTORY (keep|drop) for step 1; `text+call turns 0` sets
-T2T=on (a text + tool-call reply's text goes into its thought: Gemma does not write such turns, and they break packing:
-on 20 rows 172 → 36 sequences, 2.9 M → 0.6 M tokens); `== verify …: n / n` and `RESULT PASS` (A2 = our renderer equals
-the server token for token) must both hold, else stop and photo `grep -E "DIFF|FAIL" -m5` of the output. Step 1 needs the
-HF token; if the download fails on the certificate, set `SSL_CERT_FILE` / `REQUESTS_CA_BUNDLE` to the box's CA file first.
-Step 2 must end `→ PASS`. Steps 3–4 (training, the ADAPTER eval, paired.py) are built after these photos.
+Read the probe 📷 (4 lines: `== probe …`, `== verify …`, `calls … A2 …`, `RESULT`):
+- `earlier reasoning sent: yes|no` → HISTORY keep|drop for step 1 (the records reproduce what mini sent; the template
+  decides what is rendered; `rendered by the template: yes` → a trajectory packs into one sequence).
+- `text+call turns N` = Gemma 31B's own replies with text AND tool calls. Such a reply hits a **known Gemma 4 chat-template
+  bug**: the text is re-rendered after the tool results and the next prompt gets no `<|turn>model` header (HF
+  google/gemma-4-31B-it discussions #67, #115 — Google: "working on this"; community fix #154 and vLLM PR #66269, both
+  open on 2026-11-13; Kaggle forum #744844: not fixable from a submission; Gemma itself does write text before a tool
+  call). T2T (`--text-to-thought`) moves that text to the end of the thought (content → ""), so the training data never
+  contains such a turn and history = generation order (on 20 rows also 172 → 36 sequences, 2.9 M → 0.6 M tokens).
+  Rule now: N = 0 → T2T=on automatically; N > 0 → off unless set (`T2T=on|off`) — **open: the user decides after the
+  photo** (N > 0 means the bug already affects the baseline, an argument for on).
+- `== verify …: n / n` (our traj → request rebuild = what mini sent) and `RESULT PASS` (A2: our renderer = the server,
+  token for token) must both hold, else stop and photo `grep -E "DIFF|FAIL" -m5` of the output.
+Step 1 needs the HF token; if the download fails on the certificate, set `SSL_CERT_FILE` / `REQUESTS_CA_BUNDLE` to the
+box's CA file first. Step 2 must end `→ PASS`. Steps 3–4 (training, the ADAPTER eval, paired.py) are built after these photos.
 
 **Step 0 · What does Gemma see at call k? (free box, 1 card, ~20 min)** — decides the renderer's history rule.
 New `scripts/req_log.py`: a logging pass-through proxy (port PORT+100 → vLLM) that saves each chat request. Two Verified
