@@ -42,13 +42,22 @@ MSA="${MSA:-2.4.6}"; SWEB="${SWEB:-4.1.0}"; VS=.venv-swe/bin; OUT=runs/verified/
 case "$SUBSET" in verified) DS=princeton-nlp/SWE-bench_Verified; NT=500 ;; *) DS=$SUBSET; NT=50 ;; esac
 GPUS=(${GPUS:-$GPU}); NP=${#GPUS[@]}; NTASK="${NTASK:-$NT}"
 API_PORT_OFFSET="${API_PORT_OFFSET:-0}"                     # B-9 part 2 step 0: mini talks to PORT+offset (the request logger)
+# THINK_HIST=1 (B-9 part 2 option ③): each part talks to a req_log.py --rename-reasoning proxy on its port+200, so vLLM
+# 0.19.1 sees `reasoning` and renders the model's earlier thoughts (0 = the original B-9 setup: they are dropped).
+THINK_HIST="${THINK_HIST:-0}"
 CHUNK="${CHUNK:-100}"; KEEP_IMAGES="${KEEP_IMAGES:-0}"; MIN_FREE_GB="${MIN_FREE_GB:-50}"
 port_of() { echo $(( PORT + $1 )); }                       # card k of GPUS (0-based) → its port
-echo "verified_box $STEP · model $MODEL (served $SERVED) · gpus ${GPUS[*]} → ports $PORT..$(port_of $(( NP - 1 ))) ($NP part(s), $NTASK tasks) · tag $TAG · subset $SUBSET (grading dataset $DS) · slice ${SLICE:-all} · workers $WORKERS · step limit $STEPS · temperature $TEMP · max tokens $MAX_TOK · pull timeout $PULL_TIMEOUT s · eval jobs $EVAL_JOBS · max len $MAX_LEN · gpu util $GPU_UTIL · api port offset $API_PORT_OFFSET · chunk $CHUNK keep images $KEEP_IMAGES min free $MIN_FREE_GB GB (full) · mini-swe-agent $MSA · swebench $SWEB · code $(git log --oneline -1 | cut -c1-40)"
+echo "verified_box $STEP · model $MODEL (served $SERVED) · gpus ${GPUS[*]} → ports $PORT..$(port_of $(( NP - 1 ))) ($NP part(s), $NTASK tasks) · tag $TAG · subset $SUBSET (grading dataset $DS) · slice ${SLICE:-all} · workers $WORKERS · step limit $STEPS · temperature $TEMP · max tokens $MAX_TOK · pull timeout $PULL_TIMEOUT s · eval jobs $EVAL_JOBS · max len $MAX_LEN · gpu util $GPU_UTIL · api port offset $API_PORT_OFFSET · think hist $THINK_HIST · chunk $CHUNK keep images $KEEP_IMAGES min free $MIN_FREE_GB GB (full) · mini-swe-agent $MSA · swebench $SWEB · code $(git log --oneline -1 | cut -c1-40)"
 T0=$(date +%s)
 part() {  # one part: $1 port · $2 output dir · $3 slice ("" = all) · $4 log
   curl -s --max-time 3 "http://127.0.0.1:$1/v1/models" | grep -q "$SERVED" || { echo "no $SERVED on port $1: run serve first"; return 1; }
-  mkdir -p "$2"; local cfg="$2.model.yaml"
+  mkdir -p "$2"; local cfg="$2.model.yaml" ap=$(( $1 + API_PORT_OFFSET )) px=""
+  if [ "$THINK_HIST" = 1 ] && [ "$API_PORT_OFFSET" = 0 ]; then
+    ap=$(( $1 + 200 ))
+    python3 scripts/req_log.py proxy --listen "$ap" --upstream "http://127.0.0.1:$1" --rename-reasoning --no-log > "$2.thinkproxy.log" 2>&1 &
+    px=$!; sleep 1
+    kill -0 "$px" 2>/dev/null || { echo "think proxy on $ap did not start: cat $2.thinkproxy.log"; return 1; }
+  fi
   cat > "$cfg" <<EOF
 agent:
   step_limit: $STEPS
@@ -58,13 +67,16 @@ model:
   model_name: "hosted_vllm/$SERVED"
   cost_tracking: "ignore_errors"
   model_kwargs:
-    api_base: "http://127.0.0.1:$(( $1 + API_PORT_OFFSET ))/v1"
+    api_base: "http://127.0.0.1:$ap/v1"
     temperature: $TEMP
     max_tokens: $MAX_TOK
     drop_params: true
 EOF
   MSWEA_COST_TRACKING=ignore_errors $VS/mini-extra swebench --subset "$SUBSET" --split test ${3:+--slice "$3"} \
     -m "hosted_vllm/$SERVED" -c swebench.yaml -c "$cfg" -w "$WORKERS" -o "$2" > "$4" 2>&1
+  local rc=$?
+  [ -n "$px" ] && kill "$px" 2>/dev/null
+  return $rc
 }
 npred() { $VS/python -c "import json,sys; print(len(json.load(open(sys.argv[1]))))" "$1" 2>/dev/null || echo 0; }
 merge_preds() {  # $1 output file · the rest: preds.json files (missing ones skipped)

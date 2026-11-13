@@ -107,11 +107,11 @@ def cmd_build(a):
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     from transformers import AutoTokenizer
     import render
-    render.WIRE["mode"] = "mini"
+    render.WIRE["mode"] = a.wire
     tok = AutoTokenizer.from_pretrained(a.tokenizer)
     R = render.Renderer(tok)
     tools = json.load(open(os.path.join(a.raw, "tools.json")))
-    print(f"mc_prep build · {REPO_ID}@{REVISION[:12]} · history {a.history} · text to thought {a.text_to_thought} · max ctx {a.max_ctx} · n {a.n} · seed {a.seed}"
+    print(f"mc_prep build · {REPO_ID}@{REVISION[:12]} · history {a.history} · wire {a.wire} · text to thought {a.text_to_thought} · max ctx {a.max_ctx} · n {a.n} · seed {a.seed}"
           f" · tokenizer {a.tokenizer} · limit {a.limit or 'all'} · out {a.out}")
     rows = load_rows(a.raw)
     if a.limit:
@@ -227,6 +227,7 @@ def main():
     b.add_argument("--raw", required=True); b.add_argument("--tokenizer", required=True)
     b.add_argument("--history", choices=["keep", "drop"], required=True); b.add_argument("--out", required=True)
     b.add_argument("--n", type=int, default=1000); b.add_argument("--seed", type=int, default=0)
+    b.add_argument("--wire", choices=["mini", "mini-think"], default="mini", help="how the server renders (render.py --wire)")
     b.add_argument("--text-to-thought", action="store_true", help="move the text of text + tool-call replies into the thought")
     b.add_argument("--max-ctx", type=int, default=30720); b.add_argument("--limit", type=int, default=0, help="debug: first rows only")
     v = sub.add_parser("verify")

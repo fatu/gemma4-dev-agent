@@ -21,7 +21,8 @@ reply. Checks (all printed; any failure → exit 1):
 Outputs quote task text → keep them under runs/ (gitignored).
 Large sets (B-9 part 2, mini-swe-agent trajectories): `--wire mini` reproduces what vLLM 0.19.1 does to a request
 before templating (see vllm0191_message: string contents become text parts, `reasoning_content` is dropped, only
-`reasoning` is kept — so with mini-swe-agent the server never shows the model its earlier thoughts); `--shard i/n` renders every n-th record from i (run n processes, then
+`reasoning` is kept — so with mini-swe-agent the server never shows the model its earlier thoughts); `--wire
+mini-think` = the same behind `req_log.py --rename-reasoning` (THINK_HIST=1), which copies reasoning_content to reasoning; `--shard i/n` renders every n-th record from i (run n processes, then
 concatenate the outputs); `--pack --split-runs` starts a new packed sequence at each expected prefix break (a text +
 tool-call reply in the history, a no-thought reply) instead of one sample per call for the whole segment — the
 "segments unpacked …" counts are then counts of such breaks; the output is written record by record and A3 keeps a reservoir of --sample calls, so memory
@@ -50,6 +51,8 @@ def vllm0191_message(m):
     template then appends a space after the system text), None → []; an assistant's reasoning is taken from the
     `reasoning` field ONLY — `reasoning_content`, which mini-swe-agent / litellm send, is dropped, so earlier thoughts
     never reach the prompt."""
+    if WIRE["mode"] == "mini-think" and m.get("role") == "assistant" and m.get("reasoning_content") and not m.get("reasoning"):
+        m["reasoning"] = m["reasoning_content"]    # scripts/req_log.py --rename-reasoning (THINK_HIST=1) did this on the wire
     c = m.get("content")
     m["content"] = [] if c is None else ([{"type": "text", "text": c}] if isinstance(c, str) else c)
     if m.get("role") == "assistant":
@@ -65,7 +68,7 @@ def normalise(messages):
     out = []
     for i, m in enumerate(messages):
         m = copy.deepcopy(m)
-        if WIRE["mode"] == "mini":
+        if WIRE["mode"] in ("mini", "mini-think"):
             m = vllm0191_message(m)
         if WIRE["mode"] == "adk" and i == 0 and m.get("role") == "system" and isinstance(m.get("content"), str):
             m["content"] = [{"type": "text", "text": m["content"]}]
@@ -214,7 +217,9 @@ def main():
     ap.add_argument("--sample", type=int, default=50, help="calls decoded back for A3")
     ap.add_argument("--out", default=None, help="rendered jsonl (one line per call, or per segment with --pack)")
     ap.add_argument("--seed", type=int, default=0)
-    ap.add_argument("--wire", choices=["adk", "mini"], default="adk", help="how the client sent the system message")
+    ap.add_argument("--wire", choices=["adk", "mini", "mini-think"], default="adk",
+                    help="adk = the competition harness; mini = mini-swe-agent → vLLM 0.19.1 (earlier thoughts dropped); "
+                         "mini-think = the same with req_log.py --rename-reasoning in between (earlier thoughts rendered)")
     ap.add_argument("--split-runs", action="store_true",
                     help="with --pack: where the prefix property breaks (an expected break), start a new packed sequence "
                          "instead of unpacking the whole segment into one sample per call (exact either way)")

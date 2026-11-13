@@ -2,11 +2,15 @@
 """B-9 part 2 step 0: what does Gemma see at call k when mini-swe-agent talks to our vLLM? (stdlib only)
 
     python3 scripts/req_log.py proxy --listen 8111 --upstream http://127.0.0.1:8011 --out runs/verified/probe/requests
+    python3 scripts/req_log.py proxy --listen 8211 --upstream http://127.0.0.1:8011 --rename-reasoning --no-log   # THINK_HIST
     python3 scripts/req_log.py summarize --dir runs/verified/probe/requests --upstream http://127.0.0.1:8011 \
         --model gemma-4-31b-it-qat-w4a16-ct --out runs/verified/probe
 
 proxy: a pass-through HTTP server (point mini's api_base at it); every POST …/chat/completions is saved with its response
-as <out>/req_<n>.json; everything else is forwarded untouched. summarize: groups the saved requests into conversations
+as <out>/req_<n>.json; everything else is forwarded untouched. --rename-reasoning (B-9 part 2 option ③): every assistant
+message that carries `reasoning_content` but no `reasoning` gets `reasoning` = the same text before forwarding, because
+vLLM 0.19.1 passes only `reasoning` to the chat template (mini-swe-agent / litellm send `reasoning_content`, which vLLM
+drops) — with it the model sees its earlier thoughts, as Google's guide asks for between tool calls. --no-log: forward only. summarize: groups the saved requests into conversations
 (same first user message), sends each request's messages + tools to vLLM's /tokenize and /detokenize (the server's own
 chat template and defaults: what the model was fed) and writes
   <out>/server_prompts/<conv>.json  {calls: [{call, prompt, rendered_tokens, usage_prompt}]}   (render.py --check)
@@ -27,8 +31,9 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 
 def cmd_proxy(a):
-    os.makedirs(a.out, exist_ok=True)
-    lock, counter = threading.Lock(), [len(glob.glob(os.path.join(a.out, "req_*.json")))]
+    if not a.no_log:
+        os.makedirs(a.out, exist_ok=True)
+    lock, counter = threading.Lock(), [0 if a.no_log else len(glob.glob(os.path.join(a.out, "req_*.json")))]
 
     class H(BaseHTTPRequestHandler):
         def log_message(self, *args):
@@ -36,6 +41,15 @@ def cmd_proxy(a):
 
         def _fwd(self, method):
             body = self.rfile.read(int(self.headers.get("Content-Length") or 0)) if method == "POST" else None
+            if body and a.rename_reasoning and self.path.rstrip("/").endswith("chat/completions"):
+                try:
+                    j = json.loads(body)
+                    for m in j.get("messages") or []:
+                        if m.get("role") == "assistant" and m.get("reasoning_content") and not m.get("reasoning"):
+                            m["reasoning"] = m["reasoning_content"]
+                    body = json.dumps(j).encode()
+                except ValueError:
+                    pass
             hdr = {k: v for k, v in self.headers.items() if k.lower() not in ("host", "content-length", "connection")}
             req = urllib.request.Request(a.upstream + self.path, data=body, headers=hdr, method=method)
             try:
@@ -43,7 +57,7 @@ def cmd_proxy(a):
                     status, rh, data = r.status, dict(r.headers), r.read()
             except urllib.error.HTTPError as e:
                 status, rh, data = e.code, dict(e.headers), e.read()
-            if method == "POST" and self.path.rstrip("/").endswith("chat/completions"):
+            if method == "POST" and self.path.rstrip("/").endswith("chat/completions") and not a.no_log:
                 with lock:
                     n = counter[0]; counter[0] += 1
                 try:
@@ -66,7 +80,8 @@ def cmd_proxy(a):
         def do_POST(self):
             self._fwd("POST")
 
-    print(f"req_log proxy · listen 127.0.0.1:{a.listen} → {a.upstream} · saving chat requests to {a.out}", flush=True)
+    print(f"req_log proxy · listen 127.0.0.1:{a.listen} → {a.upstream} · rename reasoning_content→reasoning {a.rename_reasoning}"
+          f" · saving chat requests to {'nowhere (--no-log)' if a.no_log else a.out}", flush=True)
     ThreadingHTTPServer(("127.0.0.1", a.listen), H).serve_forever()
 
 
@@ -122,6 +137,9 @@ def cmd_summarize(a):
             if "multi" not in examples and any(len(m.get("tool_calls") or []) > 1 for m in prev):
                 examples["multi"] = prompt[-3000:]
             msg = (((x.get("response") or {}).get("choices") or [{}])[0].get("message") or {})
+            gr = msg.get("reasoning") or msg.get("reasoning_content")
+            if gr is not None:     # what the server parsed out of the generation: does a thought end with a newline?
+                S["generated thoughts"] += 1; S["... ending with a newline"] += gr.endswith("\n"); S["... empty"] += not gr.strip()
             tgt = {"reasoning": msg.get("reasoning_content") or msg.get("reasoning") or "", "content": msg.get("content") or "",
                    "tool_calls": [{"name": tc["function"]["name"], "args": tc["function"].get("arguments") or "{}",
                                    "id": tc.get("id")} for tc in (msg.get("tool_calls") or [])]}
@@ -145,13 +163,16 @@ def cmd_summarize(a):
           f"· text+call turns {S['text+call turns in history']} · tokens p50 {summ['tokens p50']} max {summ['tokens max']} "
           f"· server usage = /tokenize {S['usage == tokenize']}/{S['calls']}")
     print("   message keys: " + " · ".join(f"{k}: {','.join(v)}" for k, v in summ["message keys per role"].items()))
+    print(f"   generated thoughts {S['generated thoughts']} · ending with a newline {S['... ending with a newline']} · empty {S['... empty']}"
+          " (a newline before <channel|> would be re-rendered as two by the template)")
 
 
 def main():
     ap = argparse.ArgumentParser()
     sub = ap.add_subparsers(dest="cmd", required=True)
     p = sub.add_parser("proxy")
-    p.add_argument("--listen", type=int, required=True); p.add_argument("--upstream", required=True); p.add_argument("--out", required=True)
+    p.add_argument("--listen", type=int, required=True); p.add_argument("--upstream", required=True); p.add_argument("--out", default="")
+    p.add_argument("--rename-reasoning", action="store_true"); p.add_argument("--no-log", action="store_true")
     s = sub.add_parser("summarize")
     s.add_argument("--dir", required=True); s.add_argument("--upstream", required=True)
     s.add_argument("--model", required=True); s.add_argument("--out", required=True)

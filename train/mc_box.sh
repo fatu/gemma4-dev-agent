@@ -2,6 +2,8 @@
 # B-9 part 2 (BOX_PLAN): a LoRA on MetaCurate's public DSv4Pro trajectories, steps 0–2 on the box.
 #   MODEL=google/gemma-4-31B-it-qat-w4a16-ct GPU=0 PORT=8011 bash scripts/verified_box.sh serve     # one card (31B first)
 #   MODEL=… GPU=0 PORT=8011 bash train/mc_box.sh probe     # step 0: 2 Verified tasks through the request logger → 📷
+#   (THINK_HIST=1, the default since option ③: the logger also renames reasoning_content → reasoning, so the server
+#    renders earlier thoughts; outputs in runs/verified/probe_th; THINK_HIST=0 = the original B-9 setup, runs/verified/probe)
 #   MODEL=… bash train/mc_box.sh data                      # step 1: download (HF token) + filter → runs/sft/mc/r1k   → 📷
 #   MODEL=… bash train/mc_box.sh render                    # step 2: render.py --pack in RENDER_PROCS shards (gate R) → 📷
 # Knobs (all printed): MODEL (31B) · GPU (0) · PORT (8011; the logger listens on PORT+100) · PROBE_SLICE (0:2) ·
@@ -13,7 +15,9 @@ STEP="${1:?probe|data|render}"
 MODEL="${MODEL:-google/gemma-4-31B-it-qat-w4a16-ct}"; SERVED="$(basename "$MODEL" | tr '[:upper:]' '[:lower:]')"
 GPU="${GPU:-0}"; PORT="${PORT:-8011}"; PROBE_SLICE="${PROBE_SLICE:-0:2}"
 N="${N:-1000}"; SEED="${SEED:-0}"; MAX_CTX="${MAX_CTX:-30720}"; ARM="${ARM:-r1k}"; RENDER_PROCS="${RENDER_PROCS:-16}"
-PY=.venv-eval/bin/python; PR=runs/verified/probe; MC=runs/sft/mc
+PY=.venv-eval/bin/python; MC=runs/sft/mc
+THINK_HIST="${THINK_HIST:-1}"                     # option ③ (user, 2026-11-13): the server sees earlier thoughts
+PR=runs/verified/probe$([ "$THINK_HIST" = 1 ] && echo _th); WIRE=$([ "$THINK_HIST" = 1 ] && echo mini-think || echo mini)
 HISTORY="${HISTORY:-$($PY -c "import json; print(json.load(open('$PR/probe_summary.json'))['history_rule'])" 2>/dev/null || echo unset)}"
 # T2T: move the text of text + tool-call replies into the thought. On by the user's decision after the 31B probe
 # (2026-11-13: 782 such turns in 31B's own histories — the Gemma template bug HF #67/#115 hits the baseline).
@@ -22,30 +26,32 @@ T2T="${T2T:-on}"
 # reasoning_content (probe 2026-11-13: 0 blocks), so then every call is its own sample (render.py without --pack).
 PACK="${PACK:-$($PY -c "import json; print('on' if json.load(open('$PR/probe_summary.json')).get('server renders earlier thoughts') else 'off')" 2>/dev/null || echo off)}"
 tokdir() { $PY -c "from huggingface_hub import snapshot_download as s; print(s('$MODEL', allow_patterns=['*.json', '*.jinja']))" 2>/dev/null | tail -1; }
-echo "mc_box $STEP · model $MODEL (served $SERVED) · gpu $GPU port $PORT (logger $(( PORT + 100 ))) · probe slice $PROBE_SLICE · history $HISTORY · text to thought $T2T · pack $PACK · n $N seed $SEED max ctx $MAX_CTX · arm $ARM · render procs $RENDER_PROCS · code $(git log --oneline -1 | cut -c1-40)"
+echo "mc_box $STEP · model $MODEL (served $SERVED) · gpu $GPU port $PORT (logger $(( PORT + 100 ))) · probe slice $PROBE_SLICE · think hist $THINK_HIST (wire $WIRE, probe dir $PR) · history $HISTORY · text to thought $T2T · pack $PACK · n $N seed $SEED max ctx $MAX_CTX · arm $ARM · render procs $RENDER_PROCS · code $(git log --oneline -1 | cut -c1-40)"
 T0=$(date +%s)
 
 case "$STEP" in
 probe)
   curl -s --max-time 3 "http://127.0.0.1:$PORT/v1/models" | grep -q "$SERVED" || { echo "no $SERVED on port $PORT: serve it first"; exit 1; }
-  rm -rf "$PR" runs/verified/vf_probe runs/verified/vf_probe.*; mkdir -p "$PR"
-  python3 scripts/req_log.py proxy --listen $(( PORT + 100 )) --upstream "http://127.0.0.1:$PORT" --out "$PR/requests" > "$PR/proxy.log" 2>&1 &
+  PT=vf_probe$([ "$THINK_HIST" = 1 ] && echo _th)
+  rm -rf "$PR" runs/verified/$PT runs/verified/$PT.*; mkdir -p "$PR"
+  python3 scripts/req_log.py proxy --listen $(( PORT + 100 )) --upstream "http://127.0.0.1:$PORT" --out "$PR/requests" \
+    $([ "$THINK_HIST" = 1 ] && echo --rename-reasoning) > "$PR/proxy.log" 2>&1 &
   PX=$!; sleep 2
-  MODEL=$MODEL GPU=$GPU PORT=$PORT TAG=vf_probe SLICE=$PROBE_SLICE WORKERS=2 API_PORT_OFFSET=100 bash scripts/verified_box.sh run | grep -E "^verified_box|^== run"
+  MODEL=$MODEL GPU=$GPU PORT=$PORT TAG=$PT SLICE=$PROBE_SLICE WORKERS=2 API_PORT_OFFSET=100 THINK_HIST=$THINK_HIST bash scripts/verified_box.sh run | grep -E "^verified_box|^== run"
   kill $PX 2>/dev/null
   echo "  $(ls "$PR"/requests/req_*.json 2>/dev/null | wc -l) chat requests logged"
   python3 scripts/req_log.py summarize --dir "$PR/requests" --upstream "http://127.0.0.1:$PORT" --model "$SERVED" --out "$PR" || exit 1
   H=$($PY -c "import json; print(json.load(open('$PR/probe_summary.json'))['history_rule'])")
-  $PY train/mc_prep.py verify --traj runs/verified/vf_probe --probe "$PR/records" --history "$H" | tail -6
+  $PY train/mc_prep.py verify --traj runs/verified/$PT --probe "$PR/records" --history "$H" | tail -6
   echo "  render.py on the logged requests vs the server's own rendering (A2) and the reply spans (A3/A4):"
-  $PY train/render.py "$PR/records" --tokenizer "$(tokdir)" --check "$PR/server_prompts" --wire mini --pack --split-runs --sample 20 \
+  $PY train/render.py "$PR/records" --tokenizer "$(tokdir)" --check "$PR/server_prompts" --wire "$WIRE" $([ "$THINK_HIST" = 1 ] && echo --pack --split-runs) --sample 20 \
     | grep -E "^render|^calls|^FAIL|^RESULT|^MALFORMED" | cut -c1-400
   echo "📷 the == probe line, the == verify line, the calls … line and RESULT ($(( $(date +%s) - T0 )) s)" ;;
 data)
   [ "$HISTORY" = keep ] || [ "$HISTORY" = drop ] || { echo "run probe first (or set HISTORY=keep|drop)"; exit 1; }
   [ "$T2T" = on ] || [ "$T2T" = off ] || { echo "run probe first (or set T2T=on|off)"; exit 1; }
   $PY train/mc_prep.py download --dir "$MC/raw" || exit 1
-  $PY train/mc_prep.py build --raw "$MC/raw" --tokenizer "$(tokdir)" --history "$HISTORY" --out "$MC/$ARM" \
+  $PY train/mc_prep.py build --raw "$MC/raw" --tokenizer "$(tokdir)" --history "$HISTORY" --wire "$WIRE" --out "$MC/$ARM" \
     --n "$N" --seed "$SEED" --max-ctx "$MAX_CTX" $([ "$T2T" = on ] && echo --text-to-thought) || exit 1
   du -sh "$MC/$ARM" | sed 's/^/  records on disk: /'
   echo "📷 the rows → … line, the printed-only line and the == line ($(( $(date +%s) - T0 )) s)" ;;
@@ -53,7 +59,7 @@ render)
   [ -d "$MC/$ARM" ] || { echo "no $MC/$ARM: run data first"; exit 1; }
   TOK="$(tokdir)"; pids=()
   for i in $(seq 0 $(( RENDER_PROCS - 1 ))); do
-    $PY train/render.py "$MC/$ARM" --tokenizer "$TOK" --wire mini $([ "$PACK" = on ] && echo --pack --split-runs) --sample 4 --shard "$i/$RENDER_PROCS" \
+    $PY train/render.py "$MC/$ARM" --tokenizer "$TOK" --wire "$WIRE" $([ "$PACK" = on ] && echo --pack --split-runs) --sample 4 --shard "$i/$RENDER_PROCS" \
       --out "$MC/$ARM.part$i.jsonl" > "$MC/$ARM.render$i.log" 2>&1 & pids+=($!)
   done
   for p in "${pids[@]}"; do wait "$p"; done

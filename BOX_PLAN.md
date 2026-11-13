@@ -100,7 +100,7 @@ limits, disk); teacher licences.
 **31B result (photo 2026-11-13).** 272 / 500 resolved = **54.4 %** (Wilson 95 % ≈ 50.0–58.7 %), one pass, all 500 predictions (no duplicates or gaps; merged from three runs over task ranges 0–249, 250–274 and 275–499, 16 grading reports). Exit statuses: Submitted 385, ContextWindowExceededError 115. The 115 empty patches are exactly the context-window exits; no other failure type. Among the 385 submitted: 272 resolved (70.6 %). Model calls per task: median 32, p90 56, max 158. Per repo (resolved / tasks): django 128/231, sympy 40/75, sphinx 20/44, matplotlib 18/34, scikit-learn 26/32, astropy 12/22, xarray 14/22, pytest 12/19, pylint 1/10, requests 0/8, seaborn 0/2, flask 1/1.
 Read by the rule set before the data: ≥ 40 % → our setup is near the public level (Vals AI 53.92 % on its subset, a different setup: close, not equivalent). The 32K window is the one visible cost: 23 % of tasks (115) ended on it. Missing: the 50 Verified-mini line (the box could not load the HF dataset: a self-signed certificate; set `SSL_CERT_FILE` and run `report` again, no rerun). The box copy of `verified_box.sh` has two changes not in this repo (MIRROR, START).
 
-### B-9 part 2 · Does a LoRA on MetaCurate's public data improve on the B-9 baseline? (plan 2026-11-13, revised the same day by the user: 31B first, our own LoRA recipe, no pipeline check, no QLoRA, any free box, the criterion is "improved or not") — ▶ steps 0–2 built: run them on the free box (31B)
+### B-9 part 2 · Does a LoRA on MetaCurate's public data improve on the B-9 baseline? (plan 2026-11-13, revised the same day by the user: 31B first, our own LoRA recipe, no pipeline check, no QLoRA, any free box, the criterion is "improved or not") — step 0 ✓ (server drops earlier thoughts) → option ③ THINK_HIST=1 ▶ step 0b re-probe, then step 1b new baselines
 
 **Question.** Train a LoRA on the public `furiosa-ai/MetaCurate-DeepSeekV4Pro` trajectories (arXiv 2610.23134) and evaluate it
 under exactly the B-9 setup (mini-swe-agent 2.4.6, thinking on, 32K, temperature 0.2, 250 steps, 8,192 tokens per reply,
@@ -159,9 +159,40 @@ without a GPU (the probe's saved requests and server prompts):
 git pull && .venv-eval/bin/python train/render.py runs/verified/probe/records --check runs/verified/probe/server_prompts \
   --wire mini --sample 20 --tokenizer "$(.venv-eval/bin/python -c "from huggingface_hub import snapshot_download as s; print(s('google/gemma-4-31B-it-qat-w4a16-ct', allow_patterns=['*.json','*.jinja']))")" | grep -E "^calls|^FAIL|^RESULT" | cut -c1-300
 ```
-📷 must show `A2 server-rendered prompts equal 82/82` and `RESULT PASS`. **Open (user):** the per-call cost (≈ 460 M tokens per
-epoch for 1,000 trajectories) — train every call, sample K calls per trajectory, or send `reasoning` so the server keeps
-thoughts (then packing works, but B-9's baselines would have to be re-run in that setup).
+📷 must show `A2 server-rendered prompts equal 82/82` and `RESULT PASS` (this checks the fix on the original setup).
+
+**Decision (user, 2026-11-13): option ③ — let the server see the model's earlier thoughts (`THINK_HIST=1`).** Each mini
+part talks to `req_log.py --rename-reasoning` (port+200), which copies `reasoning_content` to `reasoning` before vLLM;
+then the template renders every earlier thought (Google's guide: no stripping between tool calls), a trajectory packs into
+one sequence again (20 rows: 36 sequences, 0.62 M tokens, vs 650 / 9.2 M per call), and **B-9's baselines are re-run in
+this setup** (the old 272 / 500 stays as the reference for "does seeing its own thoughts help"). Built 2026-11-13:
+`THINK_HIST` in `verified_box.sh` (default 0 = old setup) and `mc_box.sh` (default 1), `render.py --wire mini-think`,
+`mc_prep build --wire`, the probe's "generated thoughts ending with a newline" count. Laptop: a fake server that drops
+`reasoning_content` like 0.19.1 → without the rename 0 thoughts rendered, with it 6 / 6, A2 4/4, one packed sequence PASS;
+20 DSv4Pro rows with mini-think PASS; w7 byte-identical. Risk: contexts grow faster (31B already had 115 / 500
+ContextWindowExceeded at 32K), so the new baselines may be lower; with thoughts kept, 24 of 50 resolved rows fit 30,720
+(31 without), so expect ≈ 850 trajectories, not 1,000.
+
+**Step 0b · re-probe with THINK_HIST=1 (31B, 1 card, ~10 min).**
+```
+cd gemma4-dev-agent && git pull && git log --oneline -1
+MODEL=google/gemma-4-31B-it-qat-w4a16-ct GPU=0 PORT=8011 bash scripts/verified_box.sh serve
+MODEL=google/gemma-4-31B-it-qat-w4a16-ct GPU=0 PORT=8011 bash train/mc_box.sh probe        # THINK_HIST=1 by default → runs/verified/probe_th
+```
+📷 the `== probe` line + the `generated thoughts …` line, `== verify`, `calls … A2 …`, `RESULT`. Go on only if: rendered by
+the template **yes**, verify n / n, A2 n / n, RESULT PASS. If many generated thoughts end with a newline, stop: the
+template would re-render them with two (photo the line; the reply targets would need a rule for that).
+
+**Step 1b · the new baselines, all 500, THINK_HIST=1** (31B on the 8-card box; E4B on whichever box is free; same
+commands as part 1 plus the knob and new tags; ~ the part-1 times):
+```
+export MODEL=google/gemma-4-31B-it-qat-w4a16-ct GPUS="0 1 2 3 4 5 6 7" PORT=8011 TAG=vf_31b_th SUBSET=verified WORKERS=6 EVAL_JOBS=16 THINK_HIST=1
+bash scripts/verified_box.sh serve && nohup bash scripts/verified_box.sh full > runs/verified/vf_31b_th.full.log 2>&1 &
+# E4B: MODEL=google/gemma-4-E4B-it-qat-w4a16-ct PORT=8010 TAG=vf_e4b_th (GPUS = that box's cards), the rest the same
+```
+📷 the `report` block of each. Read: resolved vs 272 / 500 (31B, old setup) is the effect of seeing its own thoughts;
+count ContextWindowExceeded. Steps 1–2 below (`mc_box.sh data`, `render`) then run with THINK_HIST=1 (default), and the
+adapters are evaluated with THINK_HIST=1 against these baselines.
 
 **Step 0 · What does Gemma see at call k? (free box, 1 card, ~20 min)** — decides the renderer's history rule.
 New `scripts/req_log.py`: a logging pass-through proxy (port PORT+100 → vLLM) that saves each chat request. Two Verified
