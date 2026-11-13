@@ -6,12 +6,19 @@
 #    renders earlier thoughts; outputs in runs/verified/probe_th; THINK_HIST=0 = the original B-9 setup, runs/verified/probe)
 #   MODEL=… bash train/mc_box.sh data                      # step 1: download (HF token) + filter → runs/sft/mc/r1k   → 📷
 #   MODEL=… bash train/mc_box.sh render                    # step 2: render.py --pack in RENDER_PROCS shards (gate R) → 📷
+#   MODEL=… bash train/mc_box.sh env|dequant               # step 3a: .venv-train (setup_train_env.sh) · bf16 copy of MODEL
+#   MODEL=… GPUS=0 bash train/mc_box.sh smoke              # step 3b: 1 optimizer step on the 16 longest sequences → peak GB
+#   MODEL=… GPUS=0,1,2,3,4,5,6,7 bash train/mc_box.sh train # step 3c: one LoRA, one sft_lora.py rank per CARDS_PER_RANK cards
+# Training knobs (printed): GPUS (all cards) · CARDS_PER_RANK (1; 2 = one model copy split over two cards, device map
+# auto — for 31B if smoke runs out of memory) · LR (1e-5, user 2026-11-13) · EPOCHS (2) · ACCUM (16) · R / ALPHA (32 / 32)
+# · WARMUP (0.05) · MAX_LEN (= MAX_CTX) · DQ (runs/dequant/<model>-dq) · OUTD (adapters/mc_<model>_<arm>_lr<LR>) ·
+# DIST_PORT (29600).
 # Knobs (all printed): MODEL (31B) · GPU (0) · PORT (8011; the logger listens on PORT+100) · PROBE_SLICE (0:2) ·
 # HISTORY (from step 0's probe_summary.json; override keep|drop) · N (1000) · SEED (0) · MAX_CTX (30720) · ARM (r1k) ·
 # RENDER_PROCS (16) · T2T (on) · PACK (from step 0: on only if the server renders earlier thoughts). Outputs quote task text → runs/ only (gitignored).
 set -uo pipefail
 cd "$(dirname "$0")/.."
-STEP="${1:?probe|data|render}"
+STEP="${1:?probe|data|render|env|dequant|smoke|train}"
 MODEL="${MODEL:-google/gemma-4-31B-it-qat-w4a16-ct}"; SERVED="$(basename "$MODEL" | tr '[:upper:]' '[:lower:]')"
 GPU="${GPU:-0}"; PORT="${PORT:-8011}"; PROBE_SLICE="${PROBE_SLICE:-0:2}"
 N="${N:-1000}"; SEED="${SEED:-0}"; MAX_CTX="${MAX_CTX:-30720}"; ARM="${ARM:-r1k}"; RENDER_PROCS="${RENDER_PROCS:-16}"
@@ -30,6 +37,16 @@ PACK="${PACK:-$($PY -c "import json; print('on' if json.load(open('$PR/probe_sum
 tokdir() { $PY -c "from huggingface_hub import snapshot_download as s; print(s('$MODEL', allow_patterns=['*.json', '*.jinja']))" 2>/dev/null | tail -1; }
 echo "mc_box $STEP · model $MODEL (served $SERVED) · gpu $GPU port $PORT (logger $(( PORT + 100 ))) · probe slice $PROBE_SLICE · think hist $THINK_HIST (wire $WIRE, probe dir $PR) · max tok $MAX_TOK · top_p $TOP_P · thinking budget $THINK_BUDGET · history $HISTORY · text to thought $T2T · pack $PACK · n $N seed $SEED max ctx $MAX_CTX · arm $ARM · render procs $RENDER_PROCS · code $(git log --oneline -1 | cut -c1-40)"
 T0=$(date +%s)
+ALLGPUS=$(nvidia-smi --query-gpu=index --format=csv,noheader 2>/dev/null | paste -sd, -)
+GPUS="${GPUS:-${ALLGPUS:-0}}"; IFS=, read -r -a GL <<< "$GPUS"; CPR="${CARDS_PER_RANK:-1}"; NR=$(( ${#GL[@]} / CPR ))
+LR="${LR:-1e-5}"; EPOCHS="${EPOCHS:-2}"; ACCUM="${ACCUM:-16}"; R="${R:-32}"; ALPHA="${ALPHA:-32}"; WARMUP="${WARMUP:-0.05}"
+MAX_LEN="${MAX_LEN:-$MAX_CTX}"; MSHORT=$(basename "$MODEL" | sed 's/-it-qat-w4a16-ct//'); DQ="${DQ:-runs/dequant/$MSHORT-dq}"
+OUTD="${OUTD:-adapters/mc_${MSHORT}_${ARM}_lr${LR}}"; DIST_PORT="${DIST_PORT:-29600}"; TPY="${TPY:-.venv-train/bin/python}"
+SFT_EXTRA="${SFT_EXTRA:-}"                        # laptop test of the launcher: TPY=.venv-eval/bin/python SFT_EXTRA=--mock
+SFT="--base $DQ --ct $MODEL --alias $SERVED --max-len $MAX_LEN --epochs $EPOCHS --lr $LR --warmup $WARMUP --accum $ACCUM --r $R --alpha $ALPHA --clip 1.0 --eval-every 25 --seed 0 --device-map $([ "$CPR" -gt 1 ] && echo auto || echo cuda) $SFT_EXTRA"
+case "$STEP" in env|dequant|smoke|train)
+  echo "  train · cards $GPUS · $CPR per rank → $NR rank(s) · dequant $DQ · out $OUTD · sft: $SFT" ;; esac
+rank_cards() { local i=$1; local c=(); for j in $(seq 0 $(( CPR - 1 ))); do c+=("${GL[$(( i * CPR + j ))]}"); done; (IFS=,; echo "${c[*]}"); }
 
 case "$STEP" in
 probe)
@@ -91,5 +108,50 @@ print(f"== render {arm}: {tot['calls']} calls · {tot['targets']} targets · lab
       f"· FAIL lines {tot['fail']} → {'PASS' if tot['fail'] == 0 else 'FAIL: grep FAIL ' + mc + '/' + arm + '.render*.log'}")
 EOF
   echo "📷 the == render line ($(( $(date +%s) - T0 )) s)" ;;
+env)
+  [ -x "$TPY" ] && { echo "  $TPY exists: $($TPY -c 'import torch, transformers, peft; print("torch", torch.__version__, "transformers", transformers.__version__, "peft", peft.__version__)')"; exit 0; }
+  VENV="${VENV:-$HOME/venv-train}" UV_CACHE_DIR="${UV_CACHE_DIR:-$HOME/.cache/uv}" UV_PYTHON_INSTALL_DIR="${UV_PYTHON_INSTALL_DIR:-$HOME/.cache/uv-python}" \
+    bash train/setup_train_env.sh 2>&1 | tail -4
+  echo "📷 the version line ($(( $(date +%s) - T0 )) s)" ;;
+dequant)
+  if [ -f "$DQ/config.json" ] && ls "$DQ"/*.safetensors >/dev/null 2>&1; then echo "  $DQ exists ($(du -sh "$DQ" | cut -f1)), skipping"; exit 0; fi
+  df -h runs | tail -1 | awk '{print "  free disk for runs/: " $4}'
+  CUDA_VISIBLE_DEVICES=${GL[0]} $TPY train/dequant_ct.py --model "$MODEL" --out "$DQ" 2>&1 | grep -v Warning | tail -6 | cut -c1-200
+  echo "  $(du -sh "$DQ" | cut -f1) in $DQ · 📷 these lines ($(( $(date +%s) - T0 )) s)" ;;
+smoke)      # one rank, the 16 longest sequences, 1 optimizer step: does it fit, how fast
+  [ -s "$MC/$ARM.rendered.jsonl" ] || { echo "no $MC/$ARM.rendered.jsonl: run render first"; exit 1; }
+  $PY - "$MC/$ARM.rendered.jsonl" "$MC/$ARM.smoke.jsonl" <<'EOF'
+import json, sys
+rows = sorted((json.loads(l) for l in open(sys.argv[1])), key=lambda r: -len(r["input_ids"]))[:16]
+with open(sys.argv[2], "w") as w:
+    for r in rows: w.write(json.dumps(r) + "\n")
+print(f"  smoke data: the 16 longest sequences, {len(rows[0]['input_ids'])}–{len(rows[-1]['input_ids'])} tokens")
+EOF
+  rm -rf adapters/smoke_mc
+  CUDA_VISIBLE_DEVICES=$(rank_cards 0) $TPY train/sft_lora.py $SFT --data "$MC/$ARM.smoke.jsonl" --holdout 0 --max-steps 1 --eval-every 0 \
+    --out adapters/smoke_mc 2>&1 | grep -v Warning | tee runs/sft_mc_smoke.log | grep -E "model|step|done|Error|error|CUDA" | cut -c1-250
+  echo "📷 the model / step / done lines: peak GB (one rank on $(rank_cards 0)) and tok/s → full run ≈ total tokens × $EPOCHS / (tok/s × $NR ranks) ($(( $(date +%s) - T0 )) s)" ;;
+train)
+  [ -s "$MC/$ARM.rendered.jsonl" ] || { echo "no $MC/$ARM.rendered.jsonl: run render first"; exit 1; }
+  [ -f "$DQ/config.json" ] || { echo "no bf16 base in $DQ: run dequant first"; exit 1; }
+  rm -rf "$OUTD"; PIDS=(); LOGB=runs/sft_$(basename "$OUTD")
+  for i in $(seq 1 $(( NR - 1 ))); do       # ranks 1…: in the background; rank 0 in front, it logs and exports
+    CUDA_VISIBLE_DEVICES=$(rank_cards $i) $TPY train/sft_lora.py $SFT --data "$MC/$ARM.rendered.jsonl" --holdout 8 --out "$OUTD" \
+      --world $NR --rank $i --dist-port $DIST_PORT > $LOGB.rank$i.log 2>&1 &
+    PIDS+=($!)
+  done
+  if [ $NR -gt 1 ]; then                     # a rank that dies would leave the others waiting: stop them all
+    ( while sleep 20; do for q in "${PIDS[@]}"; do
+        if ! kill -0 $q 2>/dev/null; then sleep 30
+          pgrep -f "sft_lora.py.*--out $OUTD --world $NR --rank 0 " >/dev/null && { echo "  a rank ended early (see $LOGB.rank*.log): stopping the others"; pkill -f "sft_lora.py.*--out $OUTD --world"; }
+          exit; fi; done; done ) & WATCH=$!
+  fi
+  CUDA_VISIBLE_DEVICES=$(rank_cards 0) $TPY train/sft_lora.py $SFT --data "$MC/$ARM.rendered.jsonl" --holdout 8 --out "$OUTD" \
+    --world $NR --rank 0 --dist-port $DIST_PORT 2>&1 | grep -v Warning | tee $LOGB.log | cut -c1-250
+  if [ $NR -gt 1 ]; then
+    { kill $WATCH; wait $WATCH; } 2>/dev/null; sleep 10; pkill -f "sft_lora.py.*--out $OUTD --world" && echo "  stopped ranks still running after rank 0 ended"
+    wait "${PIDS[@]}" 2>/dev/null; for f in $LOGB.rank*.log; do echo "  $f: $(tail -n 1 $f | cut -c1-160)"; done
+  fi
+  echo "📷 the schedule line, the eval lines, the == epoch lines and the done line ($(( ($(date +%s) - T0) / 60 )) min)" ;;
 *) echo "unknown step $STEP"; exit 1 ;;
 esac

@@ -80,6 +80,9 @@ def main():
     ap.add_argument("--rank", type=int, default=0, help="this process's index, 0 … world-1 (rank 0 logs and exports)")
     ap.add_argument("--dist-port", type=int, default=29500, help="localhost port the ranks meet on")
     ap.add_argument("--mock", action="store_true", help="tiny random model on the CPU: tests the schedule / multi-rank path")
+    ap.add_argument("--device-map", choices=["cuda", "auto"], default="cuda",
+                    help="cuda = the whole model on this rank's one card; auto = one copy split over all cards this rank sees "
+                         "(31B in bf16 when one card is too small; the launcher gives each rank CARDS_PER_RANK cards)")
     a = ap.parse_args()
     rnd = random.Random(a.seed)
     rows, d_len, d_empty = load_rows(a.data, a.max_len)
@@ -100,7 +103,7 @@ def main():
           f"holdout {len(ev)} ({'file' if a.eval else 'split off'}) · dropped: > {a.max_len} tokens {d_len}, no labels {d_empty}")
     say(f"  schedule: {a.epochs} epochs × {steps_per_epoch} optimizer steps (accum {a.accum}) = {n_total} steps · lr {a.lr} warmup {warm} steps "
           f"then cosine → {a.lr * 0.1:.1e} · clip {a.clip} · r {a.r} α {a.alpha} dropout 0 · seed {a.seed} · eval every {a.eval_every} · out {a.out} · "
-          f"cards for this adapter {a.world} (each step's {a.accum} sequences dealt to them by length; gradients summed)")
+          f"ranks for this adapter {a.world} (each step's {a.accum} sequences dealt to them by length; gradients summed) · device map {a.device_map}")
     if a.dry_run:
         print("  dry run: no model loaded"); return 0
     import torch
@@ -108,7 +111,8 @@ def main():
     t0 = time.time()
     dev = "cpu" if a.mock else "cuda"
     sync = (lambda: None) if a.mock else torch.cuda.synchronize
-    mem = (lambda: 0.0) if a.mock else (lambda: torch.cuda.max_memory_allocated() / 1e9)
+    # --device-map auto: one model copy spread over this rank's visible cards → the peak is the largest card's
+    mem = (lambda: 0.0) if a.mock else (lambda: max(torch.cuda.max_memory_allocated(d) for d in range(torch.cuda.device_count())) / 1e9)
     V = 997                                                  # --mock: token ids are folded into this vocabulary
     if a.mock:
         class Mock(torch.nn.Module):                         # frozen embedding + head, one low-rank trainable pair
@@ -130,7 +134,7 @@ def main():
         from transformers import AutoModelForImageTextToText
         cls = getattr(transformers, "Gemma4ForConditionalGeneration", AutoModelForImageTextToText)
         targets = ct_modules(a.ct)
-        model = cls.from_pretrained(a.base, dtype=torch.bfloat16, device_map="cuda")
+        model = cls.from_pretrained(a.base, dtype=torch.bfloat16, device_map=a.device_map)
         model.config.use_cache = False
         model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
         model.enable_input_require_grads()
@@ -193,6 +197,10 @@ def main():
             labels = torch.where(labels == -100, labels, labels % V)
         tgt = labels[0, 1:]
         keep = (tgt != -100).nonzero(as_tuple=True)[0]
+        if a.device_map == "auto" and not a.mock:            # hidden states end on the last card: index with CPU ids
+            out = model(input_ids=ids, logits_to_keep=keep.cpu())
+            lg = out.logits[0].float()
+            return torch.nn.functional.cross_entropy(lg, tgt[keep].to(lg.device), reduction="sum"), len(keep), ids.shape[1]
         out = model(input_ids=ids, logits_to_keep=keep)
         return torch.nn.functional.cross_entropy(out.logits[0].float(), tgt[keep], reduction="sum"), len(keep), ids.shape[1]
 

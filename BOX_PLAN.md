@@ -100,7 +100,7 @@ limits, disk); teacher licences.
 **31B result (photo 2026-11-13).** 272 / 500 resolved = **54.4 %** (Wilson 95 % ≈ 50.0–58.7 %), one pass, all 500 predictions (no duplicates or gaps; merged from three runs over task ranges 0–249, 250–274 and 275–499, 16 grading reports). Exit statuses: Submitted 385, ContextWindowExceededError 115. The 115 empty patches are exactly the context-window exits; no other failure type. Among the 385 submitted: 272 resolved (70.6 %). Model calls per task: median 32, p90 56, max 158. Per repo (resolved / tasks): django 128/231, sympy 40/75, sphinx 20/44, matplotlib 18/34, scikit-learn 26/32, astropy 12/22, xarray 14/22, pytest 12/19, pylint 1/10, requests 0/8, seaborn 0/2, flask 1/1.
 Read by the rule set before the data: ≥ 40 % → our setup is near the public level (Vals AI 53.92 % on its subset, a different setup: close, not equivalent). The 32K window is the one visible cost: 23 % of tasks (115) ended on it. Missing: the 50 Verified-mini line (the box could not load the HF dataset: a self-signed certificate; set `SSL_CERT_FILE` and run `report` again, no rerun). The box copy of `verified_box.sh` has two changes not in this repo (MIRROR, START).
 
-### B-9 part 2 · Does a LoRA on MetaCurate's public data improve on the B-9 baseline? (plan 2026-11-13, revised the same day by the user: 31B first, our own LoRA recipe, no pipeline check, no QLoRA, any free box, the criterion is "improved or not") — step 0 ✓ (server drops earlier thoughts) → option ③ THINK_HIST=1 · 0b ✓ (thought newline → stripped) ▶ quick re-probe, then step 1b new baselines
+### B-9 part 2 · Does a LoRA on MetaCurate's public data improve on the B-9 baseline? (plan 2026-11-13, revised the same day by the user: 31B first, our own LoRA recipe, no pipeline check, no QLoRA, any free box, the criterion is "improved or not") — step 0 ✓ (server drops earlier thoughts) → option ③ THINK_HIST=1 · 0b ✓ (thought newline → stripped) ▶ quick re-probe → data → render → train 31B (user: train first) → 1b baselines → eval
 
 **Question.** Train a LoRA on the public `furiosa-ai/MetaCurate-DeepSeekV4Pro` trajectories (arXiv 2610.23134) and evaluate it
 under exactly the B-9 setup (mini-swe-agent 2.4.6, thinking on, 32K, temperature 0.2, 250 steps, 8,192 tokens per reply,
@@ -216,6 +216,27 @@ resolved → 223 fit → 223 records (139 tasks), 24 s, 251 MB; over-budget turn
 run breaks only at no-thought turns (113), malformed 0, FAIL 0 → PASS, 25 s. `sft_lora.py --dry-run --lr 1e-5 --max-len
 30720` reads it: 329 train + 8 holdout sequences, 21 steps per epoch. Full data ≈ 4×: ~890 records, ~1,350 sequences,
 ~23 M tokens, ~85 optimizer steps per epoch.
+
+**Order changed (user, 2026-11-13): train first, the new baselines (1b) after — training shows data errors early.**
+Built 2026-11-13: `mc_box.sh env | dequant | smoke | train` (knobs printed: GPUS · CARDS_PER_RANK · LR 1e-5 · EPOCHS 2 ·
+ACCUM 16 · R/ALPHA 32/32 · WARMUP 0.05 · MAX_LEN 30,720 · DQ · OUTD · DIST_PORT) and `sft_lora.py --device-map auto` (one
+model copy split over the cards a rank sees — the fallback for 31B instead of QLoRA). Laptop: the launcher ran 2 ranks with
+the mock model on the shard-0 data (21 steps, identical parameter checksum on both ranks, export check PASS) and the smoke
+step; the real model / GPU path is untested here. On the free 8-card box, after the quick re-probe above:
+```
+git pull
+export MODEL=google/gemma-4-31B-it-qat-w4a16-ct
+bash train/mc_box.sh data      # 📷 rows → … line, printed-only line, == line   (HF token; all 4 shards)
+bash train/mc_box.sh render    # 📷 == render … → PASS
+bash train/mc_box.sh env       # 📷 versions (skips if .venv-train exists)
+bash train/mc_box.sh dequant   # 📷 bf16 31B → runs/dequant/gemma-4-31B-dq (~62 GB disk)
+GPUS=0 bash train/mc_box.sh smoke                          # 📷 peak GB + tok/s on the 16 longest sequences
+GPUS=0,1,2,3,4,5,6,7 nohup bash train/mc_box.sh train > runs/mc_train_31b.log 2>&1 &   # 8 ranks
+```
+If smoke runs out of memory on one card: `CARDS_PER_RANK=2 GPUS=0,1 bash train/mc_box.sh smoke`, then train with
+`CARDS_PER_RANK=2 GPUS=0,1,2,3,4,5,6,7` (4 ranks). Stop and photo if: render is not PASS, the schedule line drops many
+sequences (`dropped: > 30720 tokens`), the holdout NLL rises from `eval[start]`, or a rank ends early. Read the time from
+smoke: total tokens × 2 / (tok/s × ranks). Then 1b, then the adapter eval (ADAPTER knob + paired.py, built next).
 
 **Step 1b · the new baselines, all 500, THINK_HIST=1** (31B on the 8-card box; E4B on whichever box is free; same
 commands as part 1 plus the knob and new tags; ~ the part-1 times):
