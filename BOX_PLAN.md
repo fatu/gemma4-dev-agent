@@ -41,7 +41,7 @@ dropped too.
 
 ---
 
-## B-10 · Our own MetaCurate-style data for Gemma: teacher trajectories from GLM-5.3 through an OpenAI-compatible gateway (plan 2026-11-13, revised the same day: generation settings as the paper, GLM-5.3 only, the official rule logic) — ▶ step 0 after the user's go (paid tokens)
+## B-10 · Our own MetaCurate-style data for Gemma: teacher trajectories from GLM-5.3 through an OpenAI-compatible gateway (plan 2026-11-13, revised the same day: generation settings as the paper, GLM-5.3 only, the official rule logic) — ▶ step 0 (gateway check, a few cents) and step 1 (`setup`, `check`: no tokens) are written: run both, 📷
 
 **Why.** B-9 part 2 tests the public DeepSeek V4 Pro pool. B-10 makes the same kind of data with teachers we can call,
 shaped for Gemma from the start, and asks whether the teacher matters for Gemma (DSv4Pro vs GLM-5.3 on the
@@ -87,12 +87,31 @@ RETURNED, try once with `--effort high`, then with the gateway's own thinking sw
 nothing → stop + photo. If "history with reasoning accepted" prints NO, say so with the photo: step 1's config then has to
 drop the reasoning from the history.
 
-**Step 1 · SWE-rebench in mini-swe-agent (box, ~1 h).** New `scripts/rebench_mini.sh` (setup | run | grade | report, same
-chunk / resume / disk guard as `verified_box.sh full`): rows → per-task image names → `mini-extra swebench` on a local
-dataset file; grading = the task's F2P + P2P tests in its image (SWE-rebench's harness fork if it runs here, else our own
-runner). Check on 5 tasks: the gold patch passes, an empty patch fails. 📷 the 5 lines.
+**Step 1 · The task set in mini-swe-agent, and the grader (box, no tokens, ~30–60 min).** Written 2026-11-13:
+`scripts/rebench_mini.sh` (setup | check | subset | run | grade | report) + `scripts/rebench_mini.py` +
+`scripts/b10_instance_template.txt` (the pool's prompt). Tested on the laptop without docker: the task table (all 1,417
+source–id pairs of the pool found upstream at the pinned revisions; every one has an image name and a pytest log parser;
+1,415 distinct ids; SWE-rebench 690, V2 531 all Python, SWE-Gym 194), the subsets, the generated config, the log parser.
+Not tested anywhere yet: everything that touches docker.
+```
+cd gemma4-dev-agent && git pull && git log --oneline -1
+bash scripts/rebench_mini.sh setup        # docker, versions, the task table (downloads ~720 MB of upstream parquet) → 📷
+bash scripts/rebench_mini.sh check        # 5 tasks per source: gold, empty and the pool's own patches graded → 📷
+```
+What differs per source (read from the upstream harnesses and image configs, 2026-11-13): SWE-rebench images
+`swerebench/sweb.eval.x86_64.<id>` (in the row) · V2 images in the row, repository at `/<repo name>` and no conda (a
+startup command links `/testbed` to it, so prompt and working directory are the same for all) · SWE-Gym rows have no
+image: `xingyaoww/sweb.eval.x86_64.<id with __ → _s_>`. One grader for all three (a port of each harness's steps; in the
+header of `rebench_mini.py`); for SWE-Gym the harness also re-runs the repository's install command before the tests,
+which ours does not. **Read `check`:** gold = resolved on every task · empty = 0 resolved · pool = our verdict equals
+the pool's label on (nearly) every patch · the git line shows `all` = `reachable` (else later commits are readable in
+the image: SWE-Gym's README warns of this). A source that fails these is fixed or left out before any token is spent;
+then the gold check runs on all 1,415 (it also pulls every image: Docker Hub allows 100 anonymous pulls per 6 h per
+address, 200 with a login) and only tasks whose gold patch passes are generated on.
 
 **Step 2 · Pilot (box, ~1–2 h, paid).** 30 of the 1,415 tasks (stratified by source, seed 0) × 1 attempt, GLM-5.3.
+`NAME=pilot30 N=30 bash scripts/rebench_mini.sh subset` → `TAG=glm NAME=pilot30 bash scripts/rebench_mini.sh run` (needs the
+three exports of step 0) → `… grade` → `PRICE=<in,cached,out $ per M> … report`. Not before step 0 and `check` have passed.
 📷: resolved / 30 · runs that fit (≤ 30,720 Gemma tokens) · turns with a thought · thought tokens p50 / max ·
 calls p50 / p90 · prompt / cached / completion tokens per run · cost per run (gateway price × usage) · wall s per run ·
 errors; plus DSv4Pro's public runs on the same 30 tasks as the reference. **Rule set before the data:** go on if
