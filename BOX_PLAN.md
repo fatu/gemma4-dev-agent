@@ -209,6 +209,14 @@ MODEL=google/gemma-4-31B-it-qat-w4a16-ct GPU=0 PORT=8011 bash scripts/verified_b
 Go on to 1b if: rendered yes, verify n/n, A2 n/n, **delta≠synthetic 0**, RESULT PASS (the `generated thoughts … ending
 with a newline` count stays high — that is the model's output, now handled).
 
+**Steps 1–2 tested on the laptop (2026-11-13, shard 0 only, E4B tokenizer; the box uses all 4 shards and 31B's):**
+`mc_prep build` as mc_box runs it (keep · mini-think · T2T · max ctx 30,720 · budgets 4,096 / 8,192): 1,072 rows → 417
+resolved → 223 fit → 223 records (139 tasks), 24 s, 251 MB; over-budget turns 0 / 0; Verified repos 0. `mc_box.sh render`
+(8 procs): 5,491 calls → 337 packed sequences, 5.85 M tokens, 1.20 M label tokens (20.6 %), len p50 17,516 / max 30,464,
+run breaks only at no-thought turns (113), malformed 0, FAIL 0 → PASS, 25 s. `sft_lora.py --dry-run --lr 1e-5 --max-len
+30720` reads it: 329 train + 8 holdout sequences, 21 steps per epoch. Full data ≈ 4×: ~890 records, ~1,350 sequences,
+~23 M tokens, ~85 optimizer steps per epoch.
+
 **Step 1b · the new baselines, all 500, THINK_HIST=1** (31B on the 8-card box; E4B on whichever box is free; same
 commands as part 1 plus the knob and new tags; ~ the part-1 times):
 ```
@@ -247,7 +255,8 @@ token for token; 50 decoded targets = the source text; every trajectory's label 
 
 **Step 3 · Train 31B, then E4B (free box, all its cards).** `train/sft_lora.py` (exists; `--world <cards>`, one model copy
 per card, data-parallel; bf16 base from `dequant_ct.py`; no QLoRA) with **our own recipe = its defaults**: r32 · α32 ·
-dropout 0 · every language-model projection present in the checkpoint · lr 3e-5 · 5 % warmup then cosine to 10 % · 16
+dropout 0 · every language-model projection present in the checkpoint · **lr 1e-5** (user 2026-11-13; the script default 3e-5
+was our own pick after the 10-29 canary collapse at 1e-4, no paper behind it) · 5 % warmup then cosine to 10 % · 16
 sequences per optimizer step · 2 epochs · clip 1.0; `--max-len 30720` (matches the filter; the default is 26,624). 31B:
 `--ct google/gemma-4-31B-it-qat-w4a16-ct --alias gemma-4-31b-it-qat-w4a16-ct`. 31B in bf16 is ~62 GB per card before
 activations; the first step prints the peak memory. If one copy per card does not fit, the fix is to split one copy over
