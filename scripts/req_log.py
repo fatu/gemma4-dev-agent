@@ -10,7 +10,8 @@ proxy: a pass-through HTTP server (point mini's api_base at it); every POST …/
 as <out>/req_<n>.json; everything else is forwarded untouched. --rename-reasoning (B-9 part 2 option ③): every assistant
 message that carries `reasoning_content` but no `reasoning` gets `reasoning` = the same text before forwarding, because
 vLLM 0.19.1 passes only `reasoning` to the chat template (mini-swe-agent / litellm send `reasoning_content`, which vLLM
-drops) — with it the model sees its earlier thoughts, as Google's guide asks for between tool calls. --no-log: forward only. summarize: groups the saved requests into conversations
+drops) — with it the model sees its earlier thoughts, as Google's guide asks for between tool calls; trailing newlines
+of the thought are stripped so the template's own "\n<channel|>" re-renders the generated tokens exactly. --no-log: forward only. summarize: groups the saved requests into conversations
 (same first user message), sends each request's messages + tools to vLLM's /tokenize and /detokenize (the server's own
 chat template and defaults: what the model was fed) and writes
   <out>/server_prompts/<conv>.json  {calls: [{call, prompt, rendered_tokens, usage_prompt}]}   (render.py --check)
@@ -46,7 +47,10 @@ def cmd_proxy(a):
                     j = json.loads(body)
                     for m in j.get("messages") or []:
                         if m.get("role") == "assistant" and m.get("reasoning_content") and not m.get("reasoning"):
-                            m["reasoning"] = m["reasoning_content"]
+                            # trailing newlines stripped: Gemma writes "<thought>\n<channel|>", vLLM keeps that "\n" in the
+                            # parsed reasoning (31B probe 47/57) and the template adds its own "\n" before <channel|>, so
+                            # the history would show two; stripped, the history re-renders exactly what was generated
+                            m["reasoning"] = m["reasoning_content"].rstrip("\n")
                     body = json.dumps(j).encode()
                 except ValueError:
                     pass
@@ -169,7 +173,7 @@ def cmd_summarize(a):
     print("   message keys: " + " · ".join(f"{k}: {','.join(v)}" for k, v in summ["message keys per role"].items()))
     print("   sampling sent by mini (as the server got it): " + " | ".join(f"{k} ×{v}" for k, v in sampling.most_common(3)))
     print(f"   generated thoughts {S['generated thoughts']} · ending with a newline {S['... ending with a newline']} · empty {S['... empty']}"
-          " (a newline before <channel|> would be re-rendered as two by the template)")
+          " (Gemma writes '…\\n<channel|>'; with --rename-reasoning the history strips it and the template writes it back)")
 
 
 def main():

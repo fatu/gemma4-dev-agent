@@ -52,7 +52,7 @@ def vllm0191_message(m):
     `reasoning` field ONLY — `reasoning_content`, which mini-swe-agent / litellm send, is dropped, so earlier thoughts
     never reach the prompt."""
     if WIRE["mode"] == "mini-think" and m.get("role") == "assistant" and m.get("reasoning_content") and not m.get("reasoning"):
-        m["reasoning"] = m["reasoning_content"]    # scripts/req_log.py --rename-reasoning (THINK_HIST=1) did this on the wire
+        m["reasoning"] = m["reasoning_content"].rstrip("\n")   # what req_log.py --rename-reasoning (THINK_HIST=1) sends
     c = m.get("content")
     m["content"] = [] if c is None else ([{"type": "text", "text": c}] if isinstance(c, str) else c)
     if m.get("role") == "assistant":
@@ -82,6 +82,10 @@ def normalise(messages):
 
 def assistant_from_target(t):
     msg = {"role": "assistant", "content": t.get("content") or ""}
+    if WIRE["mode"] == "mini-think" and t.get("reasoning"):
+        # the generated thought ends "\n<channel|>" (the "\n" is part of the reply, the template writes it): strip the
+        # parsed reasoning's trailing newlines so the target = the generation = the history (B-9 part 2, user: 方案1)
+        t = dict(t, reasoning=t["reasoning"].rstrip("\n"))
     if t.get("reasoning"):
         msg["reasoning_content"] = t["reasoning"]
         msg["reasoning"] = t["reasoning"]     # the field vLLM 0.19.1 reads (--wire mini keeps only this one)

@@ -100,7 +100,7 @@ limits, disk); teacher licences.
 **31B result (photo 2026-11-13).** 272 / 500 resolved = **54.4 %** (Wilson 95 % ≈ 50.0–58.7 %), one pass, all 500 predictions (no duplicates or gaps; merged from three runs over task ranges 0–249, 250–274 and 275–499, 16 grading reports). Exit statuses: Submitted 385, ContextWindowExceededError 115. The 115 empty patches are exactly the context-window exits; no other failure type. Among the 385 submitted: 272 resolved (70.6 %). Model calls per task: median 32, p90 56, max 158. Per repo (resolved / tasks): django 128/231, sympy 40/75, sphinx 20/44, matplotlib 18/34, scikit-learn 26/32, astropy 12/22, xarray 14/22, pytest 12/19, pylint 1/10, requests 0/8, seaborn 0/2, flask 1/1.
 Read by the rule set before the data: ≥ 40 % → our setup is near the public level (Vals AI 53.92 % on its subset, a different setup: close, not equivalent). The 32K window is the one visible cost: 23 % of tasks (115) ended on it. Missing: the 50 Verified-mini line (the box could not load the HF dataset: a self-signed certificate; set `SSL_CERT_FILE` and run `report` again, no rerun). The box copy of `verified_box.sh` has two changes not in this repo (MIRROR, START).
 
-### B-9 part 2 · Does a LoRA on MetaCurate's public data improve on the B-9 baseline? (plan 2026-11-13, revised the same day by the user: 31B first, our own LoRA recipe, no pipeline check, no QLoRA, any free box, the criterion is "improved or not") — step 0 ✓ (server drops earlier thoughts) → option ③ THINK_HIST=1 ▶ step 0b re-probe, then step 1b new baselines
+### B-9 part 2 · Does a LoRA on MetaCurate's public data improve on the B-9 baseline? (plan 2026-11-13, revised the same day by the user: 31B first, our own LoRA recipe, no pipeline check, no QLoRA, any free box, the criterion is "improved or not") — step 0 ✓ (server drops earlier thoughts) → option ③ THINK_HIST=1 · 0b ✓ (thought newline → stripped) ▶ quick re-probe, then step 1b new baselines
 
 **Question.** Train a LoRA on the public `furiosa-ai/MetaCurate-DeepSeekV4Pro` trajectories (arXiv 2610.23134) and evaluate it
 under exactly the B-9 setup (mini-swe-agent 2.4.6, thinking on, 32K, temperature 0.2, 250 steps, 8,192 tokens per reply,
@@ -189,6 +189,25 @@ visible on the box).
 📷 the `== probe` line + the `sampling sent by mini …` line + the `generated thoughts …` line, `== verify`, `calls … A2 …`, `RESULT`. Go on only if: rendered by
 the template **yes**, verify n / n, A2 n / n, RESULT PASS. If many generated thoughts end with a newline, stop: the
 template would re-render them with two (photo the line; the reply targets would need a rule for that).
+
+**Step 0b result (31B, 2026-11-13, photo):** 2 tasks · 57 calls · 3 min · prompts p50 11,020 / max 24,289. Thoughts
+rendered by the template **yes** (856 / 856 history assistant messages); verify 57/57; A2 57/57; packed (57 calls → 5
+sequences); RESULT PASS. Sampling the server got, 57/57: max_tokens 8192 · temperature 0.2 · top_p 0.95 ·
+thinking_token_budget 4096 (litellm forwards `extra_body`). **Stop rule hit:** 47 of 57 generated thoughts end with a
+newline — Gemma writes `…\n<channel|>`, vLLM keeps the `\n` in the parsed reasoning, and the template adds its own `\n`
+before `<channel|>`, so the history would show two. User (on the box): "用方案1，去掉换行再训练". Done 2026-11-13: the
+THINK_HIST proxy sends `reasoning = reasoning_content.rstrip("\n")` and `render.py --wire mini-think` strips the same in
+the history and in every target, so target = generation = history: `<thought>\n<channel|>` (DSv4Pro thoughts never end
+with a newline: 0 / 46,211 in shard 0). Laptop: fake server with newline-ended thoughts → A2 4/4, delta = synthetic, one
+sequence, PASS; w7 byte-identical. **The proxy change alters what the server sees, so re-run the probe once (~3 min) and
+then start 1b with this commit:**
+```
+git pull && MODEL=google/gemma-4-31B-it-qat-w4a16-ct GPU=0 PORT=8011 bash scripts/verified_box.sh serve
+MODEL=google/gemma-4-31B-it-qat-w4a16-ct GPU=0 PORT=8011 bash train/mc_box.sh probe    # 📷 == probe · == verify · calls … A2 · RESULT
+MODEL=google/gemma-4-31B-it-qat-w4a16-ct GPU=0 PORT=8011 bash scripts/verified_box.sh stop
+```
+Go on to 1b if: rendered yes, verify n/n, A2 n/n, **delta≠synthetic 0**, RESULT PASS (the `generated thoughts … ending
+with a newline` count stays high — that is the model's output, now handled).
 
 **Step 1b · the new baselines, all 500, THINK_HIST=1** (31B on the 8-card box; E4B on whichever box is free; same
 commands as part 1 plus the knob and new tags; ~ the part-1 times):
