@@ -133,14 +133,15 @@ def cmd_summarize(a):
     toks.sort()
     sent = "yes" if S["... carrying reasoning"] else "no"
     rend = "yes" if S["earlier thought blocks rendered"] else "no"
-    rule = "keep" if sent == "yes" else "drop"           # records reproduce what was SENT; the template decides what is rendered
+    rule = "keep" if sent == "yes" else "drop"           # records reproduce what was SENT (verify); the server decides what is rendered
+    S["server renders earlier thoughts"] = int(rend == "yes")
     summ = {"conversations": len(convs), **dict(S), "message keys per role": {k: sorted(v) for k, v in keys.items()},
             "tokens p50": toks[len(toks) // 2] if toks else None, "tokens max": toks[-1] if toks else None,
             "history_rule": rule, "multi_call_prompt_tail": examples.get("multi")}
     json.dump(summ, open(os.path.join(a.out, "probe_summary.json"), "w"), indent=1)
     print(f"== probe: {len(convs)} conversations · {S['calls']} calls · earlier reasoning sent: {sent} "
           f"({S['... carrying reasoning']} of {S['assistant msgs in requests']} assistant msgs) · rendered by the template: {rend} "
-          f"({S['earlier thought blocks rendered']} blocks) → history rule {rule} (packs into one sequence only if rendered) · multi-call turns {S['multi-call turns in history']} "
+          f"({S['earlier thought blocks rendered']} blocks) → wire rule {rule}; {'one sequence per trajectory' if rend == 'yes' else 'one training sample per call (the server drops earlier thoughts)'} · multi-call turns {S['multi-call turns in history']} "
           f"· text+call turns {S['text+call turns in history']} · tokens p50 {summ['tokens p50']} max {summ['tokens max']} "
           f"· server usage = /tokenize {S['usage == tokenize']}/{S['calls']}")
     print("   message keys: " + " · ".join(f"{k}: {','.join(v)}" for k, v in summ["message keys per role"].items()))

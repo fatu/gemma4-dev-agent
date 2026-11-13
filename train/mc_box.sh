@@ -6,7 +6,7 @@
 #   MODEL=… bash train/mc_box.sh render                    # step 2: render.py --pack in RENDER_PROCS shards (gate R) → 📷
 # Knobs (all printed): MODEL (31B) · GPU (0) · PORT (8011; the logger listens on PORT+100) · PROBE_SLICE (0:2) ·
 # HISTORY (from step 0's probe_summary.json; override keep|drop) · N (1000) · SEED (0) · MAX_CTX (30720) · ARM (r1k) ·
-# RENDER_PROCS (16) · T2T (auto from step 0; on|off). Outputs quote task text → runs/ only (gitignored).
+# RENDER_PROCS (16) · T2T (on) · PACK (from step 0: on only if the server renders earlier thoughts). Outputs quote task text → runs/ only (gitignored).
 set -uo pipefail
 cd "$(dirname "$0")/.."
 STEP="${1:?probe|data|render}"
@@ -15,11 +15,14 @@ GPU="${GPU:-0}"; PORT="${PORT:-8011}"; PROBE_SLICE="${PROBE_SLICE:-0:2}"
 N="${N:-1000}"; SEED="${SEED:-0}"; MAX_CTX="${MAX_CTX:-30720}"; ARM="${ARM:-r1k}"; RENDER_PROCS="${RENDER_PROCS:-16}"
 PY=.venv-eval/bin/python; PR=runs/verified/probe; MC=runs/sft/mc
 HISTORY="${HISTORY:-$($PY -c "import json; print(json.load(open('$PR/probe_summary.json'))['history_rule'])" 2>/dev/null || echo unset)}"
-# T2T: move the text of text + tool-call replies into the thought (packs ~4.6x fewer tokens on a 20-row laptop test).
-# auto = on when Gemma's own requests in step 0 had no such turn (then it is not Gemma's format anyway), else off.
-T2T="${T2T:-$($PY -c "import json; print('on' if json.load(open('$PR/probe_summary.json'))['text+call turns in history'] == 0 else 'off')" 2>/dev/null || echo unset)}"
+# T2T: move the text of text + tool-call replies into the thought. On by the user's decision after the 31B probe
+# (2026-11-13: 782 such turns in 31B's own histories — the Gemma template bug HF #67/#115 hits the baseline).
+T2T="${T2T:-on}"
+# PACK: one sequence per trajectory only if the server renders earlier thoughts; vLLM 0.19.1 drops mini's
+# reasoning_content (probe 2026-11-13: 0 blocks), so then every call is its own sample (render.py without --pack).
+PACK="${PACK:-$($PY -c "import json; print('on' if json.load(open('$PR/probe_summary.json')).get('server renders earlier thoughts') else 'off')" 2>/dev/null || echo off)}"
 tokdir() { $PY -c "from huggingface_hub import snapshot_download as s; print(s('$MODEL', allow_patterns=['*.json', '*.jinja']))" 2>/dev/null | tail -1; }
-echo "mc_box $STEP · model $MODEL (served $SERVED) · gpu $GPU port $PORT (logger $(( PORT + 100 ))) · probe slice $PROBE_SLICE · history $HISTORY · text to thought $T2T · n $N seed $SEED max ctx $MAX_CTX · arm $ARM · render procs $RENDER_PROCS · code $(git log --oneline -1 | cut -c1-40)"
+echo "mc_box $STEP · model $MODEL (served $SERVED) · gpu $GPU port $PORT (logger $(( PORT + 100 ))) · probe slice $PROBE_SLICE · history $HISTORY · text to thought $T2T · pack $PACK · n $N seed $SEED max ctx $MAX_CTX · arm $ARM · render procs $RENDER_PROCS · code $(git log --oneline -1 | cut -c1-40)"
 T0=$(date +%s)
 
 case "$STEP" in
@@ -50,7 +53,7 @@ render)
   [ -d "$MC/$ARM" ] || { echo "no $MC/$ARM: run data first"; exit 1; }
   TOK="$(tokdir)"; pids=()
   for i in $(seq 0 $(( RENDER_PROCS - 1 ))); do
-    $PY train/render.py "$MC/$ARM" --tokenizer "$TOK" --wire mini --pack --split-runs --sample 4 --shard "$i/$RENDER_PROCS" \
+    $PY train/render.py "$MC/$ARM" --tokenizer "$TOK" --wire mini $([ "$PACK" = on ] && echo --pack --split-runs) --sample 4 --shard "$i/$RENDER_PROCS" \
       --out "$MC/$ARM.part$i.jsonl" > "$MC/$ARM.render$i.log" 2>&1 & pids+=($!)
   done
   for p in "${pids[@]}"; do wait "$p"; done
@@ -61,16 +64,21 @@ mc, arm, n = sys.argv[1], sys.argv[2], int(sys.argv[3])
 tot = {"calls": 0, "targets": 0, "label": 0, "packed": 0, "seq": 0, "mixed": 0, "nothought": 0, "fail": 0, "malformed": 0}
 for i in range(n):
     t = open(f"{mc}/{arm}.render{i}.log").read()
-    m = re.search(r"calls (\d+) · targets (\d+) · label tokens (\d+) · packed label tokens (\d+) \(sequences (\d+), segments unpacked because of a mixed reply (\d+) / a no-thought reply after a tool response (\d+)\)", t)
+    m = re.search(r"calls (\d+) · targets (\d+) · label tokens (\d+)", t)
     if not m:
         print(f"  shard {i}: no summary line → tail {mc}/{arm}.render{i}.log"); tot["fail"] += 1; continue
-    for k, v in zip(["calls", "targets", "label", "packed", "seq", "mixed", "nothought"], map(int, m.groups())):
+    for k, v in zip(["calls", "targets", "label"], map(int, m.groups())):
         tot[k] += v
+    p = re.search(r"packed label tokens (\d+) \(sequences (\d+), segments unpacked because of a mixed reply (\d+) / a no-thought reply after a tool response (\d+)\)", t)
+    if p:
+        for k, v in zip(["packed", "seq", "mixed", "nothought"], map(int, p.groups())):
+            tot[k] += v
     tot["fail"] += len(re.findall(r"^FAIL", t, re.M)); tot["malformed"] += len(re.findall(r"^MALFORMED", t, re.M))
 lens = [len(json.loads(l)["input_ids"]) for l in open(f"{mc}/{arm}.rendered.jsonl")]
+tot["seq"] = tot["seq"] or len(lens)
 lens.sort()
 print(f"== render {arm}: {tot['calls']} calls · {tot['targets']} targets · label tokens {tot['label']} (packed {tot['packed']}) "
-      f"· {tot['seq']} sequences (len p50 {lens[len(lens)//2] if lens else 0}, max {lens[-1] if lens else 0}) "
+      f"· {tot['seq']} sequences, {sum(lens):,} tokens (len p50 {lens[len(lens)//2] if lens else 0}, max {lens[-1] if lens else 0}) "
       f"· run breaks: text+call {tot['mixed']}, no-thought {tot['nothought']} · malformed replies {tot['malformed']} "
       f"· FAIL lines {tot['fail']} → {'PASS' if tot['fail'] == 0 else 'FAIL: grep FAIL ' + mc + '/' + arm + '.render*.log'}")
 EOF

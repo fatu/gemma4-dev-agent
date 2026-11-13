@@ -144,6 +144,25 @@ Read the probe 📷 (4 lines: `== probe …`, `== verify …`, `calls … A2 …
 Step 1 needs the HF token; if the download fails on the certificate, set `SSL_CERT_FILE` / `REQUESTS_CA_BUNDLE` to the
 box's CA file first. Step 2 must end `→ PASS`. Steps 3–4 (training, the ADAPTER eval, paired.py) are built after these photos.
 
+**Step 0 result (31B, 2026-11-13, photo):** 2 tasks · 82 calls · 9 min. mini sent earlier thoughts (`reasoning_content` on
+1,615 of 2,040 history assistant messages) but the server rendered **0** of them; 782 text + tool-call turns in 31B's own
+histories; prompts p50 13,194 / max 23,701 tokens; usage = /tokenize 82/82; verify 82/82; **A2 0/82 → FAIL**. Cause, read in
+vLLM 0.19.1 `entrypoints/chat_utils.py` `_parse_chat_message_content`: (1) string content becomes text parts, and the Gemma
+template appends a space after system parts (1 token); (2) only the `reasoning` field is passed to the template —
+`reasoning_content` (what mini / litellm send) is dropped, so **31B never sees its earlier thoughts in B-9** (Google's
+guide says thoughts between tool calls must not be removed). Fixed on the laptop: `render.py --wire mini` now does what
+vLLM does (`vllm0191_message`); replies are always rendered from the target in that mode; w7 output byte-identical; 20
+DSv4Pro rows PASS. Consequence: no packing — **one training sample per call** (20 rows: 650 samples, 9.2 M tokens, 149 K
+label tokens ≈ 0.46 M tokens per trajectory, ~20× the packed size). T2T = on (user, after the photo). Re-check on the box
+without a GPU (the probe's saved requests and server prompts):
+```
+git pull && .venv-eval/bin/python train/render.py runs/verified/probe/records --check runs/verified/probe/server_prompts \
+  --wire mini --sample 20 --tokenizer "$(.venv-eval/bin/python -c "from huggingface_hub import snapshot_download as s; print(s('google/gemma-4-31B-it-qat-w4a16-ct', allow_patterns=['*.json','*.jinja']))")" | grep -E "^calls|^FAIL|^RESULT" | cut -c1-300
+```
+📷 must show `A2 server-rendered prompts equal 82/82` and `RESULT PASS`. **Open (user):** the per-call cost (≈ 460 M tokens per
+epoch for 1,000 trajectories) — train every call, sample K calls per trajectory, or send `reasoning` so the server keeps
+thoughts (then packing works, but B-9's baselines would have to be re-run in that setup).
+
 **Step 0 · What does Gemma see at call k? (free box, 1 card, ~20 min)** — decides the renderer's history rule.
 New `scripts/req_log.py`: a logging pass-through proxy (port PORT+100 → vLLM) that saves each chat request. Two Verified
 tasks with 31B through it (`TAG=vf_probe SLICE=0:2`); for 3 calls per task the saved messages go to vLLM's `/tokenize`.

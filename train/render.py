@@ -19,8 +19,9 @@ reply. Checks (all printed; any failure → exit 1):
       reply token incl. the stop token is a label; the label share per call is printed. A call with
       `label_scope: tool_call` (train/edit_drills.py) keeps labels on its tool call + stop token only.
 Outputs quote task text → keep them under runs/ (gitignored).
-Large sets (B-9 part 2, mini-swe-agent trajectories): `--wire mini` keeps a string system message as it is (mini sends
-a plain string; the ADK harness sent parts); `--shard i/n` renders every n-th record from i (run n processes, then
+Large sets (B-9 part 2, mini-swe-agent trajectories): `--wire mini` reproduces what vLLM 0.19.1 does to a request
+before templating (see vllm0191_message: string contents become text parts, `reasoning_content` is dropped, only
+`reasoning` is kept — so with mini-swe-agent the server never shows the model its earlier thoughts); `--shard i/n` renders every n-th record from i (run n processes, then
 concatenate the outputs); `--pack --split-runs` starts a new packed sequence at each expected prefix break (a text +
 tool-call reply in the history, a no-thought reply) instead of one sample per call for the whole segment — the
 "segments unpacked …" counts are then counts of such breaks; the output is written record by record and A3 keeps a reservoir of --sample calls, so memory
@@ -43,11 +44,29 @@ CTRL = {"<|channel>", "<channel|>", "<|tool_call>", "<tool_call|>", "<|tool_resp
 WIRE = {"mode": "adk"}      # --wire: "adk" (the competition harness) or "mini" (mini-swe-agent through litellm)
 
 
+def vllm0191_message(m):
+    """what vLLM 0.19.1 hands the template for one chat message (entrypoints/chat_utils.py _parse_chat_message_content,
+    read 2026-11-13; B-9 part 2 probe A2 0/82 before this): string content → [{"type": "text", "text": …}] (the Gemma
+    template then appends a space after the system text), None → []; an assistant's reasoning is taken from the
+    `reasoning` field ONLY — `reasoning_content`, which mini-swe-agent / litellm send, is dropped, so earlier thoughts
+    never reach the prompt."""
+    c = m.get("content")
+    m["content"] = [] if c is None else ([{"type": "text", "text": c}] if isinstance(c, str) else c)
+    if m.get("role") == "assistant":
+        r = m.get("reasoning")
+        m.pop("reasoning_content", None)
+        if r is not None:
+            m["reasoning_content"] = r
+    return m
+
+
 def normalise(messages):
     """the wire format of the traj log → what the template expects (and what vLLM rendered)"""
     out = []
     for i, m in enumerate(messages):
         m = copy.deepcopy(m)
+        if WIRE["mode"] == "mini":
+            m = vllm0191_message(m)
         if WIRE["mode"] == "adk" and i == 0 and m.get("role") == "system" and isinstance(m.get("content"), str):
             m["content"] = [{"type": "text", "text": m["content"]}]
         for tc in m.get("tool_calls") or []:
@@ -62,6 +81,7 @@ def assistant_from_target(t):
     msg = {"role": "assistant", "content": t.get("content") or ""}
     if t.get("reasoning"):
         msg["reasoning_content"] = t["reasoning"]
+        msg["reasoning"] = t["reasoning"]     # the field vLLM 0.19.1 reads (--wire mini keeps only this one)
     if t.get("tool_calls"):
         msg["tool_calls"] = [{"id": tc.get("id"), "type": "function",
                               "function": {"name": tc["name"], "arguments": tc.get("args") or "{}"}}
@@ -125,7 +145,8 @@ class Renderer:
             reply, source, delta, synth = head + sep + t["content"].strip() + tail, "mixed", None, None
         else:
             synth = self.reply_synthetic(t, open_in_prompt)
-            delta = self.reply_delta(p, next_prompt, t) if next_prompt else None
+            # --wire mini: the server drops earlier thoughts, so the next prompt is not this reply's re-render → synthetic
+            delta = self.reply_delta(p, next_prompt, t) if next_prompt and WIRE["mode"] != "mini" else None
             reply, source = (delta, "delta") if delta is not None else (synth, "synthetic")
         if not reply.endswith((STOP_TOOL, STOP_TURN)):
             raise ValueError(f"{rec['instance_id']} call {c['call']}: reply has no stop token: {reply[-60:]!r}")
