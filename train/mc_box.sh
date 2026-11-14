@@ -41,11 +41,12 @@ ALLGPUS=$(nvidia-smi --query-gpu=index --format=csv,noheader 2>/dev/null | paste
 GPUS="${GPUS:-${ALLGPUS:-0}}"; IFS=, read -r -a GL <<< "$GPUS"; CPR="${CARDS_PER_RANK:-1}"; NR=$(( ${#GL[@]} / CPR ))
 LR="${LR:-1e-5}"; EPOCHS="${EPOCHS:-2}"; ACCUM="${ACCUM:-16}"; R="${R:-32}"; ALPHA="${ALPHA:-32}"; WARMUP="${WARMUP:-0.05}"
 MAX_LEN="${MAX_LEN:-$MAX_CTX}"; MSHORT=$(basename "$MODEL" | sed 's/-it-qat-w4a16-ct//'); DQ="${DQ:-runs/dequant/$MSHORT-dq}"
-OUTD="${OUTD:-adapters/mc_${MSHORT}_${ARM}_lr${LR}}"; DIST_PORT="${DIST_PORT:-29600}"; TPY="${TPY:-.venv-train/bin/python}"
+OUTD="${OUTD:-adapters/mc_${MSHORT}_${ARM}_lr${LR}}"
+EVALF="$MC/$ARM.holdout.rendered.jsonl"; HOLD=$([ -s "$EVALF" ] && echo "--eval $EVALF --holdout 0" || echo "--holdout 8"); DIST_PORT="${DIST_PORT:-29600}"; TPY="${TPY:-.venv-train/bin/python}"
 SFT_EXTRA="${SFT_EXTRA:-}"                        # laptop test of the launcher: TPY=.venv-eval/bin/python SFT_EXTRA=--mock
 SFT="--base $DQ --ct $MODEL --alias $SERVED --max-len $MAX_LEN --epochs $EPOCHS --lr $LR --warmup $WARMUP --accum $ACCUM --r $R --alpha $ALPHA --clip 1.0 --eval-every 25 --seed 0 --device-map $([ "$CPR" -gt 1 ] && echo auto || echo cuda) $SFT_EXTRA"
 case "$STEP" in env|dequant|smoke|train)
-  echo "  train · cards $GPUS · $CPR per rank → $NR rank(s) · dequant $DQ · out $OUTD · sft: $SFT" ;; esac
+  echo "  train · cards $GPUS · $CPR per rank → $NR rank(s) · dequant $DQ · out $OUTD · held out: $HOLD · sft: $SFT" ;; esac
 rank_cards() { local i=$1; local c=(); for j in $(seq 0 $(( CPR - 1 ))); do c+=("${GL[$(( i * CPR + j ))]}"); done; (IFS=,; echo "${c[*]}"); }
 
 case "$STEP" in
@@ -70,8 +71,9 @@ data)
   [ "$HISTORY" = keep ] || [ "$HISTORY" = drop ] || { echo "run probe first (or set HISTORY=keep|drop)"; exit 1; }
   [ "$T2T" = on ] || [ "$T2T" = off ] || { echo "run probe first (or set T2T=on|off)"; exit 1; }
   $PY train/mc_prep.py download --dir "$MC/raw" || exit 1
+  rm -rf "$MC/$ARM" "$MC/${ARM}_holdout"       # a rerun must not keep records of tasks that are now held out
   $PY train/mc_prep.py build --raw "$MC/raw" --tokenizer "$(tokdir)" --history "$HISTORY" --wire "$WIRE" --out "$MC/$ARM" \
-    --n "$N" --seed "$SEED" --max-ctx "$MAX_CTX" --think-budget "$THINK_BUDGET" --reply-cap "$MAX_TOK" $([ "$T2T" = on ] && echo --text-to-thought) || exit 1
+    --n "$N" --seed "$SEED" --holdout-tasks "${HOLDOUT_TASKS:-8}" --max-ctx "$MAX_CTX" --think-budget "$THINK_BUDGET" --reply-cap "$MAX_TOK" $([ "$T2T" = on ] && echo --text-to-thought) || exit 1
   du -sh "$MC/$ARM" | sed 's/^/  records on disk: /'
   echo "📷 the rows → … line, the printed-only line and the == line ($(( $(date +%s) - T0 )) s)" ;;
 render)
@@ -83,6 +85,13 @@ render)
   done
   for p in "${pids[@]}"; do wait "$p"; done
   cat "$MC/$ARM".part*.jsonl > "$MC/$ARM.rendered.jsonl"; rm -f "$MC/$ARM".part*.jsonl
+  if [ -d "$MC/${ARM}_holdout" ]; then      # the held-out tasks (mc_prep --holdout-tasks): same rendering, one process
+    $PY train/render.py "$MC/${ARM}_holdout" --tokenizer "$TOK" --wire "$WIRE" $([ "$PACK" = on ] && echo --pack --split-runs) \
+      --sample 8 --out "$MC/$ARM.holdout.rendered.jsonl" > "$MC/$ARM.holdout.render.log" 2>&1
+    echo "  holdout: $(wc -l < "$MC/$ARM.holdout.rendered.jsonl") sequences from $(ls "$MC/${ARM}_holdout" | grep -c json) records · $(grep -E '^RESULT' "$MC/$ARM.holdout.render.log")"
+  else
+    echo "  no $MC/${ARM}_holdout (data from before the task holdout): training falls back to --holdout 8"
+  fi
   $PY - "$MC" "$ARM" "$RENDER_PROCS" <<'EOF'
 import glob, json, re, sys
 mc, arm, n = sys.argv[1], sys.argv[2], int(sys.argv[3])
@@ -136,7 +145,7 @@ train)
   [ -f "$DQ/config.json" ] || { echo "no bf16 base in $DQ: run dequant first"; exit 1; }
   rm -rf "$OUTD"; PIDS=(); LOGB=runs/sft_$(basename "$OUTD")
   for i in $(seq 1 $(( NR - 1 ))); do       # ranks 1…: in the background; rank 0 in front, it logs and exports
-    CUDA_VISIBLE_DEVICES=$(rank_cards $i) $TPY train/sft_lora.py $SFT --data "$MC/$ARM.rendered.jsonl" --holdout 8 --out "$OUTD" \
+    CUDA_VISIBLE_DEVICES=$(rank_cards $i) $TPY train/sft_lora.py $SFT --data "$MC/$ARM.rendered.jsonl" $HOLD --out "$OUTD" \
       --world $NR --rank $i --dist-port $DIST_PORT > $LOGB.rank$i.log 2>&1 &
     PIDS+=($!)
   done
@@ -146,7 +155,7 @@ train)
           pgrep -f "sft_lora.py.*--out $OUTD --world $NR --rank 0 " >/dev/null && { echo "  a rank ended early (see $LOGB.rank*.log): stopping the others"; pkill -f "sft_lora.py.*--out $OUTD --world"; }
           exit; fi; done; done ) & WATCH=$!
   fi
-  CUDA_VISIBLE_DEVICES=$(rank_cards 0) $TPY train/sft_lora.py $SFT --data "$MC/$ARM.rendered.jsonl" --holdout 8 --out "$OUTD" \
+  CUDA_VISIBLE_DEVICES=$(rank_cards 0) $TPY train/sft_lora.py $SFT --data "$MC/$ARM.rendered.jsonl" $HOLD --out "$OUTD" \
     --world $NR --rank 0 --dist-port $DIST_PORT 2>&1 | grep -v Warning | tee $LOGB.log | cut -c1-250
   if [ $NR -gt 1 ]; then
     { kill $WATCH; wait $WATCH; } 2>/dev/null; sleep 10; pkill -f "sft_lora.py.*--out $OUTD --world" && echo "  stopped ranks still running after rank 0 ended"

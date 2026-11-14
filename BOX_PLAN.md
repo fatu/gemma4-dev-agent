@@ -297,7 +297,14 @@ bash train/mc_box.sh dequant   # 📷 bf16 31B → runs/dequant/gemma-4-31B-dq (
 GPUS=0 bash train/mc_box.sh smoke                          # 📷 peak GB + tok/s on the 16 longest sequences
 GPUS=0,1,2,3,4,5,6,7 nohup bash train/mc_box.sh train > runs/mc_train_31b.log 2>&1 &   # 8 ranks
 ```
-If smoke runs out of memory on one card: `CARDS_PER_RANK=2 GPUS=0,1 bash train/mc_box.sh smoke`, then train with
+**Held-out tasks (user, 2026-11-13: "改一下"):** the random 8-sequence holdout leaked (4 of the 8 shared a trajectory with
+training sequences; a task has up to 3 trajectories). `mc_prep build --holdout-tasks 8` now keeps 8 whole tasks out — chosen
+among tasks with exactly one picked trajectory, so nothing of them is trained — in `runs/sft/mc/r1k_holdout/`; `render`
+renders them to `r1k.holdout.rendered.jsonl`; `train` uses `--eval` on that file (falls back to `--holdout 8` if it is
+missing). Costs ≈ 3 sequences of training data. Laptop (shard 0): 8 of 57 one-trajectory tasks → 8 records → 13 held-out
+sequences PASS; 215 training records → 324 sequences PASS; mock 2-rank train reads `holdout 13 (file)`. **Re-run on the
+box (~3 min): `bash train/mc_box.sh data && bash train/mc_box.sh render`** (data clears the old r1k dirs first), then
+upload the new files if you keep the Kaggle copy. If smoke runs out of memory on one card: `CARDS_PER_RANK=2 GPUS=0,1 bash train/mc_box.sh smoke`, then train with
 `CARDS_PER_RANK=2 GPUS=0,1,2,3,4,5,6,7` (4 ranks). Stop and photo if: render is not PASS, the schedule line drops many
 sequences (`dropped: > 30720 tokens`), the holdout NLL rises from `eval[start]`, or a rank ends early. Read the time from
 smoke: total tokens × 2 / (tok/s × ranks). Then 1b, then the adapter eval (ADAPTER knob + paired.py, built next).

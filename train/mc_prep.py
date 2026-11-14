@@ -111,7 +111,7 @@ def cmd_build(a):
     tok = AutoTokenizer.from_pretrained(a.tokenizer)
     R = render.Renderer(tok)
     tools = json.load(open(os.path.join(a.raw, "tools.json")))
-    print(f"mc_prep build · {REPO_ID}@{REVISION[:12]} · history {a.history} · wire {a.wire} · think budget {a.think_budget} · reply cap {a.reply_cap} · text to thought {a.text_to_thought} · max ctx {a.max_ctx} · n {a.n} · seed {a.seed}"
+    print(f"mc_prep build · {REPO_ID}@{REVISION[:12]} · holdout tasks {a.holdout_tasks} · history {a.history} · wire {a.wire} · think budget {a.think_budget} · reply cap {a.reply_cap} · text to thought {a.text_to_thought} · max ctx {a.max_ctx} · n {a.n} · seed {a.seed}"
           f" · tokenizer {a.tokenizer} · limit {a.limit or 'all'} · out {a.out}")
     rows = load_rows(a.raw)
     if a.limit:
@@ -138,6 +138,22 @@ def cmd_build(a):
     random.seed(a.seed)
     pick = fit if len(fit) <= a.n else random.sample(fit, a.n)
     pick.sort(key=lambda x: x[0]["id"])
+    # held-out TASKS (user 2026-11-13): tasks with exactly one picked trajectory, so nothing of the task is trained on;
+    # their records go to <out>_holdout/ (render it separately, train with sft_lora --eval)
+    n_traj = collections.Counter(r["instance_id"] for r, _, _ in pick)
+    single = sorted(t for t, c in n_traj.items() if c == 1)
+    hold_tasks = set(random.Random(a.seed + 1).sample(single, min(a.holdout_tasks, len(single))))
+    hold = [x for x in pick if x[0]["instance_id"] in hold_tasks]
+    pick = [x for x in pick if x[0]["instance_id"] not in hold_tasks]
+    hold_dir = a.out.rstrip("/") + "_holdout"
+    os.makedirs(hold_dir, exist_ok=True)
+    for r, calls, peak in hold:
+        json.dump({"instance_id": r["id"], "task_id": r["instance_id"], "repo": r["repo"], "dataset": r["dataset"],
+                   "license": r["license"], "source": "metacurate_dsv4pro", "revision": REVISION, "history": a.history,
+                   "text_to_thought": a.text_to_thought, "peak_ctx": peak, "tools": tools, "calls": calls, "holdout": True},
+                  open(os.path.join(hold_dir, f"{r['id']}.json"), "w"))
+    print(f"  held-out tasks: {len(hold_tasks)} of the {len(single)} tasks with one trajectory (seed {a.seed + 1}) → "
+          f"{len(hold)} records in {hold_dir} (no other trajectory of these tasks is trained): {sorted(hold_tasks)}")
     os.makedirs(a.out, exist_ok=True)
     info = collections.Counter()
     per_task = collections.Counter(r["instance_id"] for r, _, _ in pick)
@@ -233,6 +249,7 @@ def main():
     b.add_argument("--raw", required=True); b.add_argument("--tokenizer", required=True)
     b.add_argument("--history", choices=["keep", "drop"], required=True); b.add_argument("--out", required=True)
     b.add_argument("--n", type=int, default=1000); b.add_argument("--seed", type=int, default=0)
+    b.add_argument("--holdout-tasks", type=int, default=8, help="whole tasks kept out of training (one-trajectory tasks)")
     b.add_argument("--wire", choices=["mini", "mini-think"], default="mini", help="how the server renders (render.py --wire)")
     b.add_argument("--think-budget", type=int, default=4096, help="count (not drop) turns whose thought is longer")
     b.add_argument("--reply-cap", type=int, default=8192, help="count (not drop) turns whose whole reply is longer")
