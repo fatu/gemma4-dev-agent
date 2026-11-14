@@ -41,28 +41,49 @@ dropped too.
 
 ---
 
-## B-10 · Our own MetaCurate-style data for Gemma: teacher trajectories from GLM-5.3 through an OpenAI-compatible gateway (plan 2026-11-13, revised the same day: generation settings as the paper, GLM-5.3 only, the official rule logic) — step 1 `setup` ✓ · `check` ✓ for SWE-rebench-V2 only (2026-11-13) · ▶ **now on the box: the three commands under "On the box now" below**, 📷
+## B-10 · Our own MetaCurate-style data for Gemma: teacher trajectories from GLM-5.3 through a gateway (plan 2026-11-13, revised the same day: generation settings as the paper, GLM-5.3 only, the official rule logic, SWE-Gym left out) — step 1 `setup` ✓ · `check` ✓ for SWE-rebench-V2 · `diag` ✓ (2026-11-13: both SWE-rebench problems explained and fixed in the scripts) · ▶ **now on the box: the commands under "On the box now" below**, 📷
 
-**On the box now (2026-11-13, after the first `check`; no tokens except a few cents for the probe).**
+**On the box now (2026-11-13, after `diag`; no tokens except a few cents for the probe).**
 ```
 cd gemma4-dev-agent && git pull && git log --oneline -1
-bash scripts/rebench_mini.sh diag                    # 1 why two SWE-rebench logs have no result lines · 2 the patches whose
-                                                     #   verdict differs from the pool's label · 3 later commits in an image → 📷
-.venv-swe/bin/python scripts/teacher_probe.py        # step 0, the gateway in the Anthropic format (POST <base>/v1/messages) → 📷
+bash scripts/rebench_mini.sh setup                     # the task table again: SWE-rebench rows now carry their install command
+SOURCES=rebench bash scripts/rebench_mini.sh check     # the same 5 SWE-rebench tasks as before (5 images, ~1–2 GB each) → 📷
+bash scripts/rebench_mini.sh diag                      # part 3: later commits before / after the startup command → 📷
+.venv-swe/bin/python scripts/teacher_probe.py          # step 0, the gateway in the Anthropic format (POST <base>/v1/messages) → 📷
 ```
-`diag` reads the logs the first `check` left in `runs/b10/check5.*` and pulls one SWE-rebench image again (~1.3 GB);
-`DIAG_SOURCES="rebench gym" bash scripts/rebench_mini.sh diag` adds one SWE-Gym image (10 GB or more: only with the disk
-free). The probe needs the teacher's name and the gateway's address and key in the environment of that shell:
+**Read the second `check`:** gold resolved 5 / 5 with "second pass after the install command" 2 (resolved 2) · empty 0 / 5 ·
+agrees with the pool's label 15 / 15. **Read `diag` part 3:** BEFORE `newer` > 0, STARTUP `rc=0` in well under 60 s (the
+agent's command timeout), AFTER `newer=0 unmerged=0 lost_commits=0` and the same `describe` as before (tags that are
+ancestors of HEAD stay, so version detection from git keeps working). Both as expected → the gold check on all 1,221
+tasks is next (chunked pulls; script still to write), then the pilot.
+The probe needs the teacher's name and the gateway's address and key in the environment of that shell:
 `TEACHER=<the gateway's name for GLM-5.3>` plus either `GATEWAY_BASE_URL` / `GATEWAY_API_KEY` or the Anthropic-style
 names `ANTHROPIC_BASE_URL` and `ANTHROPIC_AUTH_TOKEN` / `ANTHROPIC_API_KEY`; it prints which names it used, never the
 values. If they live in a shell profile, start the probe from a shell that has loaded it; do not copy the values into a
 command line, a script or a file under git. A 404 in turn 1 = the gateway does not serve this format (then
 `--api chat`). Reasoning NOT RETURNED → once more with `--thinking-budget 2000`.
-**Open after the first `check` (2026-11-13):** SWE-rebench: 2 of 5 tasks give no parsable test log (the grading steps
-were re-read against the harness: the same; the logs decide) · SWE-Gym: images of 10–17 GB each, commits outside HEAD's
-history in the image, 2 of 15 labels differ → proposed: leave SWE-Gym out (194 tasks; 1,221 remain), the user decides ·
-SWE-rebench images also hold commits outside HEAD's history (4,948 vs 3,065): `diag` shows whether any is later than the
-task's commit; if so they are removed in the container before the agent starts.
+
+**What `diag` found (box 2026-11-13) and what changed in the scripts.**
+- *SWE-rebench images do not always hold the project installed* (2 of the 5 checked: the import of the project, and in
+  one case of a dependency, fails, so pytest collects nothing; these 2 tasks are all 6 label mismatches). The public
+  pool was generated in the same state: its runs on these two tasks show the same import errors, and across the pool
+  279 of 2,100 SWE-rebench runs (137 of 690 tasks) print "No module named <repository name>" (a lower bound by name
+  match; V2 38 of 1,599, SWE-Gym 40 of 587); 1,059 of the 2,100 runs show a network error, so the pool's containers
+  were offline as its prompt says. The pool still labels such patches resolved, so its grading installed the project.
+  → **generation is unchanged** (same images, offline, as the paper); **the grader** gives a patch that is not resolved,
+  and whose log parsed nothing or shows an import error, a second pass after the row's install command (`GRADE_INSTALL`
+  auto | always | never; needs the network at grading time, which is the default). Tested with a docker test double
+  on the laptop, not with docker.
+- *SWE-rebench images hold later commits* (one image: 333 refs, 1,540 commits later than the task's commit; V2 none).
+  → `scripts/b10_startup.sh` runs in the container before the agent starts (`STRIP_REFS=1`, default): every ref that
+  is not an ancestor of HEAD is deleted, reflogs expired, unreachable objects pruned (gc capped at 40 s). This is a
+  deliberate difference from the pool, whose images were presumably used as they are: in the pool, 243 of 2,100
+  SWE-rebench runs list refs (`git log --all`, `git branch -a`, `git tag`, …) and about 52 may read another ref (19 of
+  them resolved; regex counts on the commands, not read one by one). `STRIP_REFS=0` = the image as it is.
+- *SWE-Gym is left out* (decided 2026-11-13: images of 10–17 GB each, later commits in the image, 2 of 15 labels
+  differ): `SOURCES` defaults to `rebench,v2`, **1,221 tasks** (690 + 531). `pilot30` = 17 + 13. The public pool gives
+  860 usable runs on these tasks at 3 attempts (resolved ∧ fits ∧ rules 1–4), so 1,000 needs ~3.5 attempts per task
+  or more tasks: decided from the pilot's yield.
 
 **Why.** B-9 part 2 tests the public DeepSeek V4 Pro pool. B-10 makes the same kind of data with teachers we can call,
 shaped for Gemma from the start, and asks whether the teacher matters for Gemma (DSv4Pro vs GLM-5.3 on the
@@ -78,7 +99,7 @@ scripts" · the "you can also install it" sentence removed) · step limit 250 (t
 the three sources (SWE-Gym rows carry no image name), the grader (the dataset gives the expected F2P / P2P test names
 per row: used to check ours), the exact mini-swe-agent revision (2.4.6 is used), the reasoning request parameter.
 **Added for Gemma at curation, not at generation** (each printed): kept only if resolved, every model turn has a thought
-and the peak context is ≤ 30,720 Gemma tokens · first on the **same 1,415 tasks as MetaCurate**, so the teacher is the
+and the peak context is ≤ 30,720 Gemma tokens · first on **MetaCurate's own tasks** (1,221 of its 1,415: SWE-Gym left out 2026-11-13), so the teacher is the
 only difference from B-9 part 2's data.
 **Where.** The 8-card box, no GPU: the teacher is remote, the box runs the containers and the grading, so B-10 runs beside
 B-9 part 2's training (shared disk: the chunked image deletion of `verified_box.sh full` is reused).
@@ -121,10 +142,10 @@ header of `rebench_mini.py`); for SWE-Gym the harness also re-runs the repositor
 which ours does not. **Read `check`:** gold = resolved on every task · empty = 0 resolved · pool = our verdict equals
 the pool's label on (nearly) every patch · the git line shows `all` = `reachable` (else later commits are readable in
 the image: SWE-Gym's README warns of this). A source that fails these is fixed or left out before any token is spent;
-then the gold check runs on all 1,415 (it also pulls every image: Docker Hub allows 100 anonymous pulls per 6 h per
+then the gold check runs on all 1,221 (SWE-Gym left out; it also pulls every image: Docker Hub allows 100 anonymous pulls per 6 h per
 address, 200 with a login) and only tasks whose gold patch passes are generated on.
 
-**Step 2 · Pilot (box, ~1–2 h, paid).** 30 of the 1,415 tasks (stratified by source, seed 0) × 1 attempt, GLM-5.3.
+**Step 2 · Pilot (box, ~1–2 h, paid).** 30 of the 1,221 tasks (SWE-rebench 17 + V2 13, seed 0) × 1 attempt, GLM-5.3.
 `NAME=pilot30 N=30 bash scripts/rebench_mini.sh subset` → `TAG=glm NAME=pilot30 bash scripts/rebench_mini.sh run` (needs the
 three exports of step 0) → `… grade` → `PRICE=<in,cached,out $ per M> … report`. Not before step 0 and `check` have passed.
 📷: resolved / 30 · runs that fit (≤ 30,720 Gemma tokens) · turns with a thought · thought tokens p50 / max ·
@@ -134,7 +155,7 @@ thoughts are in ≥ 90 % of turns and usable runs (resolved ∧ fits ∧ thought
 photo. The scale step's cost estimate comes from these numbers and needs the user's go.
 For scale: DSv4Pro shard 0 used 0.65 M prompt tokens per run (median; 98 % cached), 10.6 K completion tokens, 200 s.
 
-**Step 3 · Scale (box, paid).** GLM-5.3 on the 1,415 tasks × 3 attempts (1 attempt first if the estimate is
+**Step 3 · Scale (box, paid).** GLM-5.3 on the 1,221 tasks (SWE-rebench + V2) × 3 attempts (1 attempt first if the estimate is
 high), chunked and resumable. Target ≥ 1,000 usable runs; the public pool itself gives fewer after the rule filter (table
 below), so a fourth attempt or more tasks may be needed: decided from the pilot's yield. Data stays on the box (`runs/`,
 gitignored).

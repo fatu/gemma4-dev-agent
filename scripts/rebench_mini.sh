@@ -3,7 +3,8 @@
 # No GPU. Needs .venv-swe (bash scripts/verified_box.sh setup) and docker without sudo.
 #   bash scripts/rebench_mini.sh setup                 # checks + the task table (1,415 tasks, ~720 MB of upstream parquet)
 #   bash scripts/rebench_mini.sh check                 # PER_SOURCE=5 tasks per source: gold patch, empty patch and the
-#                                                      # pool's own patches through our grader (pulls ~15 images) → 📷
+#                                                      # pool's own patches through our grader → 📷 (a second check keeps
+#                                                      # the tasks of the first one within SOURCES; REUSE=0 = a new sample)
 #   NAME=pilot30 N=30 bash scripts/rebench_mini.sh subset
 #   bash scripts/rebench_mini.sh diag                  # after a check: the logs without result lines + later commits
 #                                                      # readable in an image (DIAG_SOURCES=rebench; add gym: 10+ GB)
@@ -15,12 +16,16 @@
 # MAX_TOK 4096 · command timeout 60 s and parallel tool calls from swebench.yaml · NET none (the prompt says the
 # environment is offline; the pool's docker flags are not published; NET="" = docker's default network).
 # Knobs (all printed): POOL (the MetaCurate parquet shards) · OUT (runs/b10) · NAME (task subset) · N / PER_SOURCE / SEED /
-# SOURCES (subset) · TAG · ATTEMPT (1; the output is $OUT/$TAG/$NAME.a$ATTEMPT) · WORKERS (8) · STEPS · TEMP · MAX_TOK ·
+# SOURCES (subset; default "rebench,v2": SWE-Gym is left out since 2026-11-13, 1,221 tasks; "all" = the three) · TAG · ATTEMPT (1; the output is $OUT/$TAG/$NAME.a$ATTEMPT) · WORKERS (8) · STEPS · TEMP · MAX_TOK ·
 # API (messages = the Anthropic format, POST <base>/v1/messages, model anthropic/$TEACHER; chat = the OpenAI format, model
 # openai/$TEACHER; env GATEWAY_API, default messages) · THINK_BUDGET (0 = not sent; messages only: thinking budget_tokens) ·
 # CACHE_CTL (default = mini's own rule, which marks the last message for caching when the model name contains
 # "anthropic"; off = no cache marker) · EFFORT ("" = reasoning_effort not sent; chat only) · NET · PULL_TIMEOUT (1800 s) · GRADE_WORKERS (4) · GRADE_TIMEOUT (1800 s) ·
-# GRADE_NET ("" = docker default) · PRICE ("in,cached,out" $ per M tokens, report only) · MIN_FREE_GB (50).
+# GRADE_NET ("" = docker default) · GRADE_INSTALL (auto: SWE-rebench images do not always hold the project installed, so a
+# patch that is not resolved and whose log parsed nothing or shows an import error gets a second pass after the row's
+# install command, which needs the network; always | never) · STRIP_REFS (1 = before the agent starts, every ref that
+# is not an ancestor of HEAD is deleted and the objects pruned: SWE-rebench images hold later commits, 1,540 in the
+# one image looked at; 0 = the image as it is) · PRICE ("in,cached,out" $ per M tokens, report only) · MIN_FREE_GB (50).
 # V2 images keep the repository at /<repo name>, not /testbed: a startup command links /testbed to it, so the prompt
 # and mini's working directory stay the same for all three sources. The address of the gateway is written to
 # $OUT/$TAG/*.model.yaml and into every trajectory's config (runs/ is gitignored); the key only lives in the environment.
@@ -31,20 +36,20 @@ cd "$(dirname "$0")/.."
 STEP="${1:?setup|check|diag|subset|run|grade|report}"
 VS=.venv-swe/bin; PY=$VS/python
 POOL="${POOL:-runs/sft/mc/raw}"; OUT="${OUT:-runs/b10}"; NAME="${NAME:-pilot30}"; N="${N:-30}"; PER_SOURCE="${PER_SOURCE:-0}"
-SEED="${SEED:-0}"; SOURCES="${SOURCES:-}"; TAG="${TAG:-glm}"; ATTEMPT="${ATTEMPT:-1}"; WORKERS="${WORKERS:-8}"
+SEED="${SEED:-0}"; SOURCES="${SOURCES:-rebench,v2}"; TAG="${TAG:-glm}"; ATTEMPT="${ATTEMPT:-1}"; WORKERS="${WORKERS:-8}"
 STEPS="${STEPS:-250}"; TEMP="${TEMP:-0.7}"; MAX_TOK="${MAX_TOK:-4096}"; EFFORT="${EFFORT:-}"; NET="${NET-none}"
 PULL_TIMEOUT="${PULL_TIMEOUT:-1800}"; GRADE_WORKERS="${GRADE_WORKERS:-4}"; GRADE_TIMEOUT="${GRADE_TIMEOUT:-1800}"
-GRADE_NET="${GRADE_NET:-}"; PRICE="${PRICE:-}"; MIN_FREE_GB="${MIN_FREE_GB:-50}"
+GRADE_NET="${GRADE_NET:-}"; GRADE_INSTALL="${GRADE_INSTALL:-auto}"; STRIP_REFS="${STRIP_REFS:-1}"; PRICE="${PRICE:-}"; MIN_FREE_GB="${MIN_FREE_GB:-50}"
 API="${API:-${GATEWAY_API:-messages}}"; THINK_BUDGET="${THINK_BUDGET:-0}"; CACHE_CTL="${CACHE_CTL:-default}"
 DIAG_SOURCES="${DIAG_SOURCES:-rebench}"; CHECK="${CHECK:-check5}"
 TASKS=$OUT/tasks; RUN=$OUT/$TAG/$NAME.a$ATTEMPT
 FREE=$(df -BG --output=avail . 2>/dev/null | tail -1 | tr -dc 0-9); FREE="${FREE:-0}"
-echo "rebench_mini $STEP · pool $POOL · out $OUT · subset $NAME (n $N, per source $PER_SOURCE, seed $SEED, sources ${SOURCES:-all}) · tag $TAG attempt $ATTEMPT → $RUN · workers $WORKERS · step limit $STEPS · temperature $TEMP · max tokens $MAX_TOK · api $API · thinking budget $THINK_BUDGET · cache marker $CACHE_CTL · reasoning_effort ${EFFORT:-not sent} · agent network ${NET:-docker default} · pull timeout $PULL_TIMEOUT s · grade workers $GRADE_WORKERS timeout $GRADE_TIMEOUT s network ${GRADE_NET:-docker default} · price ${PRICE:-not given} · free disk $FREE GB (min $MIN_FREE_GB) · teacher ${TEACHER:-not set} · code $(git log --oneline -1 | cut -c1-40)"
+echo "rebench_mini $STEP · pool $POOL · out $OUT · subset $NAME (n $N, per source $PER_SOURCE, seed $SEED, sources $SOURCES) · tag $TAG attempt $ATTEMPT → $RUN · workers $WORKERS · step limit $STEPS · temperature $TEMP · max tokens $MAX_TOK · api $API · thinking budget $THINK_BUDGET · cache marker $CACHE_CTL · reasoning_effort ${EFFORT:-not sent} · agent network ${NET:-docker default} · pull timeout $PULL_TIMEOUT s · grade workers $GRADE_WORKERS timeout $GRADE_TIMEOUT s network ${GRADE_NET:-docker default} install $GRADE_INSTALL · strip later refs $STRIP_REFS · price ${PRICE:-not given} · free disk $FREE GB (min $MIN_FREE_GB) · teacher ${TEACHER:-not set} · code $(git log --oneline -1 | cut -c1-40)"
 T0=$(date +%s)
 [ -x $PY ] || { echo "no .venv-swe: bash scripts/verified_box.sh setup"; exit 1; }
 disk() { [ "$FREE" -ge "$MIN_FREE_GB" ] || { echo "only $FREE GB free (< $MIN_FREE_GB): nothing started. Unused images: docker image prune -a (asks first)"; exit 1; }; }
 grade() { $PY scripts/rebench_mini.py grade --tasks "$TASKS" --name "$1" --preds "$2" --out "$3" --pool "$POOL" \
-            --workers "$GRADE_WORKERS" --timeout "$GRADE_TIMEOUT" --pull-timeout "$PULL_TIMEOUT" --net "$GRADE_NET"; }
+            --workers "$GRADE_WORKERS" --timeout "$GRADE_TIMEOUT" --pull-timeout "$PULL_TIMEOUT" --net "$GRADE_NET" --install "$GRADE_INSTALL"; }
 case "$STEP" in
 setup)
   docker run --rm hello-world >/dev/null 2>&1 && echo "  docker: ok · $(docker info 2>/dev/null | grep -c Username) login(s) (0 = anonymous pulls: 100 per 6 h per address)" || { echo "docker does not run without sudo here"; exit 1; }
@@ -54,8 +59,10 @@ setup)
   echo "  $(( $(date +%s) - T0 )) s · 📷 every line from 'rebench_mini setup' down" ;;
 check)
   disk; [ -s "$TASKS/all.jsonl" ] || { echo "no $TASKS/all.jsonl: run setup first"; exit 1; }
-  P="${PER_SOURCE:-5}"; [ "$P" = 0 ] && P=5
-  $PY scripts/rebench_mini.py subset --tasks "$TASKS" --name "check$P" --per-source "$P" --seed "$SEED" ${SOURCES:+--sources "$SOURCES"}
+  P="${PER_SOURCE:-5}"; [ "$P" = 0 ] && P=5; IDS=""
+  if [ "${REUSE:-1}" = 1 ] && [ -s "$TASKS/check$P.ids" ]; then cp "$TASKS/check$P.ids" "$TASKS/check$P.prev.ids"; IDS="$TASKS/check$P.prev.ids"; fi
+  echo "  check ids: ${IDS:+the tasks of the earlier check ($(wc -l < "$IDS") ids, REUSE=1) within }sources $SOURCES$([ -z "$IDS" ] && echo ", a new sample (seed $SEED)")"
+  $PY scripts/rebench_mini.py subset --tasks "$TASKS" --name "check$P" --per-source "$P" --seed "$SEED" ${SOURCES:+--sources "$SOURCES"} ${IDS:+--ids "$IDS"}
   for kind in gold empty pool; do grade "check$P" $kind "$OUT/check$P.$kind" 2>&1 | tee "$OUT/check$P.$kind.log" | cut -c1-260; done
   echo "-- git history inside one image per source (a count of commits not reachable from HEAD > 0 = the fix may be readable):"
   $PY - "$TASKS" "$P" <<'PY'
@@ -86,21 +93,24 @@ for k, r in sorted(json.load(open(sys.argv[1])).items()):
     if r.get("label") is not None and r["resolved"] != r["label"]:
         print(f"   {r['source']:8s} {r['instance_id']} · {k} · label {r['label']} ours {r['resolved']} · f2p {r.get('f2p')} p2p {r.get('p2p')} parsed {r.get('parsed')} · {r.get('note', '').strip()}")
 PY
-  echo "-- 3 · one image per source of [$DIAG_SOURCES]: commits on any ref that are later than HEAD (newer > 0 = the fix may be readable):"
-  $PY - "$TASKS" "$CHECK" "$DIAG_SOURCES" <<'PY'
+  echo "-- 3 · one image per source of [$DIAG_SOURCES]: commits on any ref that are later than HEAD, before and after the startup command (scripts/b10_startup.sh, strip $STRIP_REFS) that the run uses; after: newer and unmerged must be 0:"
+  $PY - "$TASKS" "$CHECK" "$DIAG_SOURCES" "$STRIP_REFS" <<'PY'
 import json, subprocess, sys
 rows = [json.loads(l) for l in open(sys.argv[1] + "/all.jsonl")]
 ids = set(open(f"{sys.argv[1]}/{sys.argv[2]}.ids").read().split())
+count = ("d=$(git log -1 --format=%cI); echo LABEL head=$(git rev-parse --short HEAD) newer=$(git log --all --oneline --since=\"$d\" | "
+         "grep -vc \"^$(git rev-parse --short HEAD)\") refs=$(git for-each-ref | wc -l) unmerged=$(git for-each-ref --no-merged HEAD | wc -l) "
+         "tags=$(git tag | wc -l) describe=$(git describe --tags --always 2>/dev/null) size=$(du -sm $(git rev-parse --git-dir) | cut -f1)MB")
 seen = set()
 for r in rows:
-    if r["instance_id"] in ids and r["source"] in sys.argv[3].split() and r["source"] not in seen and not r["skip"]:
+    if r["instance_id"] in ids and r["source"] in sys.argv[3].replace(",", " ").split() and r["source"] not in seen and not r["skip"]:
         seen.add(r["source"])
-        cmd = (f"cd {r['workdir']} && d=$(git log -1 --format=%cI) && echo head=$(git rev-parse --short HEAD) head_date=$d "
-               "newer=$(git log --all --oneline --since=\"$d\" | grep -vc \"^$(git rev-parse --short HEAD)\") "
-               "refs=$(git for-each-ref | wc -l) branches=$(git branch -a | wc -l) tags=$(git tag | wc -l) "
-               "stash=$(git stash list | wc -l) && git for-each-ref --format='%(refname)' | head -6 | tr '\n' ' '")
-        p = subprocess.run(["docker", "run", "--rm", "--entrypoint", "bash", r["image_name"], "-c", cmd], capture_output=True, text=True, timeout=1800)
-        print(f"   {r['source']:8s} {r['instance_id']} · {(p.stdout + p.stderr).strip().replace(chr(10), ' · ')[:420]}")
+        start = open("scripts/b10_startup.sh").read().replace("{{workdir}}", r["workdir"]).replace("__STRIP_REFS__", sys.argv[4])
+        cmd = (f"cd {r['workdir']} && {count.replace('LABEL', 'BEFORE')}; t=$(date +%s); bash -c \"$B10_START\"; echo STARTUP rc=$? $(( $(date +%s) - t )) s; "
+               f"cd /testbed && {count.replace('LABEL', 'AFTER')} lost_commits=$(timeout 300 git fsck --unreachable --no-reflogs 2>/dev/null | grep -c commit)")
+        p = subprocess.run(["docker", "run", "--rm", "--network", "none", "-e", "B10_START=" + start, "--entrypoint", "bash", r["image_name"], "-c", cmd],
+                           capture_output=True, text=True, timeout=1800)
+        print(f"   {r['source']:8s} {r['instance_id']} · {(p.stdout + p.stderr).strip().replace(chr(10), ' · ')[:700]}")
 PY
   echo "  $(( $(date +%s) - T0 )) s · 📷 every line from 'rebench_mini diag' down" ;;
 subset)
@@ -120,7 +130,7 @@ run)
     echo "environment:"; echo "  pull_timeout: $PULL_TIMEOUT"
     if [ -n "$NET" ]; then echo "  run_args: [\"--rm\", \"--network\", \"$NET\"]"; fi
     echo "run:"
-    echo "  env_startup_command: 'if [ \"{{workdir}}\" != /testbed ]; then cd / && rmdir /testbed 2>/dev/null; ln -sfn {{workdir}} /testbed; [ \"\$(readlink /testbed)\" = \"{{workdir}}\" ]; fi'"
+    echo "  env_startup_command: |"; sed -e "s/__STRIP_REFS__/$STRIP_REFS/" -e 's/^/    /' scripts/b10_startup.sh
     echo "model:"; echo "  model_name: \"$MN\""; echo "  cost_tracking: \"ignore_errors\""
     if [ "$CACHE_CTL" = off ]; then echo "  set_cache_control: null"; fi
     echo "  model_kwargs:"

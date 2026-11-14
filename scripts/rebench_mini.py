@@ -9,7 +9,7 @@ one grader for all three sources. Called by scripts/rebench_mini.sh (run it with
     subset  --tasks <out> --name pilot30 --n 30 [--per-source 0] [--seed 0] [--sources a,b]
             a stratified sample → <out>/<name>/data/test-00000-of-00001.parquet (what `mini-extra swebench --subset <dir>
             --split test` loads) + <out>/<name>.ids
-    grade   --tasks <out> --name <subset> --preds gold|empty|pool|<preds.json> --out <dir> [--workers 4]
+    grade   --tasks <out> --name <subset> --preds gold|empty|pool|<preds.json> --out <dir> [--workers 4] [--install auto]
             every patch applied in a fresh container of the task's image, the tests run, the log parsed → <dir>/report.json
             (`pool` = the pool's own patches for these tasks, compared with the pool's `resolved` labels)
     report  --run <mini output dir> [--grade <dir>]        the pilot line: exits, calls, thoughts, tokens, wall time
@@ -19,7 +19,10 @@ Grading, per source (ported from the three upstream harnesses, read 2026-11-13; 
     apply the patch (git apply → git apply --reject → patch --fuzz=5) · `git checkout <base> -- <test files of the test
     patch that exist at base>` · apply the test patch · `<test_cmd> <files of the test patch, without data files>` ·
     parse the pytest -rA lines · resolved = every FAIL_TO_PASS and PASS_TO_PASS test is PASSED or XFAIL.
-    SWE-rebench: test_cmd and log_parser come from the row's install_config. SWE-Gym: test_cmd per repo (GYM_TEST_CMD
+    SWE-rebench: test_cmd and log_parser come from the row's install_config. Its images do not always hold the project
+    installed (box 2026-11-13: 2 of 5 images; the pool's own runs met the same import errors, and its labels count those
+    patches as resolved), so `--install auto` gives a patch that is not resolved, and whose log parsed nothing or shows
+    an import error, a second pass in the same container after the row's install command (needs the network). SWE-Gym: test_cmd per repo (GYM_TEST_CMD
     below, from the fork's constants; the fork also re-runs the repo's install command before the tests: NOT done here,
     so a task whose gold patch needs a rebuild fails the gold check and is left out).
   SWE-rebench-V2 (SWE-rebench/SWE-rebench-V2 scripts/eval.py): in /<repo name>: `git reset --hard HEAD` · `git apply
@@ -119,7 +122,8 @@ def cmd_tasks(a):
                    "pool_attempts": att, "pool_resolved": res, "skip": ""}
             if src == "rebench":
                 row.update(image_name=r.get("image_name") or r.get("docker_image") or "", workdir="/testbed",
-                           test_cmd=ic.get("test_cmd") or "", log_parser=ic.get("log_parser") or "")
+                           test_cmd=ic.get("test_cmd") or "", log_parser=ic.get("log_parser") or "",
+                           install=ic.get("install") or "")
             elif src == "v2":
                 tc = ic.get("test_cmd") or ""
                 row.update(image_name=r.get("image_name") or "", workdir="/" + r["repo"].split("/")[1],
@@ -154,6 +158,7 @@ def cmd_tasks(a):
         print(f"  {src}: " + " · ".join(f"{k[1]} {v}" for k, v in sorted(stats.items()) if k[0] == src)
               + " · parsers " + json.dumps({k[1]: v for k, v in parsers.items() if k[0] == src}))
     ok = [r for r in rows if not r["skip"]]
+    print(f"  rebench rows with an install command (used by grade --install): {sum(bool(r.get('install')) for r in rows)}")
     print(f"== {len(rows)} tasks written to {a.out}/all.jsonl · usable {len(ok)} · with ≥ 1 resolved run in the pool "
           f"{sum(r['pool_resolved'] > 0 for r in ok)} · repos {len({r['repo'] for r in ok})}")
 
@@ -166,19 +171,19 @@ def cmd_subset(a):
     import pyarrow as pa
     import pyarrow.parquet as pq
     rows = [r for r in load_tasks(a.tasks) if not r["skip"]]
-    if a.sources:
-        rows = [r for r in rows if r["source"] in a.sources.split(",")]
+    srcs = [s for s in re.split(r"[,\s]+", a.sources.strip()) if s and s != "all"]
+    if srcs:
+        rows = [r for r in rows if r["source"] in srcs]
     if a.ids:
         keep = set(open(a.ids).read().split())
         rows = [r for r in rows if r["instance_id"] in keep]
-    rng = random.Random(a.seed)
     by = collections.defaultdict(list)
     for r in rows:
         by[r["source"]].append(r)
     pick = []
     for src, rs in sorted(by.items()):
         rs.sort(key=lambda r: r["instance_id"])
-        rng.shuffle(rs)
+        random.Random(f"{a.seed}:{src}").shuffle(rs)       # per source: the sample of a source does not depend on --sources
         k = a.per_source or (round(a.n * len(rs) / len(rows)) if a.n else len(rs))
         pick += rs[:k]
     pick.sort(key=lambda r: r["instance_id"])
@@ -187,7 +192,7 @@ def cmd_subset(a):
     cols = ("instance_id", "problem_statement", "image_name", "workdir", "source", "repo")
     pq.write_table(pa.table({c: [r[c] for r in pick] for c in cols}), os.path.join(d, "test-00000-of-00001.parquet"))
     open(os.path.join(a.tasks, a.name + ".ids"), "w").write("\n".join(r["instance_id"] for r in pick) + "\n")
-    print(f"subset {a.name} · seed {a.seed} · n {a.n} · per source {a.per_source} · sources {a.sources or 'all'} → {len(pick)} "
+    print(f"subset {a.name} · seed {a.seed} · n {a.n} · per source {a.per_source} · sources {','.join(srcs) or 'all'} → {len(pick)} "
           f"tasks ({dict(collections.Counter(r['source'] for r in pick))}) · {os.path.join(a.tasks, a.name)} (mini: --subset "
           f"this directory, --split test)")
 
@@ -229,7 +234,9 @@ def norm(name):
     return name.strip()
 
 
-def grade_script(row, has_patch):
+def grade_script(row, has_patch, install=False):
+    """install=True: the second pass in the same container (patches are already applied): the row's install command, then
+    the tests again."""
     q = lambda s: "'" + s.replace("'", "'\\''") + "'"  # noqa: E731
     tp = row["test_patch"]
     if row["source"] == "v2":
@@ -244,15 +251,18 @@ def grade_script(row, has_patch):
     if row["repo"] == "python/mypy":                                  # the fork runs the named data-driven cases
         cases = re.findall(r"\[case ([^\]]+)\]", tp)
         cmd, files = f"{cmd} {q(' or '.join(cases))}", []
-    return "\n".join([
-        "for f in /opt/conda/etc/profile.d/conda.sh /opt/miniconda3/etc/profile.d/conda.sh; do [ -f $f ] && . $f; done",
-        "conda activate testbed 2>/dev/null || echo B10_NO_CONDA_ENV", "cd /testbed || echo B10_NO_WORKDIR",
+    head = ["for f in /opt/conda/etc/profile.d/conda.sh /opt/miniconda3/etc/profile.d/conda.sh; do [ -f $f ] && . $f; done",
+            "conda activate testbed 2>/dev/null || echo B10_NO_CONDA_ENV", "cd /testbed || echo B10_NO_WORKDIR"]
+    test = ["echo B10_START", f"{cmd} {' '.join(q(f) for f in files)}", "echo B10_END rc=$?"]
+    if install:
+        return "\n".join(head + ["echo B10_INSTALL", f"( {row['install']} ) > /b10/install.log 2>&1; echo B10_INSTALL_RC=$?",
+                                 "tail -n 6 /b10/install.log"] + test)
+    return "\n".join(head + [
         "git config --global --add safe.directory /testbed",
         ("git apply -v /b10/patch.diff || git apply -v --reject /b10/patch.diff || patch --batch --fuzz=5 -p1 -i /b10/patch.diff "
          "|| echo B10_PATCH_FAILED") if has_patch else "echo B10_EMPTY_PATCH",
         f"git checkout {row['base_commit']} -- {' '.join(q(p) for p in reset)}" if reset else ":",
-        "git apply -v /b10/test.diff || echo B10_TEST_PATCH_FAILED", "echo B10_START",
-        f"{cmd} {' '.join(q(f) for f in files)}", "echo B10_END rc=$?"])
+        "git apply -v /b10/test.diff || echo B10_TEST_PATCH_FAILED"] + test)
 
 
 def grade_one(row, patch, a):
@@ -266,13 +276,21 @@ def grade_one(row, patch, a):
         net = ["--network", a.net] if a.net else []
         try:
             p = subprocess.run(["docker", "run", "-d", "--rm", "--name", name, *net, "--entrypoint", "sleep", row["image_name"],
-                                str(a.timeout + 600)], capture_output=True, text=True, timeout=a.pull_timeout)
+                                str(2 * a.timeout + 600)], capture_output=True, text=True, timeout=a.pull_timeout)
             if p.returncode != 0:
                 res["note"] = "image: " + (p.stderr or p.stdout).strip().splitlines()[-1][:160]
                 return res
             subprocess.run(["docker", "cp", tmp + "/.", f"{name}:/b10"], capture_output=True, timeout=120)
             p = subprocess.run(["docker", "exec", name, "bash", "/b10/run.sh"], capture_output=True, timeout=a.timeout)
             log = (p.stdout + p.stderr).decode("utf-8", "replace")
+            first = score(row, log)
+            broken = not first["parsed"] or any(m in log for m in ("ModuleNotFoundError", "ImportError"))
+            if row.get("install") and (a.install == "always" or (a.install == "auto" and not first["resolved"] and broken)):
+                open(os.path.join(tmp, "run2.sh"), "w").write(grade_script(row, has_patch, install=True) + "\n")
+                subprocess.run(["docker", "cp", tmp + "/run2.sh", f"{name}:/b10/run2.sh"], capture_output=True, timeout=120)
+                p = subprocess.run(["docker", "exec", name, "bash", "/b10/run2.sh"], capture_output=True, timeout=a.timeout)
+                log += "\n=== B10_SECOND_PASS (after the install command) ===\n" + (p.stdout + p.stderr).decode("utf-8", "replace")
+                res["installed"] = True
         except subprocess.TimeoutExpired:
             res["note"] = "timeout"
             return res
@@ -280,17 +298,25 @@ def grade_one(row, patch, a):
             subprocess.run(["docker", "rm", "-f", name], capture_output=True)
     os.makedirs(os.path.join(a.out, "logs"), exist_ok=True)
     open(os.path.join(a.out, "logs", row["instance_id"] + ".log"), "w").write(log)
+    res.update(score(row, log), s=round(time.time() - t0))
+    if res.get("installed"):
+        rc = re.findall(r"B10_INSTALL_RC=(\d+)", log)
+        res["note"] = (res["note"] + f" installed(rc {rc[-1] if rc else '?'})").strip()
+    return res
+
+
+def score(row, log):
+    """The verdict from a grading log; with a second pass in the log, the tests of the last pass count."""
     marks = [m for m in ("B10_NO_WORKDIR", "B10_NO_CONDA_ENV", "B10_PATCH_FAILED", "B10_TEST_PATCH_FAILED") if m in log]
-    body = log.split("B10_START", 1)[1] if "B10_START" in log else ""
+    body = log.rsplit("B10_START", 1)[1] if "B10_START" in log else ""
     st = {norm(k): v for k, v in parse_log(body, row["log_parser"]).items()}
     good = ("PASSED",) if row["source"] == "v2" else ("PASSED", "XFAIL")
     f2p, p2p = [norm(t) for t in row["FAIL_TO_PASS"]], [norm(t) for t in row["PASS_TO_PASS"]]
     fp, pp = sum(st.get(t) in good for t in f2p), sum(st.get(t) in good for t in p2p)
-    res.update(f2p=f"{fp}/{len(f2p)}", p2p=f"{pp}/{len(p2p)}", parsed=len(st), s=round(time.time() - t0),
-               note=" ".join(m[4:].lower() for m in marks) + ("" if "B10_END" in log else " no_end"),
-               resolved=bool(f2p) and fp == len(f2p) and pp == len(p2p) and "B10_PATCH_FAILED" not in log,
-               exact=sorted(k for k, v in st.items() if v == "PASSED") == sorted(set(f2p + p2p)))
-    return res
+    return dict(f2p=f"{fp}/{len(f2p)}", p2p=f"{pp}/{len(p2p)}", parsed=len(st),
+                note=" ".join(m[4:].lower() for m in marks) + ("" if "B10_END" in body else " no_end"),
+                resolved=bool(f2p) and fp == len(f2p) and pp == len(p2p) and "B10_PATCH_FAILED" not in log,
+                exact=sorted(k for k, v in st.items() if v == "PASSED") == sorted(set(f2p + p2p)))
 
 
 def cmd_grade(a):
@@ -311,7 +337,9 @@ def cmd_grade(a):
         jobs = [(i, rows[i], (preds.get(i) or {}).get("model_patch") or "", None) for i in ids if i in preds]
     os.makedirs(a.out, exist_ok=True)
     print(f"grade · tasks {a.tasks} · subset {a.name} ({len(ids)} ids) · preds {a.preds} → {len(jobs)} patches · workers {a.workers} "
-          f"· timeout {a.timeout} s · pull timeout {a.pull_timeout} s · network {a.net or 'docker default'} · out {a.out}")
+          f"· timeout {a.timeout} s · pull timeout {a.pull_timeout} s · network {a.net or 'docker default'} · install {a.install} (auto = a second pass after "
+          f"the row's install command when the first pass is not resolved and parsed nothing or shows an import error; needs the "
+          f"network) · rows with an install command {sum(bool(r.get('install')) for _, r, _, _ in jobs)} · out {a.out}")
     out, t0 = {}, time.time()
     with concurrent.futures.ThreadPoolExecutor(a.workers) as ex:
         futs = {ex.submit(grade_one, row, patch, a): (key, label) for key, row, patch, label in jobs}
@@ -332,7 +360,9 @@ def cmd_grade(a):
         line = (f"== {a.preds} · {src}: resolved {sum(r['resolved'] for r in rs)} / {len(rs)} · image or timeout errors "
                 f"{sum(r['note'].startswith(('image', 'timeout')) for r in rs)} · patch did not apply "
                 f"{sum('patch_failed' in r['note'] and 'test_patch_failed' not in r['note'] for r in rs)} · test patch did not apply "
-                f"{sum('test_patch_failed' in r['note'] for r in rs)} · nothing parsed {sum(not r.get('parsed') for r in rs)}")
+                f"{sum('test_patch_failed' in r['note'] for r in rs)} · nothing parsed {sum(not r.get('parsed') for r in rs)} · second pass "
+                f"after the install command {sum(bool(r.get('installed')) for r in rs)} (resolved "
+                f"{sum(bool(r.get('installed')) and r['resolved'] for r in rs)})")
         if a.preds == "pool":
             lab = [r for r in rs if r["label"] is not None]
             line += (f" · agrees with the pool's label {sum(r['resolved'] == r['label'] for r in lab)} / {len(lab)} (label true → ours "
@@ -397,6 +427,7 @@ def main():
     s.add_argument("--preds", required=True); s.add_argument("--out", required=True); s.add_argument("--pool", default="")
     s.add_argument("--workers", type=int, default=4); s.add_argument("--timeout", type=int, default=1800)
     s.add_argument("--pull-timeout", type=int, default=1800); s.add_argument("--net", default="")
+    s.add_argument("--install", default="auto", choices=("auto", "always", "never"))
     s = sub.add_parser("report"); s.add_argument("--run", required=True); s.add_argument("--grade", default="")
     s.add_argument("--max-ctx", type=int, default=30720); s.add_argument("--price", default="")
     a = ap.parse_args()
