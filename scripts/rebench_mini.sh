@@ -5,6 +5,8 @@
 #   bash scripts/rebench_mini.sh check                 # PER_SOURCE=5 tasks per source: gold patch, empty patch and the
 #                                                      # pool's own patches through our grader (pulls ~15 images) → 📷
 #   NAME=pilot30 N=30 bash scripts/rebench_mini.sh subset
+#   bash scripts/rebench_mini.sh diag                  # after a check: the logs without result lines + later commits
+#                                                      # readable in an image (DIAG_SOURCES=rebench; add gym: 10+ GB)
 #   TAG=glm NAME=pilot30 bash scripts/rebench_mini.sh run      # PAID: needs GATEWAY_BASE_URL, GATEWAY_API_KEY, TEACHER
 #   TAG=glm NAME=pilot30 bash scripts/rebench_mini.sh grade
 #   TAG=glm NAME=pilot30 bash scripts/rebench_mini.sh report
@@ -14,23 +16,30 @@
 # environment is offline; the pool's docker flags are not published; NET="" = docker's default network).
 # Knobs (all printed): POOL (the MetaCurate parquet shards) · OUT (runs/b10) · NAME (task subset) · N / PER_SOURCE / SEED /
 # SOURCES (subset) · TAG · ATTEMPT (1; the output is $OUT/$TAG/$NAME.a$ATTEMPT) · WORKERS (8) · STEPS · TEMP · MAX_TOK ·
-# EFFORT ("" = reasoning_effort not sent) · NET · PULL_TIMEOUT (1800 s) · GRADE_WORKERS (4) · GRADE_TIMEOUT (1800 s) ·
+# API (messages = the Anthropic format, POST <base>/v1/messages, model anthropic/$TEACHER; chat = the OpenAI format, model
+# openai/$TEACHER; env GATEWAY_API, default messages) · THINK_BUDGET (0 = not sent; messages only: thinking budget_tokens) ·
+# CACHE_CTL (default = mini's own rule, which marks the last message for caching when the model name contains
+# "anthropic"; off = no cache marker) · EFFORT ("" = reasoning_effort not sent; chat only) · NET · PULL_TIMEOUT (1800 s) · GRADE_WORKERS (4) · GRADE_TIMEOUT (1800 s) ·
 # GRADE_NET ("" = docker default) · PRICE ("in,cached,out" $ per M tokens, report only) · MIN_FREE_GB (50).
 # V2 images keep the repository at /<repo name>, not /testbed: a startup command links /testbed to it, so the prompt
 # and mini's working directory stay the same for all three sources. The address of the gateway is written to
 # $OUT/$TAG/*.model.yaml and into every trajectory's config (runs/ is gitignored); the key only lives in the environment.
+# Address and key: GATEWAY_BASE_URL / GATEWAY_API_KEY, else ANTHROPIC_BASE_URL and ANTHROPIC_AUTH_TOKEN / ANTHROPIC_API_KEY
+# (the names used are printed, never the values). The address may end in /v1 or not.
 set -uo pipefail
 cd "$(dirname "$0")/.."
-STEP="${1:?setup|check|subset|run|grade|report}"
+STEP="${1:?setup|check|diag|subset|run|grade|report}"
 VS=.venv-swe/bin; PY=$VS/python
 POOL="${POOL:-runs/sft/mc/raw}"; OUT="${OUT:-runs/b10}"; NAME="${NAME:-pilot30}"; N="${N:-30}"; PER_SOURCE="${PER_SOURCE:-0}"
 SEED="${SEED:-0}"; SOURCES="${SOURCES:-}"; TAG="${TAG:-glm}"; ATTEMPT="${ATTEMPT:-1}"; WORKERS="${WORKERS:-8}"
 STEPS="${STEPS:-250}"; TEMP="${TEMP:-0.7}"; MAX_TOK="${MAX_TOK:-4096}"; EFFORT="${EFFORT:-}"; NET="${NET-none}"
 PULL_TIMEOUT="${PULL_TIMEOUT:-1800}"; GRADE_WORKERS="${GRADE_WORKERS:-4}"; GRADE_TIMEOUT="${GRADE_TIMEOUT:-1800}"
 GRADE_NET="${GRADE_NET:-}"; PRICE="${PRICE:-}"; MIN_FREE_GB="${MIN_FREE_GB:-50}"
+API="${API:-${GATEWAY_API:-messages}}"; THINK_BUDGET="${THINK_BUDGET:-0}"; CACHE_CTL="${CACHE_CTL:-default}"
+DIAG_SOURCES="${DIAG_SOURCES:-rebench}"; CHECK="${CHECK:-check5}"
 TASKS=$OUT/tasks; RUN=$OUT/$TAG/$NAME.a$ATTEMPT
 FREE=$(df -BG --output=avail . 2>/dev/null | tail -1 | tr -dc 0-9); FREE="${FREE:-0}"
-echo "rebench_mini $STEP · pool $POOL · out $OUT · subset $NAME (n $N, per source $PER_SOURCE, seed $SEED, sources ${SOURCES:-all}) · tag $TAG attempt $ATTEMPT → $RUN · workers $WORKERS · step limit $STEPS · temperature $TEMP · max tokens $MAX_TOK · reasoning_effort ${EFFORT:-not sent} · agent network ${NET:-docker default} · pull timeout $PULL_TIMEOUT s · grade workers $GRADE_WORKERS timeout $GRADE_TIMEOUT s network ${GRADE_NET:-docker default} · price ${PRICE:-not given} · free disk $FREE GB (min $MIN_FREE_GB) · teacher ${TEACHER:-not set} · code $(git log --oneline -1 | cut -c1-40)"
+echo "rebench_mini $STEP · pool $POOL · out $OUT · subset $NAME (n $N, per source $PER_SOURCE, seed $SEED, sources ${SOURCES:-all}) · tag $TAG attempt $ATTEMPT → $RUN · workers $WORKERS · step limit $STEPS · temperature $TEMP · max tokens $MAX_TOK · api $API · thinking budget $THINK_BUDGET · cache marker $CACHE_CTL · reasoning_effort ${EFFORT:-not sent} · agent network ${NET:-docker default} · pull timeout $PULL_TIMEOUT s · grade workers $GRADE_WORKERS timeout $GRADE_TIMEOUT s network ${GRADE_NET:-docker default} · price ${PRICE:-not given} · free disk $FREE GB (min $MIN_FREE_GB) · teacher ${TEACHER:-not set} · code $(git log --oneline -1 | cut -c1-40)"
 T0=$(date +%s)
 [ -x $PY ] || { echo "no .venv-swe: bash scripts/verified_box.sh setup"; exit 1; }
 disk() { [ "$FREE" -ge "$MIN_FREE_GB" ] || { echo "only $FREE GB free (< $MIN_FREE_GB): nothing started. Unused images: docker image prune -a (asks first)"; exit 1; }; }
@@ -64,11 +73,47 @@ for r in rows:
         print(f"   {r['source']:8s} {(p.stdout + p.stderr).strip().replace(chr(10), ' · ')[:300]}")
 PY
   echo "  read: gold = resolved for every task, empty = 0 resolved, pool = agrees with the pool's labels. $(( $(date +%s) - T0 )) s · 📷 every line from 'rebench_mini check' down" ;;
+diag)
+  echo "-- 1 · logs of $CHECK.gold without a result line (the markers, the first lines after the test start, the end):"
+  for f in $(grep -L -E "^(PASSED|FAILED|ERROR) " "$OUT/$CHECK.gold"/logs/*.log 2>/dev/null); do
+    echo "=== $(basename "$f") · $(wc -l < "$f") lines"; grep -n "B10_" "$f" | head -8 | cut -c1-200
+    sed -n '/B10_START/,$p' "$f" | head -25 | cut -c1-220; echo "   …"; tail -n 12 "$f" | cut -c1-220
+  done
+  echo "-- 2 · the pool's patches whose verdict differs from the pool's label:"
+  $PY - "$OUT/$CHECK.pool/report.json" <<'PY'
+import json, sys
+for k, r in sorted(json.load(open(sys.argv[1])).items()):
+    if r.get("label") is not None and r["resolved"] != r["label"]:
+        print(f"   {r['source']:8s} {r['instance_id']} · {k} · label {r['label']} ours {r['resolved']} · f2p {r.get('f2p')} p2p {r.get('p2p')} parsed {r.get('parsed')} · {r.get('note', '').strip()}")
+PY
+  echo "-- 3 · one image per source of [$DIAG_SOURCES]: commits on any ref that are later than HEAD (newer > 0 = the fix may be readable):"
+  $PY - "$TASKS" "$CHECK" "$DIAG_SOURCES" <<'PY'
+import json, subprocess, sys
+rows = [json.loads(l) for l in open(sys.argv[1] + "/all.jsonl")]
+ids = set(open(f"{sys.argv[1]}/{sys.argv[2]}.ids").read().split())
+seen = set()
+for r in rows:
+    if r["instance_id"] in ids and r["source"] in sys.argv[3].split() and r["source"] not in seen and not r["skip"]:
+        seen.add(r["source"])
+        cmd = (f"cd {r['workdir']} && d=$(git log -1 --format=%cI) && echo head=$(git rev-parse --short HEAD) head_date=$d "
+               "newer=$(git log --all --oneline --since=\"$d\" | grep -vc \"^$(git rev-parse --short HEAD)\") "
+               "refs=$(git for-each-ref | wc -l) branches=$(git branch -a | wc -l) tags=$(git tag | wc -l) "
+               "stash=$(git stash list | wc -l) && git for-each-ref --format='%(refname)' | head -6 | tr '\n' ' '")
+        p = subprocess.run(["docker", "run", "--rm", "--entrypoint", "bash", r["image_name"], "-c", cmd], capture_output=True, text=True, timeout=1800)
+        print(f"   {r['source']:8s} {r['instance_id']} · {(p.stdout + p.stderr).strip().replace(chr(10), ' · ')[:420]}")
+PY
+  echo "  $(( $(date +%s) - T0 )) s · 📷 every line from 'rebench_mini diag' down" ;;
 subset)
   $PY scripts/rebench_mini.py subset --tasks "$TASKS" --name "$NAME" --n "$N" --per-source "$PER_SOURCE" --seed "$SEED" ${SOURCES:+--sources "$SOURCES"} ;;
 run)
   disk
-  : "${GATEWAY_BASE_URL:?export GATEWAY_BASE_URL first}" "${GATEWAY_API_KEY:?export GATEWAY_API_KEY first}" "${TEACHER:?export TEACHER first}"
+  : "${TEACHER:?export TEACHER first}"
+  BN=""; for v in GATEWAY_BASE_URL ANTHROPIC_BASE_URL; do [ -z "$BN" ] && [ -n "${!v:-}" ] && BN=$v; done
+  KN=""; for v in GATEWAY_API_KEY ANTHROPIC_AUTH_TOKEN ANTHROPIC_API_KEY; do [ -z "$KN" ] && [ -n "${!v:-}" ] && KN=$v; done
+  [ -n "$BN" ] && [ -n "$KN" ] || { echo "no gateway address or key in the environment (address: ${BN:-none}, key: ${KN:-none}): nothing started"; exit 1; }
+  BASE="${!BN}"; KEY="${!KN}"; BASE="${BASE%/}"; BASE="${BASE%/chat/completions}"; BASE="${BASE%/messages}"; BASE="${BASE%/v1}"; BASE="${BASE%/}"
+  case "$API" in messages) MN="anthropic/$TEACHER"; AB="$BASE" ;; chat) MN="openai/$TEACHER"; AB="$BASE/v1" ;; *) echo "API must be messages or chat"; exit 1 ;; esac
+  echo "  gateway: address from \$$BN, key from \$$KN (values not printed) · model $MN"
   [ -d "$TASKS/$NAME/data" ] || { echo "no subset $NAME: NAME=$NAME N=… bash scripts/rebench_mini.sh subset"; exit 1; }
   mkdir -p "$OUT/$TAG"; CFG="$OUT/$TAG/$NAME.a$ATTEMPT.model.yaml"; ( umask 077; : > "$CFG" )
   { echo "agent:"; echo "  step_limit: $STEPS"; echo "  instance_template: |"; sed 's/^/    /' scripts/b10_instance_template.txt; echo
@@ -76,12 +121,15 @@ run)
     if [ -n "$NET" ]; then echo "  run_args: [\"--rm\", \"--network\", \"$NET\"]"; fi
     echo "run:"
     echo "  env_startup_command: 'if [ \"{{workdir}}\" != /testbed ]; then cd / && rmdir /testbed 2>/dev/null; ln -sfn {{workdir}} /testbed; [ \"\$(readlink /testbed)\" = \"{{workdir}}\" ]; fi'"
-    echo "model:"; echo "  model_name: \"openai/$TEACHER\""; echo "  cost_tracking: \"ignore_errors\""; echo "  model_kwargs:"
-    echo "    api_base: \"$GATEWAY_BASE_URL\""; echo "    temperature: $TEMP"; echo "    max_tokens: $MAX_TOK"; echo "    drop_params: true"
-    if [ -n "$EFFORT" ]; then echo "    reasoning_effort: \"$EFFORT\""; fi; } >> "$CFG"
+    echo "model:"; echo "  model_name: \"$MN\""; echo "  cost_tracking: \"ignore_errors\""
+    if [ "$CACHE_CTL" = off ]; then echo "  set_cache_control: null"; fi
+    echo "  model_kwargs:"
+    echo "    api_base: \"$AB\""; echo "    temperature: $TEMP"; echo "    max_tokens: $MAX_TOK"; echo "    drop_params: true"
+    if [ "$API" = messages ] && [ "$THINK_BUDGET" -gt 0 ]; then echo "    thinking: {type: enabled, budget_tokens: $THINK_BUDGET}"; fi
+    if [ "$API" = chat ] && [ -n "$EFFORT" ]; then echo "    reasoning_effort: \"$EFFORT\""; fi; } >> "$CFG"
   echo "  config: swebench.yaml + $CFG ($(wc -l < "$CFG") lines; holds the gateway address, not the key) · log $RUN.run.log"
-  OPENAI_API_KEY="$GATEWAY_API_KEY" MSWEA_COST_TRACKING=ignore_errors $VS/mini-extra swebench --subset "$TASKS/$NAME" --split test \
-    -m "openai/$TEACHER" -c swebench.yaml -c "$CFG" -w "$WORKERS" -o "$RUN" > "$RUN.run.log" 2>&1
+  OPENAI_API_KEY="$KEY" ANTHROPIC_API_KEY="$KEY" MSWEA_COST_TRACKING=ignore_errors $VS/mini-extra swebench --subset "$TASKS/$NAME" --split test \
+    -m "$MN" -c swebench.yaml -c "$CFG" -w "$WORKERS" -o "$RUN" > "$RUN.run.log" 2>&1
   echo "  mini exit $? · predictions $($PY -c "import json,sys; print(len(json.load(open(sys.argv[1]))))" "$RUN/preds.json" 2>/dev/null || echo 0) · trajectories $(ls "$RUN"/*/*.traj.json 2>/dev/null | wc -l) · $(( $(date +%s) - T0 )) s"
   ls "$RUN"/exit_statuses_*.yaml >/dev/null 2>&1 && tail -n 25 "$(ls -t "$RUN"/exit_statuses_*.yaml | head -1)" | cut -c1-160
   echo "  next: TAG=$TAG NAME=$NAME ATTEMPT=$ATTEMPT bash scripts/rebench_mini.sh grade" ;;

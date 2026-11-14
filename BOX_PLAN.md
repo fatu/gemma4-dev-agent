@@ -41,7 +41,28 @@ dropped too.
 
 ---
 
-## B-10 · Our own MetaCurate-style data for Gemma: teacher trajectories from GLM-5.3 through an OpenAI-compatible gateway (plan 2026-11-13, revised the same day: generation settings as the paper, GLM-5.3 only, the official rule logic) — ▶ step 0 (gateway check, a few cents) and step 1 (`setup`, `check`: no tokens) are written: run both, 📷
+## B-10 · Our own MetaCurate-style data for Gemma: teacher trajectories from GLM-5.3 through an OpenAI-compatible gateway (plan 2026-11-13, revised the same day: generation settings as the paper, GLM-5.3 only, the official rule logic) — step 1 `setup` ✓ · `check` ✓ for SWE-rebench-V2 only (2026-11-13) · ▶ **now on the box: the three commands under "On the box now" below**, 📷
+
+**On the box now (2026-11-13, after the first `check`; no tokens except a few cents for the probe).**
+```
+cd gemma4-dev-agent && git pull && git log --oneline -1
+bash scripts/rebench_mini.sh diag                    # 1 why two SWE-rebench logs have no result lines · 2 the patches whose
+                                                     #   verdict differs from the pool's label · 3 later commits in an image → 📷
+.venv-swe/bin/python scripts/teacher_probe.py        # step 0, the gateway in the Anthropic format (POST <base>/v1/messages) → 📷
+```
+`diag` reads the logs the first `check` left in `runs/b10/check5.*` and pulls one SWE-rebench image again (~1.3 GB);
+`DIAG_SOURCES="rebench gym" bash scripts/rebench_mini.sh diag` adds one SWE-Gym image (10 GB or more: only with the disk
+free). The probe needs the teacher's name and the gateway's address and key in the environment of that shell:
+`TEACHER=<the gateway's name for GLM-5.3>` plus either `GATEWAY_BASE_URL` / `GATEWAY_API_KEY` or the Anthropic-style
+names `ANTHROPIC_BASE_URL` and `ANTHROPIC_AUTH_TOKEN` / `ANTHROPIC_API_KEY`; it prints which names it used, never the
+values. If they live in a shell profile, start the probe from a shell that has loaded it; do not copy the values into a
+command line, a script or a file under git. A 404 in turn 1 = the gateway does not serve this format (then
+`--api chat`). Reasoning NOT RETURNED → once more with `--thinking-budget 2000`.
+**Open after the first `check` (2026-11-13):** SWE-rebench: 2 of 5 tasks give no parsable test log (the grading steps
+were re-read against the harness: the same; the logs decide) · SWE-Gym: images of 10–17 GB each, commits outside HEAD's
+history in the image, 2 of 15 labels differ → proposed: leave SWE-Gym out (194 tasks; 1,221 remain), the user decides ·
+SWE-rebench images also hold commits outside HEAD's history (4,948 vs 3,065): `diag` shows whether any is later than the
+task's commit; if so they are removed in the container before the agent starts.
 
 **Why.** B-9 part 2 tests the public DeepSeek V4 Pro pool. B-10 makes the same kind of data with teachers we can call,
 shaped for Gemma from the start, and asks whether the teacher matters for Gemma (DSv4Pro vs GLM-5.3 on the
@@ -64,27 +85,21 @@ B-9 part 2's training (shared disk: the chunked image deletion of `verified_box.
 **Teacher.** GLM-5.3 only. Background (web, 2026-11-13): no public comparison of the candidate teachers as teachers; a
 controlled study on terminal tasks found the weakest of its teachers gave the best students, so benchmark rank is not a
 selection criterion; the licence text of GLM-5.3 has no clause on outputs (the gateway's own terms: the user checks).
-**Secrets.** `GATEWAY_BASE_URL`, `GATEWAY_API_KEY` and `TEACHER=<gateway model name>` are typed by the user on the box;
-never echoed, never written to a file under git. mini's model config: `openai/$TEACHER`, `api_base: $GATEWAY_BASE_URL`.
+**Secrets and protocol.** The gateway is used in the Anthropic format (user 2026-11-13: "改成兼容 /v1/messages"): POST
+`<base>/v1/messages`, mini's model config `anthropic/$TEACHER` with `api_base` = the address without `/v1` (litellm adds
+`/v1/messages` itself; checked on the laptop against a stand-in server). `API=chat` keeps the OpenAI format
+(`openai/$TEACHER`). Address, key and `TEACHER` come from the environment on the box; never echoed, never written to a
+file under git.
 
 **Step 0 · Gateway check (box, 5 min, a few cents).** New `scripts/teacher_probe.py`: one chat call with mini's `bash`
 tool for the teacher. Prints: tool call returned (yes / no, how many) · reasoning returned and under which field
 (`reasoning_content` / `reasoning` / thinking blocks) · usage (prompt, cached, completion tokens) · latency. If the
 reasoning does not come back: stop + photo (thought-less data is the canary failure mode).
-Written and tested against a local stand-in (2026-11-13). On the box, after typing the three values (not in a script, not
-in a file under git; put a space before each `export` so the shell history does not keep it if `HISTCONTROL` ignores
-space-led lines):
-```
-cd gemma4-dev-agent && git pull && git log --oneline -1
- export GATEWAY_BASE_URL=…   # ends in /v1
- export GATEWAY_API_KEY=…
- export TEACHER=…            # the gateway's name for GLM-5.3
-.venv-swe/bin/python scripts/teacher_probe.py
-```
-Three turns with canned tool results (nothing is executed), then one call through litellm (the route mini uses). 📷 every
-line. `RESULT go` = a tool call in every turn and reasoning returned in at least two of three. If the reasoning is NOT
-RETURNED, try once with `--effort high`, then with the gateway's own thinking switch via `--extra '{"…": …}'`; still
-nothing → stop + photo. If "history with reasoning accepted" prints NO, say so with the photo: step 1's config then has to
+Rewritten for the Anthropic format and tested against local stand-in servers in both formats, the litellm route
+included (2026-11-13); the command is under "On the box now" above. Three turns with canned tool results (nothing is
+executed), then one call through litellm (the route mini uses). 📷 every line. `RESULT go` = a tool call in every turn
+and reasoning (thinking blocks) returned in at least two of three. If the reasoning is NOT RETURNED, try once with
+`--thinking-budget 2000`, then with the gateway's own switch via `--extra '{"…": …}'`; still nothing → stop + photo. If "history with reasoning accepted" prints NO, say so with the photo: step 1's config then has to
 drop the reasoning from the history.
 
 **Step 1 · The task set in mini-swe-agent, and the grader (box, no tokens, ~30–60 min).** Written 2026-11-13:
