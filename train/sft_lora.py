@@ -197,10 +197,28 @@ def main():
             labels = torch.where(labels == -100, labels, labels % V)
         tgt = labels[0, 1:]
         keep = (tgt != -100).nonzero(as_tuple=True)[0]
-        if a.device_map == "auto" and not a.mock:            # hidden states end on the last card: index with CPU ids
-            out = model(input_ids=ids, logits_to_keep=keep.cpu())
-            lg = out.logits[0].float()
-            return torch.nn.functional.cross_entropy(lg, tgt[keep].to(lg.device), reduction="sum"), len(keep), ids.shape[1]
+        if not a.mock:
+            # (box, 2026-11-13: E4B ran out of memory at step 26; with device_map auto, logits_to_keep landed on the first
+            # card.) The 262K-vocab logits of up to ~30K label positions are huge, so: decoder only → final hidden state
+            # (on the last card, outside accelerate's hooks) → rows at the label positions → lm_head + final logit
+            # softcapping (as Gemma4ForConditionalGeneration.forward does) + summed cross-entropy in checkpointed chunks
+            # of 1,024 rows. Same loss as model(input_ids, logits_to_keep=keep): a sum over all label tokens.
+            base = model.get_base_model()
+            hs = base.model(input_ids=ids).last_hidden_state[0]
+            hsel = hs[keep.to(hs.device)]
+            tsel = tgt[keep]
+            cap = base.config.get_text_config().final_logit_softcapping
+
+            def ce_chunk(h, t):
+                lg = base.lm_head(h)
+                if cap is not None:
+                    lg = torch.tanh(lg / cap) * cap
+                return torch.nn.functional.cross_entropy(lg.float(), t.to(lg.device), reduction="sum")
+            from torch.utils.checkpoint import checkpoint as _ckpt
+            tot = 0
+            for i in range(0, hsel.shape[0], 1024):
+                tot = tot + _ckpt(ce_chunk, hsel[i:i + 1024], tsel[i:i + 1024], use_reentrant=False)
+            return tot, len(keep), ids.shape[1]
         out = model(input_ids=ids, logits_to_keep=keep)
         return torch.nn.functional.cross_entropy(out.logits[0].float(), tgt[keep], reduction="sum"), len(keep), ids.shape[1]
 
