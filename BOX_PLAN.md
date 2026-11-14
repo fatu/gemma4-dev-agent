@@ -195,7 +195,7 @@ Gemma's style (native thoughts; distillation inside the family).
 Final submission 12-02. **Risks:** token cost; gateway rate limits; reasoning not returned; ~1,400 image pulls (Docker Hub
 limits, disk); teacher licences.
 
-## B-9 · All 500 of SWE-bench Verified: 31B on the 8-card box, E4B on the 4-card box (2026-11-11) — 31B ✓ 272 / 500 (54.4 %) · E4B ▶ running (another session) · part 2 (a LoRA on MetaCurate's data): E4B adapter collapsed 0 / 125 (copy loop) · part 3 (control on the paper's 9B model) planned
+## B-9 · All 500 of SWE-bench Verified: 31B on the 8-card box, E4B on the 4-card box (2026-11-11) — 31B ✓ 272 / 500 (54.4 %) · E4B ▶ running (another session) · part 2 (a LoRA on MetaCurate's data): E4B adapter collapsed 0 / 125 (copy loop) · part 3 (control on the paper's 9B model): step 0 ✓, ▶ step 1 on the box
 
 **31B result (photo 2026-11-13).** 272 / 500 resolved = **54.4 %** (Wilson 95 % ≈ 50.0–58.7 %), one pass, all 500 predictions (no duplicates or gaps; merged from three runs over task ranges 0–249, 250–274 and 275–499, 16 grading reports). Exit statuses: Submitted 385, ContextWindowExceededError 115. The 115 empty patches are exactly the context-window exits; no other failure type. Among the 385 submitted: 272 resolved (70.6 %). Model calls per task: median 32, p90 56, max 158. Per repo (resolved / tasks): django 128/231, sympy 40/75, sphinx 20/44, matplotlib 18/34, scikit-learn 26/32, astropy 12/22, xarray 14/22, pytest 12/19, pylint 1/10, requests 0/8, seaborn 0/2, flask 1/1.
 Read by the rule set before the data: ≥ 40 % → our setup is near the public level (Vals AI 53.92 % on its subset, a different setup: close, not equivalent). The 32K window is the one visible cost: 23 % of tasks (115) ended on it. Missing: the 50 Verified-mini line (the box could not load the HF dataset: a self-signed certificate; set `SSL_CERT_FILE` and run `report` again, no rerun). The box copy of `verified_box.sh` has two changes not in this repo (MIRROR, START).
@@ -529,7 +529,7 @@ If it stopped early (STOP line, crash, reboot): free disk or lower CHUNK, `serve
 - E4B vs 31B on the same 500 tasks is the size gap within one setup; the per-repo line shows where it comes from.
 - Costs: box time only (free); no token totals (mini's cost tracking is off for local models).
 
-### B-9 part 3 · Control: the paper's 9B model + our data + our LoRA — is the collapse Gemma's? (plan 2026-11-14, user: "用论文上的9B模型，加上我们的训练数据和LoRA，看看结果是不是提升了，这样可以判断是不是gemma 模型的问题") — ▶ planned, nothing built or run
+### B-9 part 3 · Control: the paper's 9B model + our data + our LoRA — is the collapse Gemma's? (plan 2026-11-14, user: "用论文上的9B模型，加上我们的训练数据和LoRA，看看结果是不是提升了，这样可以判断是不是gemma 模型的问题") — step 0 ✓ (facts) · ▶ step 1 on the box (download + serve + 3 tasks)
 
 **Why.** Part 2's E4B adapter is served exactly as trained (vLLM NLL = training NLL) yet copies its previous turn word for
 word (79 % of turn pairs, 0 / 125 resolved; base 12). The teacher data has no such copying. Open question: is that Gemma 4
@@ -544,7 +544,7 @@ temperature 0.2, top_p 0.95, max_tokens 8192, earlier thoughts in the history, `
 **Steps (each needs the user's go; nothing is paid, the cost is box hours and one model download).**
 0. Laptop, no GPU: confirm the exact HF repository of the paper's 9B model, its licence and size; read its chat template
    (does it keep earlier `reasoning_content`? where do tool calls and thoughts go?) and what vLLM 0.19.1 needs to serve it
-   (tool-call parser, reasoning parser, thinking budget). NOT verified yet: the repository id, that 0.19.1 supports it.
+   (tool-call parser, reasoning parser, thinking budget). **✓ 2026-11-14, see "Step 0 result" below.**
 1. Box: download the model (📷 size first; needs the user's yes) → serve → `mc_box.sh probe`-style request log on 2 tasks:
    the prompts vLLM builds are the ground truth for the renderer (same A2 check as part 2: 100 % token-equal or stop).
 2. Code (laptop): a template-driven renderer for non-Gemma models (tokenizer.apply_chat_template with the tools, labels =
@@ -556,6 +556,75 @@ temperature 0.2, top_p 0.95, max_tokens 8192, earlier thoughts in the history, `
 4. Box: base and adapter on the SAME 125 Verified tasks as part 2's graded chunks (c0–c4), then `paired.py` + the copy
    counts of `runs/kaggle_e4b_mc`'s analysis (exact copies of the previous turn, first copy call, same-command runs).
    All 500 only if the 125 are unclear.
+
+**Step 0 result (laptop, 2026-11-14; read from the HF API / files and the vLLM v0.19.1 source tag, nothing run).**
+- Repository `Qwen/Qwen3.5-9B`: Apache-2.0, not gated, 9.65B parameters bf16, 4 safetensors shards, **19.3 GB**; it has a
+  vision tower (served text-only with `--language-model-only`).
+- Architecture: 32 layers = 24 linear-attention (gated delta) + 8 full-attention, hidden 4096. Linear layers a LoRA can
+  target: `q/k/v/o_proj` (8 layers), `in_proj_qkv / in_proj_z / in_proj_b / in_proj_a / out_proj` (24 layers),
+  `gate/up/down_proj` (all). vLLM has a LoRA-specific mapping for the linear-attention projections: the first thing to
+  test with a few-step adapter in step 3 (before the real training).
+- vLLM v0.19.1: `Qwen3_5ForConditionalGeneration` is registered and SupportsLoRA; `--reasoning-parser qwen3`,
+  `--tool-call-parser qwen3_coder`. `scripts/serve_vllm.sh` picks these for a `Qwen3.5*` MODEL (FAMILY, printed).
+- Chat template: ChatML; the generation prompt ends `<|im_start|>assistant\n<think>\n`; earlier thoughts are rendered for
+  every assistant turn after the last real user message when the message carries `reasoning_content` (vLLM 0.19.1 fills
+  it from `reasoning` only → **THINK_HIST=1 is still needed**, same proxy as Gemma); tool calls are XML
+  (`<tool_call><function=bash><parameter=command>`), tool results go into a user turn as `<tool_response>`; an unknown
+  role raises.
+- Window: **32,768, the same as Gemma** (user, 2026-11-14). The card advises ≥ 128K and the paper evaluates at 262K, so
+  the base will sit below the paper's 53.9; only base vs adapter in our setup is compared.
+- Sampling: ours (temperature 0.2, top_p 0.95), not the card's 0.6, to match the E4B runs.
+- NOT checked: that the box's patched vLLM starts it and loads a LoRA on the linear-attention layers; whether
+  `thinking_token_budget` works when `<think>` is in the prompt (step 1c shows it); peft on the box; training speed.
+
+**Step 1 commands (box; one free card; the E4B servers of part 2 must be stopped on that card).**
+```bash
+cd gemma4-dev-agent && git pull && git log --oneline -1     # if pull refuses over train/sft_lora.py: git stash first (8bdd338 has that edit)
+# 1a · download: Qwen/Qwen3.5-9B from Hugging Face, 19.3 GB (📷 the path + size + free disk)
+df -h ~/.cache/huggingface | tail -1
+.venv-eval/bin/python -c "from huggingface_hub import snapshot_download as d; print(d('Qwen/Qwen3.5-9B'))"
+du -shL ~/.cache/huggingface/hub/models--Qwen--Qwen3.5-9B
+# 1b · serve on one card at 32K (📷 the header lines, the 'vLLM up' line, the grep)
+export MODEL=Qwen/Qwen3.5-9B GPUS="0" PORT=8010 SUBSET=verified WORKERS=3 EVAL_JOBS=8 THINK_HIST=1 MAX_TOK=8192 TOP_P=0.95 THINK_BUDGET=4096
+bash scripts/verified_box.sh serve
+head -3 runs/verified/vllm_gpu0.log
+grep -i -E "max_model_len|KV cache|Maximum concurrency|language.model.only|Traceback|Error" runs/verified/vllm_gpu0.log | cut -c1-200 | head -12
+# 1c · one request: are the thought and the tool call parsed, does the thinking budget close the thought? (📷 the output)
+python3 - <<'EOF'
+import json, urllib.request
+def ask(budget):
+    body = {"model": "qwen3.5-9b", "temperature": 0.2, "top_p": 0.95, "max_tokens": 2048,
+            "messages": [{"role": "system", "content": "You solve tasks by running shell commands with the bash tool."},
+                         {"role": "user", "content": "List the Python files under /testbed, then explain in detail what you would check next."}],
+            "tools": [{"type": "function", "function": {"name": "bash", "description": "Execute a bash command",
+                       "parameters": {"type": "object", "properties": {"command": {"type": "string"}}, "required": ["command"]}}}]}
+    if budget:
+        body["thinking_token_budget"] = budget
+    r = json.load(urllib.request.urlopen(urllib.request.Request("http://127.0.0.1:8010/v1/chat/completions",
+                  data=json.dumps(body).encode(), headers={"Content-Type": "application/json"}), timeout=300))
+    c, m, u = r["choices"][0], r["choices"][0]["message"], r["usage"]
+    th = m.get("reasoning") or m.get("reasoning_content") or ""
+    print(f"budget {budget}: finish {c['finish_reason']} · prompt {u['prompt_tokens']} · completion {u['completion_tokens']} tokens"
+          f" · thought {len(th)} chars · content {len(m.get('content') or '')} chars · tool_calls {json.dumps(m.get('tool_calls'))[:200]}")
+    print("   thought starts:", repr(th[:160]))
+ask(0); ask(64)
+EOF
+# expected: finish tool_calls, a non-empty thought, tool_calls = bash with a JSON command; with budget 64 the thought is
+# short (≈ 64 tokens) and a tool call still follows. A thought as long as with budget 0 = the budget is not applied.
+# 1d · 3 tasks through mini-swe-agent, requests saved (the ground truth for the renderer of step 2)
+mkdir -p runs/verified/probe_q9
+python3 scripts/req_log.py proxy --listen 8110 --upstream http://127.0.0.1:8010 --rename-reasoning --out runs/verified/probe_q9/requests > runs/verified/probe_q9.proxy.log 2>&1 &
+API_PORT_OFFSET=100 SLICE=0:3 TAG=vf_q9_smoke bash scripts/verified_box.sh run
+kill %1
+python3 scripts/req_log.py summarize --dir runs/verified/probe_q9/requests --upstream http://127.0.0.1:8010 --model qwen3.5-9b --out runs/verified/probe_q9
+TAG=vf_q9_smoke bash scripts/verified_box.sh eval && TAG=vf_q9_smoke bash scripts/verified_box.sh report
+```
+📷 1a the three lines · 1b the header + `vLLM up` + grep · 1c both `budget` blocks · 1d the `== run` line, the summarize
+line (earlier reasoning sent? rendered?) and the `==` report block. **Stop and photo, do not work around,** if: vLLM
+does not start (📷 `tail -30 runs/verified/vllm_gpu0.log`), 1c has no tool call or an empty thought, or the summarize
+line says the earlier thoughts are not rendered.
+Pass = the 3 tasks end with normal exits (Submitted or a limit, not parse errors) and thoughts are rendered in the
+history → step 2 (laptop: renderer + trainer for this model). The 3-task resolved count is not a result.
 
 **Reading (set before the data).**
 - Qwen + our LoRA does not copy and resolves ≥ its base → our data, rendering idea and recipe are sound on a model the

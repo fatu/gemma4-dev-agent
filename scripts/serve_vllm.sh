@@ -18,12 +18,23 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 MODEL="${MODEL:-google/gemma-4-31B-it-qat-w4a16-ct}"     # int4 symmetric, group 32, compressed-tensors (~17 GB)
 SERVED="${SERVED:-$(basename "$MODEL" | tr '[:upper:]' '[:lower:]')}"
-case "$SERVED" in      # HARNESS_README §3 ALLOWED_MODEL_NAMES: the harness requests agent.yaml's `model:` by this name
-  gemma-4-31b-it-qat-w4a16-ct|gemma-4-12b-it-qat-w4a16-ct|gemma-4-e4b-it-qat-w4a16-ct|gemma-4-e2b-it-qat-w4a16-ct) ;;
-  *) echo "'$SERVED' (from MODEL=$MODEL) is not a scorer alias: set SERVED=gemma-4-{31b,12b,e4b,e2b}-it-qat-w4a16-ct"
-     exit 1 ;;
-esac
+# FAMILY (B-9 part 3, the control on the paper's 9B model): gemma = everything as the scorer; qwen = a Qwen3.5 repo, NOT a
+# competition model: served under its own name only, parsers and thinking delimiters from its model card / vLLM v0.19.1
+# source (--reasoning-parser qwen3, --tool-call-parser qwen3_coder, `<think>` … `</think>`; the template puts `<think>\n`
+# in the prompt), text only (--language-model-only: the repo has a vision tower we do not use).
+case "$(basename "$MODEL")" in [Qq]wen3.5*) FAMILY="${FAMILY:-qwen}" ;; *) FAMILY="${FAMILY:-gemma}" ;; esac
 EXTRA=()               # HARNESS_README §3.1 MODEL_VLLM_EXTRA_ARGS: only 12B gets extra flags
+if [ "$FAMILY" = qwen ]; then
+  NAMES=("$SERVED"); TOOL_PARSER=qwen3_coder; REASON_PARSER=qwen3
+  REASONING_START="${REASONING_START:-<think>}"; REASONING_END="</think>"; EXTRA=(--language-model-only)
+else
+  NAMES=("$SERVED" gemma4); TOOL_PARSER=gemma4; REASON_PARSER=gemma4; REASONING_END="<channel|>"
+  case "$SERVED" in      # HARNESS_README §3 ALLOWED_MODEL_NAMES: the harness requests agent.yaml's `model:` by this name
+    gemma-4-31b-it-qat-w4a16-ct|gemma-4-12b-it-qat-w4a16-ct|gemma-4-e4b-it-qat-w4a16-ct|gemma-4-e2b-it-qat-w4a16-ct) ;;
+    *) echo "'$SERVED' (from MODEL=$MODEL) is not a scorer alias: set SERVED=gemma-4-{31b,12b,e4b,e2b}-it-qat-w4a16-ct"
+       exit 1 ;;
+  esac
+fi
 if [ "$SERVED" = gemma-4-12b-it-qat-w4a16-ct ]; then
   EXTRA=(--hf-overrides '{"architectures": ["Gemma4ForCausalLM"], "model_type": "gemma4"}')
 fi
@@ -71,16 +82,16 @@ EOF
 fi
 # what this server is, at the top of runs/vllm.log (📷 it next to the eval summary)
 echo "serve_vllm $(date '+%F %T %Z') · commit $(git rev-parse --short HEAD 2>/dev/null || echo '?')"
-echo "  model $MODEL → served as $SERVED + gemma4 · TP $TP · gpu_util $GPU_UTIL · max_len $MAX_LEN · port $PORT"
-echo "  reasoning_start $REASONING_START · lora: ${LORA_NAMES:-none}${LORA_LIMITS} · extra: ${EXTRA[*]:-none}${*:+ $*} · CUDA_VISIBLE_DEVICES ${CUDA_VISIBLE_DEVICES:-all}"
+echo "  model $MODEL → family $FAMILY · served as ${NAMES[*]} · tool parser $TOOL_PARSER · reasoning parser $REASON_PARSER · TP $TP · gpu_util $GPU_UTIL · max_len $MAX_LEN · port $PORT"
+echo "  reasoning_start $REASONING_START · reasoning_end $REASONING_END · lora: ${LORA_NAMES:-none}${LORA_LIMITS} · extra: ${EXTRA[*]:-none}${*:+ $*} · CUDA_VISIBLE_DEVICES ${CUDA_VISIBLE_DEVICES:-all}"
 nvidia-smi --query-gpu=index,name,memory.total --format=csv,noheader 2>/dev/null | sed 's/^/  gpu /' || true
 exec vllm serve "$MODEL" \
-  --served-model-name "$SERVED" gemma4 \
+  --served-model-name "${NAMES[@]}" \
   --tensor-parallel-size "$TP" \
   --gpu-memory-utilization "$GPU_UTIL" \
   --max-model-len "$MAX_LEN" \
-  --enable-auto-tool-choice --tool-call-parser gemma4 --reasoning-parser gemma4 \
-  --reasoning-config "{\"reasoning_start_str\": \"$REASONING_START\", \"reasoning_end_str\": \"<channel|>\"}" \
+  --enable-auto-tool-choice --tool-call-parser "$TOOL_PARSER" --reasoning-parser "$REASON_PARSER" \
+  --reasoning-config "{\"reasoning_start_str\": \"$REASONING_START\", \"reasoning_end_str\": \"$REASONING_END\"}" \
   --default-chat-template-kwargs '{"enable_thinking": true}' \
   --port "$PORT" \
   ${EXTRA[@]+"${EXTRA[@]}"} ${LORA[@]+"${LORA[@]}"} "$@"
