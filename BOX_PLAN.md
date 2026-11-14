@@ -195,7 +195,7 @@ Gemma's style (native thoughts; distillation inside the family).
 Final submission 12-02. **Risks:** token cost; gateway rate limits; reasoning not returned; ~1,400 image pulls (Docker Hub
 limits, disk); teacher licences.
 
-## B-9 · All 500 of SWE-bench Verified: 31B on the 8-card box, E4B on the 4-card box (2026-11-11) — 31B ✓ 272 / 500 (54.4 %) · E4B ▶ running (another session) · part 2 (a LoRA on MetaCurate's data, 31B first) planned
+## B-9 · All 500 of SWE-bench Verified: 31B on the 8-card box, E4B on the 4-card box (2026-11-11) — 31B ✓ 272 / 500 (54.4 %) · E4B ▶ running (another session) · part 2 (a LoRA on MetaCurate's data): E4B adapter collapsed 0 / 125 (copy loop) · part 3 (control on the paper's 9B model) planned
 
 **31B result (photo 2026-11-13).** 272 / 500 resolved = **54.4 %** (Wilson 95 % ≈ 50.0–58.7 %), one pass, all 500 predictions (no duplicates or gaps; merged from three runs over task ranges 0–249, 250–274 and 275–499, 16 grading reports). Exit statuses: Submitted 385, ContextWindowExceededError 115. The 115 empty patches are exactly the context-window exits; no other failure type. Among the 385 submitted: 272 resolved (70.6 %). Model calls per task: median 32, p90 56, max 158. Per repo (resolved / tasks): django 128/231, sympy 40/75, sphinx 20/44, matplotlib 18/34, scikit-learn 26/32, astropy 12/22, xarray 14/22, pytest 12/19, pylint 1/10, requests 0/8, seaborn 0/2, flask 1/1.
 Read by the rule set before the data: ≥ 40 % → our setup is near the public level (Vals AI 53.92 % on its subset, a different setup: close, not equivalent). The 32K window is the one visible cost: 23 % of tasks (115) ended on it. Missing: the 50 Verified-mini line (the box could not load the HF dataset: a self-signed certificate; set `SSL_CERT_FILE` and run `report` again, no rerun). The box copy of `verified_box.sh` has two changes not in this repo (MIRROR, START).
@@ -528,6 +528,47 @@ If it stopped early (STOP line, crash, reboot): free disk or lower CHUNK, `serve
   the exit statuses: the 32K window); < 25 % → our setup, not the model, dominates — read the exit statuses before quoting it.
 - E4B vs 31B on the same 500 tasks is the size gap within one setup; the per-repo line shows where it comes from.
 - Costs: box time only (free); no token totals (mini's cost tracking is off for local models).
+
+### B-9 part 3 · Control: the paper's 9B model + our data + our LoRA — is the collapse Gemma's? (plan 2026-11-14, user: "用论文上的9B模型，加上我们的训练数据和LoRA，看看结果是不是提升了，这样可以判断是不是gemma 模型的问题") — ▶ planned, nothing built or run
+
+**Why.** Part 2's E4B adapter is served exactly as trained (vLLM NLL = training NLL) yet copies its previous turn word for
+word (79 % of turn pairs, 0 / 125 resolved; base 12). The teacher data has no such copying. Open question: is that Gemma 4
+E4B, or our data / rendering / recipe? Control: the model MetaCurate's paper improved (Qwen3.5-9B: 53.9 → 61.9 with
+resolved-only data, full fine-tuning) with everything else ours.
+
+**Held fixed (ours):** the same 952 R1k trajectories and the 8 held-out tasks; LoRA r 32, α 32, attention + MLP, LR 1e-5,
+2 epochs, 16 sequences per step; loss on the model's replies only; evaluation = mini-swe-agent 2.4.6, 32K window,
+temperature 0.2, top_p 0.95, max_tokens 8192, earlier thoughts in the history, `paired.py`.
+**Changed:** the model (Qwen3.5-9B) and, with it, the chat template / tokenizer the data is rendered with.
+
+**Steps (each needs the user's go; nothing is paid, the cost is box hours and one model download).**
+0. Laptop, no GPU: confirm the exact HF repository of the paper's 9B model, its licence and size; read its chat template
+   (does it keep earlier `reasoning_content`? where do tool calls and thoughts go?) and what vLLM 0.19.1 needs to serve it
+   (tool-call parser, reasoning parser, thinking budget). NOT verified yet: the repository id, that 0.19.1 supports it.
+1. Box: download the model (📷 size first; needs the user's yes) → serve → `mc_box.sh probe`-style request log on 2 tasks:
+   the prompts vLLM builds are the ground truth for the renderer (same A2 check as part 2: 100 % token-equal or stop).
+2. Code (laptop): a template-driven renderer for non-Gemma models (tokenizer.apply_chat_template with the tools, labels =
+   the assistant replies incl. the stop token, same packing rules); `sft_lora.py` without the Gemma-only pieces (model
+   class, final-logit softcap path, the -ct module check); `mc_box.sh` MODEL switch. Our Gemma renderer's T2T rule (text
+   moved into the thought) exists because of a Gemma template bug: for Qwen, render what its template renders.
+3. Box: render the same 952 trajectories (print how many pass 30,720 tokens with this tokenizer; keep the same set if
+   all fit, else print the dropped ids count) → smoke (peak GB, tok/s) → train → held-out NLL lines.
+4. Box: base and adapter on the SAME 125 Verified tasks as part 2's graded chunks (c0–c4), then `paired.py` + the copy
+   counts of `runs/kaggle_e4b_mc`'s analysis (exact copies of the previous turn, first copy call, same-command runs).
+   All 500 only if the 125 are unclear.
+
+**Reading (set before the data).**
+- Qwen + our LoRA does not copy and resolves ≥ its base → our data, rendering idea and recipe are sound on a model the
+  paper used; the collapse is specific to E4B (family or size, see the confound).
+- Qwen + our LoRA also copies / drops well below its base → the cause is ours (recipe, packing, 32K + thoughts in the
+  history, a LoRA this weak), not Gemma.
+- No copying but no gain either → not a collapse; says little (the paper's 9B gain came from full fine-tuning at 128K /
+  262K, ours is a small LoRA at 32K), report as such.
+**Confound, stated up front:** 9B vs E4B differ in size as well as family. If Qwen is fine, "Gemma" and "too small" are
+not separated; the same run on Gemma 4 12B (a scorer alias) would separate them. The Qwen base at 32K will also sit below
+the paper's 53.9 (they evaluate at 262K), so compare only base vs adapter in our setup.
+**Cheaper checks that stay open for E4B itself** (no new model): the base's copy rate on `vf_e4b_th`'s trajectories
+(no GPU), adapter at half strength (`lora_alpha` 16, no retraining) and temperature 1.0 on 25 tasks.
 
 ## B-8 · SWE-bench Verified on the box (2026-11-11) — step 0 ✓ (Docker ok) · route B ✓ **E4B 3 / 50 on Verified-mini** · ▶ 31B reference on 4 cards
 
