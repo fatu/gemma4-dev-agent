@@ -17,6 +17,11 @@
 # run (split over GPUS) → graded → its images deleted (unless KEEP_IMAGES=1) → the next; a chunk whose grading report
 # exists is skipped, so a stopped `full` resumes where it was (delete runs/verified/<TAG>/c<k>/ to redo chunk k):
 #   SUBSET=verified GPUS="0 1 2 3" TAG=vf_e4b nohup bash scripts/verified_box.sh full > runs/verified/vf_e4b.full.log 2>&1 &
+# A LoRA adapter (B-9 part 2): the same ADAPTER=<PEFT dir> for serve and for run/full; serve mounts it as LoRA module
+# ADAPTER_NAME and checks it changes the output, run asks for that module instead of the base. Then compare per task:
+#   ADAPTER=adapters/mc_gemma-4-E4B_r1k_lr1e-5/epoch2 GPUS="0 1 2 3 4 5 6 7" bash scripts/verified_box.sh serve
+#   ADAPTER=adapters/mc_gemma-4-E4B_r1k_lr1e-5/epoch2 SUBSET=verified GPUS="0 1 2 3 4 5 6 7" THINK_HIST=1 … TAG=vf_e4b_mc full
+#   python3 scripts/paired.py runs/verified/vf_e4b_th runs/verified/vf_e4b_mc     # McNemar, exits, empty patches
 # Knobs (all printed): MODEL (E4B) · GPU (0) · PORT (8010) · TAG · SUBSET (MariusHobbhahn/swe-bench-verified-mini: 50 tasks,
 # ≈ 5 GB of images; `verified` = all 500, ≈ 120 GB) · SLICE ("" = all) · WORKERS (8) · STEPS (250 = mini's swebench.yaml)
 # · TEMP (0.2 = our latest) · MAX_TOK (8192 per reply, thought included) · PULL_TIMEOUT (900 s; mini's default 120 is short
@@ -50,11 +55,22 @@ THINK_HIST="${THINK_HIST:-0}"
 # (extra_body; serve_vllm.sh sets --reasoning-config, which it needs), the same field the Kaggle harness sends.
 TOP_P="${TOP_P:-}"; THINK_BUDGET="${THINK_BUDGET:-0}"
 CHUNK="${CHUNK:-100}"; KEEP_IMAGES="${KEEP_IMAGES:-0}"; MIN_FREE_GB="${MIN_FREE_GB:-50}"
+# ADAPTER (B-9 part 2): a PEFT dir with adapter_config.json + adapter_model.safetensors. serve mounts it through
+# serve_vllm.sh (runs/verified/adapter_<ADAPTER_NAME>/adapters/<ADAPTER_NAME>/ → --enable-lora, the scorer's limits);
+# run / full request model ADAPTER_NAME (default "lora": never a base alias) instead of the base. "" = the base model.
+ADAPTER="${ADAPTER:-}"; ADAPTER_NAME="${ADAPTER_NAME:-lora}"; REQ="$SERVED"; AINFO=none
+if [ -n "$ADAPTER" ]; then
+  [ -f "$ADAPTER/adapter_config.json" ] && [ -f "$ADAPTER/adapter_model.safetensors" ] || { echo "ADAPTER=$ADAPTER: no adapter_config.json + adapter_model.safetensors there"; exit 1; }
+  case "$ADAPTER_NAME" in "$SERVED"|gemma4|"") echo "ADAPTER_NAME '$ADAPTER_NAME' must differ from the base names"; exit 1 ;; esac
+  REQ="$ADAPTER_NAME"
+  AINFO="$ADAPTER as '$ADAPTER_NAME' ($(python3 -c 'import json,sys; c=json.load(open(sys.argv[1])); print("r", c.get("r"), "alpha", c.get("lora_alpha"))' "$ADAPTER/adapter_config.json") · sha256 $(sha256sum "$ADAPTER/adapter_model.safetensors" | cut -c1-12))"
+fi
+has_model() { curl -s --max-time 3 "http://127.0.0.1:$1/v1/models" | grep -Eq "\"id\": ?\"$2\""; }   # port · model id
 port_of() { echo $(( PORT + $1 )); }                       # card k of GPUS (0-based) → its port
-echo "verified_box $STEP · model $MODEL (served $SERVED) · gpus ${GPUS[*]} → ports $PORT..$(port_of $(( NP - 1 ))) ($NP part(s), $NTASK tasks) · tag $TAG · subset $SUBSET (grading dataset $DS) · slice ${SLICE:-all} · workers $WORKERS · step limit $STEPS · temperature $TEMP · top_p ${TOP_P:-not sent} · thinking budget $THINK_BUDGET · max tokens $MAX_TOK · pull timeout $PULL_TIMEOUT s · eval jobs $EVAL_JOBS · max len $MAX_LEN · gpu util $GPU_UTIL · api port offset $API_PORT_OFFSET · think hist $THINK_HIST · chunk $CHUNK keep images $KEEP_IMAGES min free $MIN_FREE_GB GB (full) · mini-swe-agent $MSA · swebench $SWEB · code $(git log --oneline -1 | cut -c1-40)"
+echo "verified_box $STEP · model $MODEL (served $SERVED) · gpus ${GPUS[*]} → ports $PORT..$(port_of $(( NP - 1 ))) ($NP part(s), $NTASK tasks) · tag $TAG · subset $SUBSET (grading dataset $DS) · slice ${SLICE:-all} · workers $WORKERS · step limit $STEPS · temperature $TEMP · top_p ${TOP_P:-not sent} · thinking budget $THINK_BUDGET · max tokens $MAX_TOK · pull timeout $PULL_TIMEOUT s · eval jobs $EVAL_JOBS · max len $MAX_LEN · gpu util $GPU_UTIL · api port offset $API_PORT_OFFSET · think hist $THINK_HIST · adapter $AINFO (requests go to $REQ) · chunk $CHUNK keep images $KEEP_IMAGES min free $MIN_FREE_GB GB (full) · mini-swe-agent $MSA · swebench $SWEB · code $(git log --oneline -1 | cut -c1-40)"
 T0=$(date +%s)
 part() {  # one part: $1 port · $2 output dir · $3 slice ("" = all) · $4 log
-  curl -s --max-time 3 "http://127.0.0.1:$1/v1/models" | grep -q "$SERVED" || { echo "no $SERVED on port $1: run serve first"; return 1; }
+  has_model "$1" "$REQ" || { echo "no model $REQ on port $1: run serve first (with the same ADAPTER)"; return 1; }
   mkdir -p "$2"; local cfg="$2.model.yaml" ap=$(( $1 + API_PORT_OFFSET )) px=""
   if [ "$THINK_HIST" = 1 ] && [ "$API_PORT_OFFSET" = 0 ]; then
     ap=$(( $1 + 200 ))
@@ -68,7 +84,7 @@ agent:
 environment:
   pull_timeout: $PULL_TIMEOUT
 model:
-  model_name: "hosted_vllm/$SERVED"
+  model_name: "hosted_vllm/$REQ"
   cost_tracking: "ignore_errors"
   model_kwargs:
     api_base: "http://127.0.0.1:$ap/v1"
@@ -79,7 +95,7 @@ EOF
   [ -n "$TOP_P" ] && printf '    top_p: %s\n' "$TOP_P" >> "$cfg"
   [ "$THINK_BUDGET" -gt 0 ] 2>/dev/null && printf '    extra_body:\n      thinking_token_budget: %s\n' "$THINK_BUDGET" >> "$cfg"
   MSWEA_COST_TRACKING=ignore_errors $VS/mini-extra swebench --subset "$SUBSET" --split test ${3:+--slice "$3"} \
-    -m "hosted_vllm/$SERVED" -c swebench.yaml -c "$cfg" -w "$WORKERS" -o "$2" > "$4" 2>&1
+    -m "hosted_vllm/$REQ" -c swebench.yaml -c "$cfg" -w "$WORKERS" -o "$2" > "$4" 2>&1
   local rc=$?
   [ -n "$px" ] && kill "$px" 2>/dev/null
   return $rc
@@ -120,7 +136,12 @@ setup)
   ls $VS/mini-extra >/dev/null && echo "  mini-extra: ok"
   echo "📷 the lines above" ;;
 serve)
-  mkdir -p runs/verified/noadapter/adapters runs/verified
+  mkdir -p runs/verified/noadapter/adapters runs/verified; SUB=runs/verified/noadapter
+  if [ -n "$ADAPTER" ]; then                 # serve_vllm.sh mounts every <SUBMISSION>/adapters/<name>/ as LoRA module <name>
+    SUB=runs/verified/adapter_$ADAPTER_NAME; rm -rf "$SUB"; mkdir -p "$SUB/adapters/$ADAPTER_NAME"
+    for f in adapter_config.json adapter_model.safetensors; do ln -s "$(cd "$ADAPTER" && pwd)/$f" "$SUB/adapters/$ADAPTER_NAME/$f"; done
+    echo "  adapter: $SUB/adapters/$ADAPTER_NAME → $ADAPTER"
+  fi
   for k in $(seq 0 $(( NP - 1 ))); do
     g=${GPUS[$k]}
     busy=$(nvidia-smi --query-gpu=index,memory.used --format=csv,noheader,nounits -i "$g" | awk -F', ' '$2 > 2000 {print $2}')
@@ -129,20 +150,38 @@ serve)
   for k in $(seq 0 $(( NP - 1 ))); do
     g=${GPUS[$k]}; p=$(port_of $k)
     CUDA_VISIBLE_DEVICES=$g PATH="$PWD/.venv-eval/bin:$PATH" MODEL=$MODEL TP=1 PORT=$p MAX_LEN=$MAX_LEN GPU_UTIL=$GPU_UTIL \
-      SUBMISSION=runs/verified/noadapter nohup bash scripts/serve_vllm.sh > runs/verified/vllm_gpu$g.log 2>&1 &
+      SUBMISSION=$SUB nohup bash scripts/serve_vllm.sh > runs/verified/vllm_gpu$g.log 2>&1 &
     echo $! > runs/verified/vllm_gpu$g.pid
   done
   for k in $(seq 0 $(( NP - 1 ))); do
     g=${GPUS[$k]}; p=$(port_of $k)
     for i in $(seq 1 180); do
-      curl -s --max-time 2 "http://127.0.0.1:$p/v1/models" | grep -q "$SERVED" && break
+      has_model "$p" "$REQ" && break
       kill -0 "$(cat runs/verified/vllm_gpu$g.pid)" 2>/dev/null || { echo "vLLM on card $g died: tail -30 runs/verified/vllm_gpu$g.log"; exit 1; }
       sleep 5
     done
-    curl -s --max-time 2 "http://127.0.0.1:$p/v1/models" | grep -q "$SERVED" || { echo "vLLM on card $g not up after 15 min"; exit 1; }
-    echo "  vLLM up on card $g port $p ($(( $(date +%s) - T0 )) s since start) · log runs/verified/vllm_gpu$g.log"
+    has_model "$p" "$REQ" || { echo "vLLM on card $g not up (or no model $REQ) after 15 min: tail -30 runs/verified/vllm_gpu$g.log"; exit 1; }
+    echo "  vLLM up on card $g port $p ($(( $(date +%s) - T0 )) s since start) · $(grep -m1 'lora:' runs/verified/vllm_gpu$g.log | sed 's/^ *//' | cut -c1-120) · log runs/verified/vllm_gpu$g.log"
   done
-  echo "📷 the 'vLLM up' line(s)" ;;
+  if [ -n "$ADAPTER" ]; then                 # is the adapter active? the same prompt, temperature 0, base vs adapter, on every card
+    for k in $(seq 0 $(( NP - 1 ))); do
+      python3 - "$(port_of $k)" "$SERVED" "$REQ" <<'EOF'
+import json, sys, urllib.request
+port, base, lora = sys.argv[1:]
+def ask(m):
+    body = {"model": m, "prompt": "def parse_version(s):\n    \"\"\"Split '1.2.3' into a tuple of ints.\"\"\"\n",
+            "max_tokens": 24, "temperature": 0, "logprobs": 1}
+    r = json.load(urllib.request.urlopen(urllib.request.Request(f"http://127.0.0.1:{port}/v1/completions",
+                  data=json.dumps(body).encode(), headers={"Content-Type": "application/json"}), timeout=120))["choices"][0]
+    return r["text"], sum(x for x in r["logprobs"]["token_logprobs"] if x is not None)
+(tb, lb), (ta, la) = ask(base), ask(lora)
+same = tb == ta and abs(lb - la) < 1e-6
+print(f"  adapter check port {port}: base sum logprob {lb:.4f} · {lora} {la:.4f} · text {'same' if tb == ta else 'differs'}"
+      + (" → IDENTICAL: the adapter does not act (check the vLLM log for LoRA warnings)" if same else " → the adapter acts"))
+EOF
+    done
+  fi
+  echo "📷 the 'vLLM up' line(s)$([ -n "$ADAPTER" ] && echo " and the adapter check lines")" ;;
 run)
   if [ "$NP" -eq 1 ]; then
     echo "  config: swebench.yaml + $OUT.model.yaml"
@@ -166,7 +205,7 @@ eval)
 full)
   [ "$SUBSET" = verified ] || echo "  note: full is meant for SUBSET=verified (now $SUBSET, $NTASK tasks)"
   for k in $(seq 0 $(( NP - 1 ))); do
-    curl -s --max-time 3 "http://127.0.0.1:$(port_of $k)/v1/models" | grep -q "$SERVED" || { echo "no $SERVED on port $(port_of $k): run serve first"; exit 1; }
+    has_model "$(port_of $k)" "$REQ" || { echo "no model $REQ on port $(port_of $k): run serve first (with the same ADAPTER)"; exit 1; }
   done
   DROOT=$(docker info -f '{{.DockerRootDir}}' 2>/dev/null || echo /var/lib/docker)
   nc=$(( (NTASK + CHUNK - 1) / CHUNK )); mkdir -p "$OUT"

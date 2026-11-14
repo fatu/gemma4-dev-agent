@@ -339,7 +339,25 @@ GPUS=0,1,2,3,4,5,6,7 nohup bash train/mc_box.sh train > runs/mc_train_e4b.log 2>
 export MODEL=google/gemma-4-E4B-it-qat-w4a16-ct GPUS="0 1 2 3" PORT=8010 TAG=vf_e4b_th SUBSET=verified WORKERS=8 EVAL_JOBS=16 THINK_HIST=1 MAX_TOK=8192 TOP_P=0.95 THINK_BUDGET=4096
 bash scripts/verified_box.sh serve && nohup bash scripts/verified_box.sh full > runs/verified/vf_e4b_th.full.log 2>&1 &
 ```
-The adapter's eval (ADAPTER knob + paired.py) is built next; it runs against `vf_e4b_th` on the same box.
+**Adapter eval (built 2026-11-13, user: "写"), after `vf_e4b_th` is graded, on the same box.** Use EXACTLY the export of
+`vf_e4b_th` (same GPUS, WORKERS, sampling, THINK_HIST) and change only TAG and ADAPTER:
+```
+bash scripts/verified_box.sh stop                               # the base servers (same GPUS as the export)
+export TAG=vf_e4b_mc ADAPTER=adapters/mc_gemma-4-E4B_r1k_lr1e-5/epoch2    # + the rest of vf_e4b_th's export unchanged
+bash scripts/verified_box.sh serve    # 📷 the 'vLLM up' lines (lora: lora · max_lora_rank 32) + 'adapter check … → the adapter acts'
+nohup bash scripts/verified_box.sh full > runs/verified/vf_e4b_mc.full.log 2>&1 &
+bash scripts/verified_box.sh report                             # 📷 the == block
+python3 scripts/paired.py runs/verified/vf_e4b_th runs/verified/vf_e4b_mc   # 📷 the == paired block
+```
+`ADAPTER` (printed in the header with r / alpha / sha256): serve links the PEFT dir into
+`runs/verified/adapter_<ADAPTER_NAME>/adapters/<ADAPTER_NAME>/` and lets `serve_vllm.sh` mount it with the scorer's LoRA
+limits; run / full ask for model `ADAPTER_NAME` (default `lora`) and refuse to start if the server does not list it.
+Serve then sends one fixed prompt at temperature 0 to the base and to the adapter on every card and prints both summed
+logprobs: `IDENTICAL` = the adapter does not act → stop and photo the vLLM log. `paired.py`: resolved A / B with Wilson
+95 % CIs, both / only A / only B, B − A with a paired 95 % CI, exact McNemar p, exit statuses, empty patches, how the
+ContextWindowExceeded tasks move, per-repo changes; task ids per cell go to `runs/verified/paired_<A>_<B>.json`. Known
+difference: the base servers run without `--enable-lora`, the adapter's with it (as the scorer does when an adapter is
+mounted). If the adapter check fails or vLLM refuses the adapter (E4B's KV-shared layers have no k/v LoRA), photo it.
 
 **Order changed (user, 2026-11-13): train first, the new baselines (1b) after — training shows data errors early.**
 Built 2026-11-13: `mc_box.sh env | dequant | smoke | train` (knobs printed: GPUS · CARDS_PER_RANK · LR 1e-5 · EPOCHS 2 ·
@@ -367,7 +385,7 @@ box (~3 min): `bash train/mc_box.sh data && bash train/mc_box.sh render`** (data
 upload the new files if you keep the Kaggle copy. If smoke runs out of memory on one card: `CARDS_PER_RANK=2 GPUS=0,1 bash train/mc_box.sh smoke`, then train with
 `CARDS_PER_RANK=2 GPUS=0,1,2,3,4,5,6,7` (4 ranks). Stop and photo if: render is not PASS, the schedule line drops many
 sequences (`dropped: > 30720 tokens`), the holdout NLL rises from `eval[start]`, or a rank ends early. Read the time from
-smoke: total tokens × 2 / (tok/s × ranks). Then 1b, then the adapter eval (ADAPTER knob + paired.py, built next).
+smoke: total tokens × 2 / (tok/s × ranks). Then 1b, then the adapter eval (commands under the E4B sequence above).
 
 **Step 1b · the new baselines, all 500, THINK_HIST=1** (31B on the 8-card box; E4B on whichever box is free; same
 commands as part 1 plus the knob and new tags; ~ the part-1 times):
