@@ -19,7 +19,7 @@
 set -uo pipefail
 cd "$(dirname "$0")/.."
 STEP="${1:?probe|data|render|env|dequant|smoke|train}"
-MODEL="${MODEL:-google/gemma-4-31B-it-qat-w4a16-ct}"; SERVED="$(basename "$MODEL" | tr '[:upper:]' '[:lower:]')"
+MODEL="${MODEL:-google/gemma-4-E4B-it-qat-w4a16-ct}"; SERVED="$(basename "$MODEL" | tr '[:upper:]' '[:lower:]')"
 GPU="${GPU:-0}"; PORT="${PORT:-8011}"; PROBE_SLICE="${PROBE_SLICE:-0:2}"
 N="${N:-1000}"; SEED="${SEED:-0}"; MAX_CTX="${MAX_CTX:-30720}"; ARM="${ARM:-r1k}"; RENDER_PROCS="${RENDER_PROCS:-16}"
 PY=.venv-eval/bin/python; MC=runs/sft/mc

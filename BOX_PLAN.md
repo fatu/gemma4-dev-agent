@@ -164,7 +164,7 @@ limits, disk); teacher licences.
 **31B result (photo 2026-11-13).** 272 / 500 resolved = **54.4 %** (Wilson 95 % ≈ 50.0–58.7 %), one pass, all 500 predictions (no duplicates or gaps; merged from three runs over task ranges 0–249, 250–274 and 275–499, 16 grading reports). Exit statuses: Submitted 385, ContextWindowExceededError 115. The 115 empty patches are exactly the context-window exits; no other failure type. Among the 385 submitted: 272 resolved (70.6 %). Model calls per task: median 32, p90 56, max 158. Per repo (resolved / tasks): django 128/231, sympy 40/75, sphinx 20/44, matplotlib 18/34, scikit-learn 26/32, astropy 12/22, xarray 14/22, pytest 12/19, pylint 1/10, requests 0/8, seaborn 0/2, flask 1/1.
 Read by the rule set before the data: ≥ 40 % → our setup is near the public level (Vals AI 53.92 % on its subset, a different setup: close, not equivalent). The 32K window is the one visible cost: 23 % of tasks (115) ended on it. Missing: the 50 Verified-mini line (the box could not load the HF dataset: a self-signed certificate; set `SSL_CERT_FILE` and run `report` again, no rerun). The box copy of `verified_box.sh` has two changes not in this repo (MIRROR, START).
 
-### B-9 part 2 · Does a LoRA on MetaCurate's public data improve on the B-9 baseline? (plan 2026-11-13, revised the same day by the user: 31B first, our own LoRA recipe, no pipeline check, no QLoRA, any free box, the criterion is "improved or not") — step 0 ✓ (server drops earlier thoughts) → option ③ THINK_HIST=1 · 0b ✓ (thought newline → stripped) ▶ quick re-probe → data → render → train 31B (user: train first) → 1b baselines → eval
+### B-9 part 2 · Does a LoRA on MetaCurate's public data improve on the B-9 baseline? (plan 2026-11-13, revised the same day by the user: 31B first, our own LoRA recipe, no pipeline check, no QLoRA, any free box, the criterion is "improved or not") — step 0 ✓ (server drops earlier thoughts) → option ③ THINK_HIST=1 · 0b ✓ (thought newline → stripped) → data ✓ → render ✓ → **switched to E4B first (31B training too slow)** ▶ E4B: data+render (task holdout) → dequant → smoke → train → 1b E4B baseline → eval; 31B later
 
 **Question.** Train a LoRA on the public `furiosa-ai/MetaCurate-DeepSeekV4Pro` trajectories (arXiv 2610.23134) and evaluate it
 under exactly the B-9 setup (mini-swe-agent 2.4.6, thinking on, 32K, temperature 0.2, 250 steps, 8,192 tokens per reply,
@@ -280,6 +280,30 @@ resolved → 223 fit → 223 records (139 tasks), 24 s, 251 MB; over-budget turn
 run breaks only at no-thought turns (113), malformed 0, FAIL 0 → PASS, 25 s. `sft_lora.py --dry-run --lr 1e-5 --max-len
 30720` reads it: 329 train + 8 holdout sequences, 21 steps per epoch. Full data ≈ 4×: ~890 records, ~1,350 sequences,
 ~23 M tokens, ~85 optimizer steps per epoch.
+
+**E4B first (user, 2026-11-13: "盒子上训练有点慢，把整个plan先改成E4B的训练").** 31B training on the box was too
+slow; the whole sequence now runs on E4B, 31B comes after. What carries over unchanged:
+- **Data and render.** The 31B-tokenizer render of the shard-0 trajectories is token-identical to the E4B-tokenizer
+  render (337 / 337 sequences, laptop check 2026-11-13), and the peak-context filter uses the same tokenizer, so
+  `r1k.rendered.jsonl` / `r1k.holdout.rendered.jsonl` are E4B's training files as they are. (If data + render were not
+  re-run since `1802230`, re-run them once for the task holdout; MODEL does not matter for these two steps.)
+- **Setup.** THINK_HIST=1, wire mini-think, T2T on, thought newlines stripped, 8,192 per reply · top_p 0.95 · thinking budget
+  4,096, lr 1e-5, 2 epochs, 16 per step, r32 / α32, max len 30,720 (170 steps on the full set).
+- `mc_box.sh` now defaults to MODEL=E4B (`google/gemma-4-E4B-it-qat-w4a16-ct`).
+Not checked for E4B: its own generation habits under THINK_HIST=1 (the probes ran on 31B). Optional, 3 min:
+`MODEL=google/gemma-4-E4B-it-qat-w4a16-ct GPU=0 PORT=8010 bash scripts/verified_box.sh serve` then
+`GPU=0 PORT=8010 bash train/mc_box.sh probe` (📷 the same lines; the rendering rules are the same template, so A2 should pass).
+E4B sequence on the free box (stop any 31B training first: `pkill -f "sft_lora.py.*mc_gemma-4-31B"`):
+```
+git pull
+bash train/mc_box.sh dequant                                    # 📷 bf16 E4B → runs/dequant/gemma-4-E4B-dq (~16 GB)
+GPUS=0 bash train/mc_box.sh smoke                               # 📷 peak GB + tok/s
+GPUS=0,1,2,3,4,5,6,7 nohup bash train/mc_box.sh train > runs/mc_train_e4b.log 2>&1 &    # or the 4 cards of the 4-card box
+# then the E4B baseline in the same setup (1b), on whichever box is free:
+export MODEL=google/gemma-4-E4B-it-qat-w4a16-ct GPUS="0 1 2 3" PORT=8010 TAG=vf_e4b_th SUBSET=verified WORKERS=8 EVAL_JOBS=16 THINK_HIST=1 MAX_TOK=8192 TOP_P=0.95 THINK_BUDGET=4096
+bash scripts/verified_box.sh serve && nohup bash scripts/verified_box.sh full > runs/verified/vf_e4b_th.full.log 2>&1 &
+```
+The adapter's eval (ADAPTER knob + paired.py) is built next; it runs against `vf_e4b_th` on the same box.
 
 **Order changed (user, 2026-11-13): train first, the new baselines (1b) after — training shows data errors early.**
 Built 2026-11-13: `mc_box.sh env | dequant | smoke | train` (knobs printed: GPUS · CARDS_PER_RANK · LR 1e-5 · EPOCHS 2 ·
