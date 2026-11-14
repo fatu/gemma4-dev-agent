@@ -359,6 +359,21 @@ ContextWindowExceeded tasks move, per-repo changes; task ids per cell go to `run
 difference: the base servers run without `--enable-lora`, the adapter's with it (as the scorer does when an adapter is
 mounted). If the adapter check fails or vLLM refuses the adapter (E4B's KV-shared layers have no k/v LoRA), photo it.
 
+**Result 2026-11-14: the adapter collapsed** (0 / 125 after 5 chunks, base 12 on the same tasks; one sentence repeated in
+every thought until the 4,096 budget cuts it). **Diagnosis step (user: "可以写")** — does vLLM serve the adapter as trained?
+On ONE free card (stop the 8 LoRA servers first), ~5 min:
+```
+GPUS="0 1 2 3 4 5 6 7" bash scripts/verified_box.sh stop
+CUDA_VISIBLE_DEVICES=0 .venv-eval/bin/python scripts/lora_nll_check.py runs/sft/mc/r1k.holdout.rendered.jsonl \
+  --adapter ep2=adapters/mc_gemma-4-E4B_r1k_lr1e-5/epoch2 --adapter ep1=adapters/mc_gemma-4-E4B_r1k_lr1e-5/epoch1 \
+  --expect base=0.7917,ep1=0.5863,ep2=0.5661 2>&1 | grep -v -E "^(INFO|WARNING|\(EngineCore)" | tee runs/lora_nll_check.log
+```
+📷 every line from `base: vLLM NLL` down (and the `vLLM:` knob line). The label-token count must read 72,720 (= training's
+eval lines). Read: base ≈ 0.79 and ep2 ≈ 0.57 → vLLM serves it as trained, the collapse is in free generation (then:
+the generation lines show whether greedy decoding already loops on a held-out prompt). ep2 not below base → serving
+mismatch (then: the vLLM log's LoRA warnings, module names). The 8016 card's odd logprob: rerun with
+CUDA_VISIBLE_DEVICES=6 and compare.
+
 **Order changed (user, 2026-11-13): train first, the new baselines (1b) after — training shows data errors early.**
 Built 2026-11-13: `mc_box.sh env | dequant | smoke | train` (knobs printed: GPUS · CARDS_PER_RANK · LR 1e-5 · EPOCHS 2 ·
 ACCUM 16 · R/ALPHA 32/32 · WARMUP 0.05 · MAX_LEN 30,720 · DQ · OUTD · DIST_PORT) and `sft_lora.py --device-map auto` (one
