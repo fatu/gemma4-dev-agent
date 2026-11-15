@@ -679,7 +679,14 @@ of memory; 3d prints IDENTICAL or the log has LoRA errors (then the leaf list ch
 3c: `LoRA targets by leaf name` with q/k/v/o_proj 8 each, in_proj_qkv / in_proj_z / out_proj 24 each, gate/up/down 32
 each. Time: full run ≈ total tokens × 2 / (tok/s × cards), printed by the smoke.
 
-**Step 4 (after training; `scripts/` gets the copy counter before this runs).** Base and adapter on the same 125 tasks
+**Step 3a / 3b result (box, 2026-11-14, from the box session's recap).** 3a PASS: 129 / 129 prompts equal the server's in
+text and token count. 3b PASS: 944 training records → 23,151 calls, 1,348 sequences, 22,456,864 tokens, 5,273,739 label
+tokens, length p50 16,244 / max 29,486; held out 8 records → 283 calls, 19 sequences, 72,565 label tokens; **0 sequences
+over 30,720, so the set is Gemma's** (1,348 and 19 sequences there too; Gemma 24.2 M tokens, 72,720 held-out label
+tokens). Breaks: 16 user messages, 388 empty thoughts.
+
+**Step 4 (after training).** `python3 scripts/copy_stats.py runs/verified/vf_q9_th runs/verified/vf_q9_mc` prints the
+copy counts (on part 2's E4B adapter trajectories it gives 78.6 % exact copies in 118 / 148, as analysed then). Base and adapter on the same 125 tasks
 as part 2's graded chunks, same export as step 1 plus `NTASK=125 CHUNK=25`: `TAG=vf_q9_th … full`, then
 `TAG=vf_q9_mc ADAPTER=adapters/mc_Qwen3.5-9B_r1k_lr1e-5/epoch2 … serve / full`, then `paired.py`. The base run does
 not need the adapter: it can run on free cards while 3e trains.
