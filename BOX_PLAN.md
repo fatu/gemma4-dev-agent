@@ -861,6 +861,51 @@ Reading, set before the data (125 tasks, one run per arm; a difference under abo
 - **Copying does not fall** → temperature is not the lever; the loop is in what the model learned.
 - Resolved can also fall at 1.0 (more malformed tool calls): compare the exit statuses and the submitted counts.
 
+**Step 6 interim (box, 2026-11-15, chunk 0 = the first 25 tasks, from the box session's recap; the trajectories were not
+read on the laptop).** Temperature 1.0: base 12 / 25, adapter 13 / 25 (both 11, base only 1, adapter only 2); at 0.2 the
+same 25 tasks gave base 6 and 8, adapter 6 and 3. Exact copies of the previous turn: base 31.2 % → 0 %, adapter 77.0 % →
+0.2 %. Submitted: base 22, adapter 21. Repetition inside a thought remains in 9 / 25 adapter trajectories (base 2 / 25).
+One base task was graded as an error after a 30-minute grading timeout and counts as not resolved. By the reading set in
+advance: low temperature was a large part of the loop. Adapter − base needs all 125 tasks.
+
+**Step 7 · the same temperature change on E4B, 25 tasks (written 2026-11-15, user: "写进计划"; run after step 6 has
+ended and its servers are stopped).** Question: does temperature 1.0 also remove the copying of the E4B adapter? At 0.2
+(part 2) the E4B adapter resolved 0 / 125 (base 12) and 78.6 % of its turn pairs were exact copies, in 118 of 148
+trajectories. Only the temperature changes against part 2's `vf_e4b_th` / `vf_e4b_mc`: `TEMP=1.0`. Still 32K (the
+default MAX_LEN, as in part 2), top_p 0.95, thinking budget 4096, thoughts kept, same harness, the same epoch-2 adapter.
+Tasks: the first 25 of Verified (`NTASK=25 CHUNK=25` = chunk 0 of part 2's runs). Base on cards 0–3, adapter on cards 4–7.
+```bash
+cd gemma4-dev-agent && git pull && git log --oneline -1
+nvidia-smi --query-gpu=index,memory.used --format=csv,noheader      # 📷 all 8 free? (step 6's servers stopped)
+export MODEL=google/gemma-4-E4B-it-qat-w4a16-ct SUBSET=verified WORKERS=8 EVAL_JOBS=8 THINK_HIST=1 MAX_TOK=8192 TOP_P=0.95 THINK_BUDGET=4096
+export NTASK=25 CHUNK=25 KEEP_IMAGES=1 TEMP=1.0
+A=adapters/mc_gemma-4-E4B_r1k_lr1e-5/epoch2; V=runs/verified
+GPUS="0 1 2 3" PORT=8010 bash scripts/verified_box.sh serve                 # 📷 'vLLM up'
+ADAPTER=$A GPUS="4 5 6 7" PORT=8020 bash scripts/verified_box.sh serve      # 📷 + "the adapter acts"
+GPUS="0 1 2 3" PORT=8010 TAG=vf_e4b_th_t1 nohup bash scripts/verified_box.sh full > $V/vf_e4b_th_t1.full.log 2>&1 &
+ADAPTER=$A GPUS="4 5 6 7" PORT=8020 TAG=vf_e4b_mc_t1 nohup bash scripts/verified_box.sh full > $V/vf_e4b_mc_t1.full.log 2>&1 &
+head -2 $V/vf_e4b_th_t1.full.log $V/vf_e4b_mc_t1.full.log | cut -c1-700     # 📷 both headers: temperature 1.0 · max len 32768 · 25 tasks
+
+# when both print '== full … done'
+grep -h '^== chunk\|graded\|STOP\|== full' $V/vf_e4b_th_t1.full.log $V/vf_e4b_mc_t1.full.log   # 📷
+TAG=vf_e4b_th_t1 bash scripts/verified_box.sh report                        # 📷
+ADAPTER=$A TAG=vf_e4b_mc_t1 bash scripts/verified_box.sh report             # 📷
+python3 scripts/paired.py $V/vf_e4b_th_t1 $V/vf_e4b_mc_t1                   # 📷
+python3 scripts/copy_stats.py $V/vf_e4b_th_t1 $V/vf_e4b_mc_t1               # 📷 temperature 1.0
+python3 scripts/copy_stats.py $V/vf_e4b_th/c0 $V/vf_e4b_mc/c0               # 📷 the same 25 tasks at 0.2 (part 2's chunk 0)
+GPUS="0 1 2 3" PORT=8010 bash scripts/verified_box.sh stop; GPUS="4 5 6 7" PORT=8020 bash scripts/verified_box.sh stop
+docker images --format '{{.Repository}}:{{.Tag}}' | grep -E 'sweb\.eval\.x86_64\.' | xargs -r docker rmi > /dev/null; df -h /var/lib/docker | tail -1
+```
+**Stop and photo** if a header shows temperature 0.2 or more than 25 tasks, if the adapter check does not say "the
+adapter acts", or if `vf_e4b_th/c0` or `vf_e4b_mc/c0` does not exist on this box (then the 0.2 reference is missing:
+say so, do not rerun it). Time: not measured for this setting.
+
+Reading, set before the data (25 tasks; the base resolved 12 / 125 at 0.2, so 2–3 of 25 are expected and resolved is not readable here):
+- **The adapter's exact copies fall from the 0.2 level and it edits and submits** → the E4B collapse was largely a
+  low-temperature loop, as for Qwen; the next step is all 125 tasks at 1.0 for adapter − base.
+- **The copies stay** → for E4B the loop is not a temperature effect; the next check is the adapter at half strength.
+- Also read: thought loops per arm (`copy_stats.py` prints them), exits, empty patches.
+
 **Reading (set before the data).**
 - Qwen + our LoRA does not copy and resolves ≥ its base → our data, rendering idea and recipe are sound on a model the
   paper used; the collapse is specific to E4B (family or size, see the confound).
