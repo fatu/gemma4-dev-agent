@@ -717,11 +717,41 @@ CUDA_VISIBLE_DEVICES=0 .venv-eval/bin/python scripts/lora_nll_check.py runs/sft/
 Go on to step 4 if the VERDICT lines say "serves the adapter as trained". This script has not run on Qwen before
 (`--lm-only` = vLLM's `language_model_only`, read in the v0.19.1 source, not run): if it errors, photo the error.
 
-**Step 4 (after training).** `python3 scripts/copy_stats.py runs/verified/vf_q9_th runs/verified/vf_q9_mc` prints the
-copy counts (on part 2's E4B adapter trajectories it gives 78.6 % exact copies in 118 / 148, as analysed then). Base and adapter on the same 125 tasks
-as part 2's graded chunks, same export as step 1 plus `NTASK=125 CHUNK=25`: `TAG=vf_q9_th … full`, then
-`TAG=vf_q9_mc ADAPTER=adapters/mc_Qwen3.5-9B_r1k_lr1e-5/epoch2 … serve / full`, then `paired.py`. The base run does
-not need the adapter: it can run on free cards while 3e trains.
+**Step 3e / 3f result (box, 2026-11-14).** 3e: 8 cards, 45 min, held-out NLL 0.4064 → epoch 1 0.3589 → epoch 2
+**0.3547** (−12.7 %; E4B 0.7917 → 0.5661), falling throughout; adapters exported, PASS. 3f: vLLM NLL = the trainer's
+(0.4064 / 0.3589 / 0.3548) → the adapter is served as trained, linear-attention LoRA included.
+
+**Step 4 · base and adapter on the same 125 tasks, at the same time, one image pull.** Every task runs in a fresh
+container made from its image and removed afterwards, so the images are never changed and both arms can share them; the
+repeated pulls came from `full` deleting the images after each graded chunk. Here both arms run side by side (4 cards
+each) with `KEEP_IMAGES=1`, and the images are deleted once at the end. **Both must have KEEP_IMAGES=1**: an arm without
+it deletes every evaluation image not in use after each of its chunks. Disk: the 125 tasks' images ≈ 30 GB (scaled from
+≈ 120 GB for all 500, not measured); `full` prints the free space before each chunk and stops below 50 GB.
+```bash
+cd gemma4-dev-agent && git pull && git log --oneline -1
+export MODEL=Qwen/Qwen3.5-9B SUBSET=verified WORKERS=8 EVAL_JOBS=8 THINK_HIST=1 MAX_TOK=8192 TOP_P=0.95 THINK_BUDGET=4096
+export NTASK=125 CHUNK=25 KEEP_IMAGES=1
+A=adapters/mc_Qwen3.5-9B_r1k_lr1e-5/epoch2
+# serve: base on cards 0–3 (ports 8010–8013), base + adapter on cards 4–7 (ports 8020–8023)
+GPUS="0 1 2 3" PORT=8010 bash scripts/verified_box.sh serve                 # 📷 the 'vLLM up' lines
+ADAPTER=$A GPUS="4 5 6 7" PORT=8020 bash scripts/verified_box.sh serve      # 📷 + the adapter check lines ("the adapter acts")
+# run + grade, both in the background
+GPUS="0 1 2 3" PORT=8010 TAG=vf_q9_th nohup bash scripts/verified_box.sh full > runs/verified/vf_q9_th.full.log 2>&1 &
+ADAPTER=$A GPUS="4 5 6 7" PORT=8020 TAG=vf_q9_mc nohup bash scripts/verified_box.sh full > runs/verified/vf_q9_mc.full.log 2>&1 &
+head -2 runs/verified/vf_q9_th.full.log runs/verified/vf_q9_mc.full.log | cut -c1-600      # 📷 the two header lines (knobs)
+# when both print '== full … done'
+grep -h '^== chunk\|graded\|STOP\|== full' runs/verified/vf_q9_th.full.log runs/verified/vf_q9_mc.full.log   # 📷
+TAG=vf_q9_th bash scripts/verified_box.sh report                            # 📷 resolved, exit statuses, empty patches
+ADAPTER=$A TAG=vf_q9_mc bash scripts/verified_box.sh report                 # 📷
+python3 scripts/paired.py runs/verified/vf_q9_th runs/verified/vf_q9_mc     # 📷 the == paired block
+python3 scripts/copy_stats.py runs/verified/vf_q9_th runs/verified/vf_q9_mc # 📷 (E4B adapter: 78.6 % exact copies in 118 / 148)
+# clean up
+GPUS="0 1 2 3" PORT=8010 bash scripts/verified_box.sh stop; GPUS="4 5 6 7" PORT=8020 bash scripts/verified_box.sh stop
+docker images --format '{{.Repository}}:{{.Tag}}' | grep -E 'sweb\.eval\.x86_64\.' | xargs -r docker rmi > /dev/null; df -h /var/lib/docker | tail -1
+```
+Not tried before: two `full` runs at once. Ports, proxies (port + 100) and output dirs (by TAG) do not overlap; grading
+uses 8 jobs per arm instead of 16. If anything else collides, stop and photo. The base hit the 32K limit on all 3 smoke
+tasks (step 1d): read the exit statuses of both arms next to resolved and the copy rate.
 
 **Reading (set before the data).**
 - Qwen + our LoRA does not copy and resolves ≥ its base → our data, rendering idea and recipe are sound on a model the
