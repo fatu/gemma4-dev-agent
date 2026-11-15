@@ -65,6 +65,8 @@ def main():
                          "a name gets a LoRA (instead of the -ct checkpoint's module list), the base is loaded with "
                          "AutoModelForImageTextToText and the adapter is exported by lora_export.export_generic")
     ap.add_argument("--base-name", default="", help="with --target-leaves: adapter_config's base_model_name_or_path")
+    ap.add_argument("--seq-log", action="store_true",
+                    help="print one line per sequence (tokens, seconds, tok/s, memory) as it finishes: the smoke's progress")
     ap.add_argument("--data", nargs="+", required=True, help="render.py jsonl file(s)")
     ap.add_argument("--eval", nargs="*", default=[], help="held-out jsonl (else --holdout sequences are split off)")
     ap.add_argument("--holdout", type=int, default=8)
@@ -267,10 +269,15 @@ def main():
                 g["lr"] = lr
             w_lab = sum(1 for i in w for x in rows[i]["labels"] if x != -100)
             sync(); ts = time.time(); w_tok = 0; w_loss = 0.0
-            for i in deal(w):
+            for j, i in enumerate(deal(w)):
+                tq = time.time()
                 l, k, n = loss_sum(rows[i])
                 (l / w_lab).backward()
                 w_loss += l.item(); w_tok += n
+                if a.seq_log:
+                    sync(); dq = max(time.time() - tq, 1e-9)
+                    say(f"    seq {j + 1}/{len(w)} of step {step + 1}: {n} tokens ({k} labels) · forward + backward {dq:.1f} s · "
+                        f"{n / dq:.0f} tok/s · mem {mem():.1f} GB · loss/label {l.item() / max(k, 1):.3f}", flush=True)
             sync(); t_own = time.time() - ts
             t_sync = share_grads()
             w_loss, w_tok, t_all = total(w_loss, w_tok, t_own); w_tok = int(w_tok)

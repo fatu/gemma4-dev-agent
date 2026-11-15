@@ -685,6 +685,14 @@ tokens, length p50 16,244 / max 29,486; held out 8 records → 283 calls, 19 seq
 over 30,720, so the set is Gemma's** (1,348 and 19 sequences there too; Gemma 24.2 M tokens, 72,720 held-out label
 tokens). Breaks: 16 user messages, 388 empty thoughts.
 
+**3c first try (box, 2026-11-14): stopped by the box session after ~8 min with no output — not a result.** The output was
+block-buffered, and one step on the 16 longest sequences took E4B 517 s (943 tok/s); a 9B model needs longer. Now the
+smoke runs unbuffered and prints one `seq k/16` line per sequence (tokens, seconds, tok/s, memory), so the speed shows
+after the first sequence. Decide on the fast linear-attention kernels (`flash-linear-attention`, a pip install into
+.venv-train: needs the user's yes) from that number: full run ≈ 22.5 M tokens × 2 / (tok/s × cards); ≥ ~300 tok/s per
+card is ≈ 5 h on 8 cards and needs nothing. The reference path is plain torch (a depthwise conv1d and a loop over
+64-token chunks per linear-attention layer), not a different model.
+
 **Step 4 (after training).** `python3 scripts/copy_stats.py runs/verified/vf_q9_th runs/verified/vf_q9_mc` prints the
 copy counts (on part 2's E4B adapter trajectories it gives 78.6 % exact copies in 118 / 148, as analysed then). Base and adapter on the same 125 tasks
 as part 2's graded chunks, same export as step 1 plus `NTASK=125 CHUNK=25`: `TAG=vf_q9_th … full`, then

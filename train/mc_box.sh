@@ -196,8 +196,8 @@ with open(sys.argv[2], "w") as w:
 print(f"  smoke data: the 16 longest sequences, {len(rows[0]['input_ids'])}–{len(rows[-1]['input_ids'])} tokens")
 EOF
   SM=adapters/smoke_mc$(echo "$RSUF" | tr . _); rm -rf "$SM"
-  CUDA_VISIBLE_DEVICES=$(rank_cards 0) $TPY train/sft_lora.py $SFT --data "$RD.smoke.jsonl" --holdout 0 --max-steps 1 --eval-every 0 \
-    --out "$SM" 2>&1 | grep -v Warning | tee runs/sft_mc_smoke.log | grep -E "model|base |step|epoch|done|Error|error|CUDA|falling back" | cut -c1-250
+  CUDA_VISIBLE_DEVICES=$(rank_cards 0) $TPY -u train/sft_lora.py $SFT --data "$RD.smoke.jsonl" --holdout 0 --max-steps 1 --eval-every 0 --seq-log \
+    --out "$SM" 2>&1 | grep --line-buffered -v Warning | tee runs/sft_mc_smoke.log | grep --line-buffered -E "model|base |seq |step|epoch|done|Error|error|CUDA|falling back" | cut -c1-250
   echo "  smoke adapter (1 step): $SM/epoch1"
   echo "📷 the model / step / done lines: peak GB (one rank on $(rank_cards 0)) and tok/s → full run ≈ total tokens × $EPOCHS / (tok/s × $NR ranks) ($(( $(date +%s) - T0 )) s)" ;;
 train)
