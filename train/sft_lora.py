@@ -32,7 +32,7 @@ import sys
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from lora_export import ct_modules, export_and_check  # noqa: E402
+from lora_export import ct_modules, export_and_check, export_generic  # noqa: E402
 
 
 def load_rows(paths, max_len):
@@ -60,6 +60,11 @@ def main():
     ap.add_argument("--base", default=None)
     ap.add_argument("--ct", default="google/gemma-4-E4B-it-qat-w4a16-ct")
     ap.add_argument("--alias", default="gemma-4-e4b-it-qat-w4a16-ct")
+    ap.add_argument("--target-leaves", default="",
+                    help="non-Gemma base (B-9 part 3): comma list of leaf names; every nn.Linear under `language_model` with such "
+                         "a name gets a LoRA (instead of the -ct checkpoint's module list), the base is loaded with "
+                         "AutoModelForImageTextToText and the adapter is exported by lora_export.export_generic")
+    ap.add_argument("--base-name", default="", help="with --target-leaves: adapter_config's base_model_name_or_path")
     ap.add_argument("--data", nargs="+", required=True, help="render.py jsonl file(s)")
     ap.add_argument("--eval", nargs="*", default=[], help="held-out jsonl (else --holdout sequences are split off)")
     ap.add_argument("--holdout", type=int, default=8)
@@ -132,9 +137,20 @@ def main():
         import transformers
         from peft import LoraConfig, get_peft_model
         from transformers import AutoModelForImageTextToText
-        cls = getattr(transformers, "Gemma4ForConditionalGeneration", AutoModelForImageTextToText)
-        targets = ct_modules(a.ct)
+        leaves = [x for x in a.target_leaves.split(",") if x]
+        cls = AutoModelForImageTextToText if leaves else getattr(transformers, "Gemma4ForConditionalGeneration", AutoModelForImageTextToText)
         model = cls.from_pretrained(a.base, dtype=torch.bfloat16, device_map=a.device_map)
+        if leaves:
+            import collections
+            targets = [n for n, m in model.named_modules() if isinstance(m, torch.nn.Linear) and "language_model" in n.split(".")
+                       and n.split(".")[-1] in leaves]
+            cnt = collections.Counter(n.split(".")[-1] for n in targets)
+            say(f"  base {type(model).__name__} · LoRA targets by leaf name: " + " · ".join(f"{k} {cnt[k]}" for k in leaves)
+                + f" · final logit softcapping {getattr(model.config.get_text_config(), 'final_logit_softcapping', None)}")
+            if not targets or any(cnt[k] == 0 for k in leaves):
+                sys.exit(f"--target-leaves: no module for {[k for k in leaves if cnt[k] == 0] or leaves}")
+        else:
+            targets = ct_modules(a.ct)
         model.config.use_cache = False
         model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
         model.enable_input_require_grads()
@@ -207,7 +223,7 @@ def main():
             hs = base.model(input_ids=ids).last_hidden_state[0]
             hsel = hs[keep.to(hs.device)]
             tsel = tgt[keep]
-            cap = base.config.get_text_config().final_logit_softcapping
+            cap = getattr(base.config.get_text_config(), "final_logit_softcapping", None)   # Gemma: 30; Qwen3.5: none
 
             def ce_chunk(h, t):
                 lg = base.lm_head(h)
@@ -276,7 +292,12 @@ def main():
                 evaluate(f"step{step}")
         ev_v = evaluate(f"epoch{epoch}")
         out_dir = os.path.join(a.out, f"epoch{epoch}")
-        n_t, size, problems = export_and_check(model, out_dir, a.alias, a.r, a.alpha, targets) if main_rank and not a.mock else (0, 0, [])
+        if not main_rank or a.mock:
+            n_t, size, problems = 0, 0, []
+        elif a.target_leaves:
+            n_t, size, problems = export_generic(model, out_dir, a.base_name or a.base, a.r, a.alpha, targets)
+        else:
+            n_t, size, problems = export_and_check(model, out_dir, a.alias, a.r, a.alpha, targets)
         ep = {"epoch": epoch, "steps": step, "train_loss_mean": sum(e_loss) / max(len(e_loss), 1),
               "train_loss_last5": sum(e_loss[-5:]) / max(len(e_loss[-5:]), 1), "holdout_nll": ev_v,
               "tokens": e_tok, "seconds": round(time.time() - e_t0), "adapter": out_dir, "tensors": n_t,

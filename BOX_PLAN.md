@@ -195,7 +195,7 @@ Gemma's style (native thoughts; distillation inside the family).
 Final submission 12-02. **Risks:** token cost; gateway rate limits; reasoning not returned; ~1,400 image pulls (Docker Hub
 limits, disk); teacher licences.
 
-## B-9 · All 500 of SWE-bench Verified: 31B on the 8-card box, E4B on the 4-card box (2026-11-11) — 31B ✓ 272 / 500 (54.4 %) · E4B ▶ running (another session) · part 2 (a LoRA on MetaCurate's data): E4B adapter collapsed 0 / 125 (copy loop) · part 3 (control on the paper's 9B model): step 0 ✓, ▶ step 1 on the box
+## B-9 · All 500 of SWE-bench Verified: 31B on the 8-card box, E4B on the 4-card box (2026-11-11) — 31B ✓ 272 / 500 (54.4 %) · E4B ▶ running (another session) · part 2 (a LoRA on MetaCurate's data): E4B adapter collapsed 0 / 125 (copy loop) · part 3 (control on the paper's 9B model): steps 0–2 ✓, ▶ step 3 on the box
 
 **31B result (photo 2026-11-13).** 272 / 500 resolved = **54.4 %** (Wilson 95 % ≈ 50.0–58.7 %), one pass, all 500 predictions (no duplicates or gaps; merged from three runs over task ranges 0–249, 250–274 and 275–499, 16 grading reports). Exit statuses: Submitted 385, ContextWindowExceededError 115. The 115 empty patches are exactly the context-window exits; no other failure type. Among the 385 submitted: 272 resolved (70.6 %). Model calls per task: median 32, p90 56, max 158. Per repo (resolved / tasks): django 128/231, sympy 40/75, sphinx 20/44, matplotlib 18/34, scikit-learn 26/32, astropy 12/22, xarray 14/22, pytest 12/19, pylint 1/10, requests 0/8, seaborn 0/2, flask 1/1.
 Read by the rule set before the data: ≥ 40 % → our setup is near the public level (Vals AI 53.92 % on its subset, a different setup: close, not equivalent). The 32K window is the one visible cost: 23 % of tasks (115) ended on it. Missing: the 50 Verified-mini line (the box could not load the HF dataset: a self-signed certificate; set `SSL_CERT_FILE` and run `report` again, no rerun). The box copy of `verified_box.sh` has two changes not in this repo (MIRROR, START).
@@ -529,7 +529,7 @@ If it stopped early (STOP line, crash, reboot): free disk or lower CHUNK, `serve
 - E4B vs 31B on the same 500 tasks is the size gap within one setup; the per-repo line shows where it comes from.
 - Costs: box time only (free); no token totals (mini's cost tracking is off for local models).
 
-### B-9 part 3 · Control: the paper's 9B model + our data + our LoRA — is the collapse Gemma's? (plan 2026-11-14, user: "用论文上的9B模型，加上我们的训练数据和LoRA，看看结果是不是提升了，这样可以判断是不是gemma 模型的问题") — step 0 ✓ (facts) · ▶ step 1 on the box (download + serve + 3 tasks)
+### B-9 part 3 · Control: the paper's 9B model + our data + our LoRA — is the collapse Gemma's? (plan 2026-11-14, user: "用论文上的9B模型，加上我们的训练数据和LoRA，看看结果是不是提升了，这样可以判断是不是gemma 模型的问题") — steps 0–2 ✓ · ▶ step 3 on the box (check → render → smoke → adapter canary → train)
 
 **Why.** Part 2's E4B adapter is served exactly as trained (vLLM NLL = training NLL) yet copies its previous turn word for
 word (79 % of turn pairs, 0 / 125 resolved; base 12). The teacher data has no such copying. Open question: is that Gemma 4
@@ -625,6 +625,64 @@ does not start (📷 `tail -30 runs/verified/vllm_gpu0.log`), 1c has no tool cal
 line says the earlier thoughts are not rendered.
 Pass = the 3 tasks end with normal exits (Submitted or a limit, not parse errors) and thoughts are rendered in the
 history → step 2 (laptop: renderer + trainer for this model). The 3-task resolved count is not a result.
+
+**Step 1 result (box, 2026-11-14, from the box session's recap).** The model serves at 32K; a thought and a JSON `bash`
+call are parsed; the thinking budget works with `<think>` in the prompt (a long-reasoning prompt: 1,051 generated tokens
+without a budget, 308 with budget 256, a tool call still follows). 3 tasks: 129 calls in 5 min, mini's sampling as set,
+the server's prompts hold 3,445 earlier `<think>` blocks → earlier thoughts are rendered (`summarize` said "no (0 blocks)"
+because it counted Gemma's marker only: fixed). **All 3 ended ContextWindowExceeded with an empty patch** (≈ 27 turns each,
+25 distinct commands, no turn equal to its previous one, all 3 edited, none submitted): the base fills 32K quickly, so its
+resolved rate at 32K may be low and the base-vs-adapter count insensitive; the copy rate stays comparable either way.
+
+**Step 2 (laptop, 2026-11-14) — built, tested on the laptop only (no GPU, no peft there).**
+- `train/render_tmpl.py`: prompts and replies come from the model's own chat template; a call = tokens(prompt) +
+  tokens(reply), labels on the reply (through `<|im_end|>`); calls share a sequence while the next prompt's tokens start
+  with the sequence so far, else a new sequence (after a harness user message; after a reply without a thought, where
+  "<think>\n" + "\n</think>" becomes one "\n\n" token in later prompts). `--check` = A2 against the server's prompts.
+  Laptop: selftest PASS; 40 real trajectories (shard 0) with a Qwen3 tokenizer + the Qwen3.5 template: 1,830 calls,
+  every reply labelled once, 0 malformed; a planted one-character difference is reported by `--check`.
+- **The same records as Gemma's run** (`runs/sft/mc/r1k` + `r1k_holdout`, not rebuilt): the same 952 trajectories and 8
+  held-out tasks, including Gemma's rule that the text of a text + tool-call reply sits in the thought. Sequences longer
+  than 30,720 Qwen tokens are dropped by the trainer (the render line prints how many, with their label tokens).
+- `train/sft_lora.py --target-leaves … --base-name …`: base = the HF repo (bf16, no dequant), loaded with
+  AutoModelForImageTextToText; LoRA on every `language_model` Linear named q/k/v/o_proj, in_proj_qkv, in_proj_z, out_proj,
+  gate/up/down_proj (expected 200 modules: 8×4 + 24×3 + 32×3; the two 32-wide gate projections in_proj_b / in_proj_a are
+  left out); no final-logit softcap (Qwen has none); `lora_export.export_generic` checks the tensors. A tiny random
+  Qwen3.5 model on the laptop confirmed the module names and that decoder → lm_head = the model's logits. **The peft
+  path itself has not run anywhere yet: the smoke is its first test.**
+- `train/mc_box.sh`: MODEL=Qwen/Qwen3.5-9B → FAMILY qwen: steps `check | render | smoke | train` (probe / data refuse:
+  they would rebuild Gemma's records); rendered files `runs/sft/mc/r1k.qwen3.5-9b.*`, adapters
+  `adapters/mc_Qwen3.5-9B_r1k_lr1e-5/`. Gemma's path is unchanged (same file names, same commands).
+- transformers warns that without `flash-linear-attention` / `causal_conv1d` the linear-attention layers use a slow
+  reference implementation: the smoke's tok/s decides whether installing them is worth asking for.
+
+**Step 3 commands (box).** The Qwen server of step 1 holds card 0: stop it first, or give smoke another card.
+```bash
+cd gemma4-dev-agent && git pull && git log --oneline -1
+export MODEL=Qwen/Qwen3.5-9B
+bash train/mc_box.sh check                      # 3a · our rendering = the server's 129 prompts? 📷 calls … line + RESULT
+bash train/mc_box.sh render                     # 3b · 📷 the holdout line + the == render line
+GPU=0 PORT=8010 bash scripts/verified_box.sh stop
+LR=1e-3 GPUS=0 bash train/mc_box.sh smoke       # 3c · 1 step on the 16 longest; LR 1e-3 only so that the 1-step adapter
+                                                #      visibly changes the output in 3d. 📷 base / model / step / epoch / done
+# 3d · canary: does vLLM load a LoRA on the linear-attention layers? (📷 the adapter check line + the grep)
+ADAPTER=adapters/smoke_mc_qwen3_5-9b/epoch1 GPUS="0" PORT=8010 bash scripts/verified_box.sh serve
+grep -i -E "lora|adapter" runs/verified/vllm_gpu0.log | grep -i -E "error|warn|unexpected|not supported|fail|loaded" | cut -c1-200 | head
+GPU=0 PORT=8010 bash scripts/verified_box.sh stop
+# 3e · train (only after 3a PASS, 3c fits, 3d says "the adapter acts"); all free cards
+GPUS=0,1,2,3,4,5,6,7 nohup bash train/mc_box.sh train > runs/mc_train_q9.log 2>&1 &
+grep -E "schedule|eval\[|== epoch|done|Error" runs/mc_train_q9.log | cut -c1-250        # 📷 when it ends
+```
+**Stop and photo, do not work around,** if: 3a is not PASS (the FAIL lines show the first differing characters); 3b
+drops many sequences as over 30,720 (decide with the user: the set would no longer be the same); 3c errors or runs out
+of memory; 3d prints IDENTICAL or the log has LoRA errors (then the leaf list changes, not the server). Expected in
+3c: `LoRA targets by leaf name` with q/k/v/o_proj 8 each, in_proj_qkv / in_proj_z / out_proj 24 each, gate/up/down 32
+each. Time: full run ≈ total tokens × 2 / (tok/s × cards), printed by the smoke.
+
+**Step 4 (after training; `scripts/` gets the copy counter before this runs).** Base and adapter on the same 125 tasks
+as part 2's graded chunks, same export as step 1 plus `NTASK=125 CHUNK=25`: `TAG=vf_q9_th … full`, then
+`TAG=vf_q9_mc ADAPTER=adapters/mc_Qwen3.5-9B_r1k_lr1e-5/epoch2 … serve / full`, then `paired.py`. The base run does
+not need the adapter: it can run on free cards while 3e trains.
 
 **Reading (set before the data).**
 - Qwen + our LoRA does not copy and resolves ≥ its base → our data, rendering idea and recipe are sound on a model the

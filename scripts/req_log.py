@@ -136,8 +136,11 @@ def cmd_summarize(a):
             ids = t.get("tokens") or []
             prompt = post(a.upstream + "/detokenize", {"model": a.model, "tokens": ids}).get("prompt", "")
             # thought blocks of EARLIER turns in the prompt (the open one at the end of the generation prompt excluded)
-            body = prompt[:-len("<|channel>thought\n")] if prompt.endswith("<|channel>thought\n") else prompt
-            S["earlier thought blocks rendered"] += body.count("<|channel>thought")
+            # Gemma opens a thought with "<|channel>thought", Qwen3.5 with "<think>" (B-9 part 3: the Gemma-only count
+            # printed "no (0 blocks)" for Qwen although 3,445 earlier blocks were in the prompts)
+            mark = "<think>\n" if prompt.endswith("<think>\n") else "<|channel>thought\n"     # by the generation prompt
+            body = prompt[:-len(mark)] if prompt.endswith(mark) else prompt
+            S["earlier thought blocks rendered"] += body.count(mark.rstrip("\n"))
             usage = ((x.get("response") or {}).get("usage") or {}).get("prompt_tokens")
             S["usage == tokenize"] += usage == len(ids); S["calls"] += 1
             toks.append(len(ids))

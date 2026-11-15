@@ -16,9 +16,16 @@
 # Knobs (all printed): MODEL (31B) · GPU (0) · PORT (8011; the logger listens on PORT+100) · PROBE_SLICE (0:2) ·
 # HISTORY (from step 0's probe_summary.json; override keep|drop) · N (1000) · SEED (0) · MAX_CTX (30720) · ARM (r1k) ·
 # RENDER_PROCS (16) · T2T (on) · PACK (from step 0: on only if the server renders earlier thoughts). Outputs quote task text → runs/ only (gitignored).
+# Another model family (B-9 part 3, the control on the paper's 9B model): MODEL=Qwen/Qwen3.5-9B → FAMILY qwen (printed):
+#   bash train/mc_box.sh check      # render_tmpl.py on the logged probe requests (PROBE_DIR) vs the server's prompts (A2)
+#   bash train/mc_box.sh render     # the SAME records ($MC/$ARM, $MC/${ARM}_holdout: not rebuilt) through the model's own
+#                                   # chat template (train/render_tmpl.py) → $MC/$ARM.<served>.rendered.jsonl
+#   GPUS=0 bash train/mc_box.sh smoke · GPUS=… bash train/mc_box.sh train      # base = the HF repo (bf16 already: no
+#                                   # dequant), LoRA on TARGET_LEAVES, adapters/mc_<model>_<arm>_lr<LR>
+# probe / data are Gemma's steps (the records are tokenizer-free; the 30,720 fit was decided with Gemma's tokenizer).
 set -uo pipefail
 cd "$(dirname "$0")/.."
-STEP="${1:?probe|data|render|env|dequant|smoke|train}"
+STEP="${1:?probe|data|check|render|env|dequant|smoke|train}"
 MODEL="${MODEL:-google/gemma-4-E4B-it-qat-w4a16-ct}"; SERVED="$(basename "$MODEL" | tr '[:upper:]' '[:lower:]')"
 GPU="${GPU:-0}"; PORT="${PORT:-8011}"; PROBE_SLICE="${PROBE_SLICE:-0:2}"
 N="${N:-1000}"; SEED="${SEED:-0}"; MAX_CTX="${MAX_CTX:-30720}"; ARM="${ARM:-r1k}"; RENDER_PROCS="${RENDER_PROCS:-16}"
@@ -34,17 +41,27 @@ T2T="${T2T:-on}"
 # PACK: one sequence per trajectory only if the server renders earlier thoughts; vLLM 0.19.1 drops mini's
 # reasoning_content (probe 2026-11-13: 0 blocks), so then every call is its own sample (render.py without --pack).
 PACK="${PACK:-$($PY -c "import json; print('on' if json.load(open('$PR/probe_summary.json')).get('server renders earlier thoughts') else 'off')" 2>/dev/null || echo off)}"
-tokdir() { $PY -c "from huggingface_hub import snapshot_download as s; print(s('$MODEL', allow_patterns=['*.json', '*.jinja']))" 2>/dev/null | tail -1; }
-echo "mc_box $STEP · model $MODEL (served $SERVED) · gpu $GPU port $PORT (logger $(( PORT + 100 ))) · probe slice $PROBE_SLICE · think hist $THINK_HIST (wire $WIRE, probe dir $PR) · max tok $MAX_TOK · top_p $TOP_P · thinking budget $THINK_BUDGET · history $HISTORY · text to thought $T2T · pack $PACK · n $N seed $SEED max ctx $MAX_CTX · arm $ARM · render procs $RENDER_PROCS · code $(git log --oneline -1 | cut -c1-40)"
+tokdir() { [ -n "${TOKDIR:-}" ] && { echo "$TOKDIR"; return; }; $PY -c "from huggingface_hub import snapshot_download as s; print(s('$MODEL', allow_patterns=['*.json', '*.jinja']))" 2>/dev/null | tail -1; }
+case "$(basename "$MODEL")" in [Qq]wen3.5*) FAMILY="${FAMILY:-qwen}" ;; *) FAMILY="${FAMILY:-gemma}" ;; esac
+# RSUF: the rendered files of a non-Gemma model sit next to Gemma's under their own name
+RSUF=$([ "$FAMILY" = gemma ] || echo ".$SERVED"); RD="$MC/$ARM$RSUF"
+# TARGET_LEAVES (qwen): the language model's attention + MLP projections. Qwen3.5's 24 linear-attention layers have
+# in_proj_qkv / in_proj_z / out_proj instead of q/k/v/o_proj; their two 32-wide gate projections (in_proj_b / in_proj_a,
+# which vLLM serves as one packed module) are left out.
+TARGET_LEAVES="${TARGET_LEAVES:-q_proj,k_proj,v_proj,o_proj,in_proj_qkv,in_proj_z,out_proj,gate_proj,up_proj,down_proj}"
+PROBE_DIR="${PROBE_DIR:-runs/verified/probe_q9}"
+case "$FAMILY:$STEP" in qwen:probe|qwen:data) echo "$STEP is Gemma's step (it rebuilds $MC/$ARM): for $MODEL use check | render | smoke | train"; exit 1 ;; esac
+echo "mc_box $STEP · family $FAMILY (rendered files $RD.*)$([ "$FAMILY" = gemma ] || echo " · target leaves $TARGET_LEAVES · probe dir $PROBE_DIR") · model $MODEL (served $SERVED) · gpu $GPU port $PORT (logger $(( PORT + 100 ))) · probe slice $PROBE_SLICE · think hist $THINK_HIST (wire $WIRE, probe dir $PR) · max tok $MAX_TOK · top_p $TOP_P · thinking budget $THINK_BUDGET · history $HISTORY · text to thought $T2T · pack $PACK · n $N seed $SEED max ctx $MAX_CTX · arm $ARM · render procs $RENDER_PROCS · tokenizer dir ${TOKDIR:-from the HF cache of MODEL} · code $(git log --oneline -1 | cut -c1-40)"
 T0=$(date +%s)
 ALLGPUS=$(nvidia-smi --query-gpu=index --format=csv,noheader 2>/dev/null | paste -sd, -)
 GPUS="${GPUS:-${ALLGPUS:-0}}"; IFS=, read -r -a GL <<< "$GPUS"; CPR="${CARDS_PER_RANK:-1}"; NR=$(( ${#GL[@]} / CPR ))
 LR="${LR:-1e-5}"; EPOCHS="${EPOCHS:-2}"; ACCUM="${ACCUM:-16}"; R="${R:-32}"; ALPHA="${ALPHA:-32}"; WARMUP="${WARMUP:-0.05}"
 MAX_LEN="${MAX_LEN:-$MAX_CTX}"; MSHORT=$(basename "$MODEL" | sed 's/-it-qat-w4a16-ct//'); DQ="${DQ:-runs/dequant/$MSHORT-dq}"
+[ "$FAMILY" = gemma ] || DQ="${DQ_OVERRIDE:-$MODEL}"      # a bf16 HF repo is its own training base
 OUTD="${OUTD:-adapters/mc_${MSHORT}_${ARM}_lr${LR}}"
-EVALF="$MC/$ARM.holdout.rendered.jsonl"; HOLD=$([ -s "$EVALF" ] && echo "--eval $EVALF --holdout 0" || echo "--holdout 8"); DIST_PORT="${DIST_PORT:-29600}"; TPY="${TPY:-.venv-train/bin/python}"
+EVALF="$RD.holdout.rendered.jsonl"; HOLD=$([ -s "$EVALF" ] && echo "--eval $EVALF --holdout 0" || echo "--holdout 8"); DIST_PORT="${DIST_PORT:-29600}"; TPY="${TPY:-.venv-train/bin/python}"
 SFT_EXTRA="${SFT_EXTRA:-}"                        # laptop test of the launcher: TPY=.venv-eval/bin/python SFT_EXTRA=--mock
-SFT="--base $DQ --ct $MODEL --alias $SERVED --max-len $MAX_LEN --epochs $EPOCHS --lr $LR --warmup $WARMUP --accum $ACCUM --r $R --alpha $ALPHA --clip 1.0 --eval-every 25 --seed 0 --device-map $([ "$CPR" -gt 1 ] && echo auto || echo cuda) $SFT_EXTRA"
+SFT="--base $DQ --ct $MODEL --alias $SERVED --max-len $MAX_LEN --epochs $EPOCHS --lr $LR --warmup $WARMUP --accum $ACCUM --r $R --alpha $ALPHA --clip 1.0 --eval-every 25 --seed 0 --device-map $([ "$CPR" -gt 1 ] && echo auto || echo cuda) $([ "$FAMILY" = gemma ] || echo "--target-leaves $TARGET_LEAVES --base-name $MODEL") $SFT_EXTRA"
 case "$STEP" in env|dequant|smoke|train)
   echo "  train · cards $GPUS · $CPR per rank → $NR rank(s) · dequant $DQ · out $OUTD · held out: $HOLD · sft: $SFT" ;; esac
 rank_cards() { local i=$1; local c=(); for j in $(seq 0 $(( CPR - 1 ))); do c+=("${GL[$(( i * CPR + j ))]}"); done; (IFS=,; echo "${c[*]}"); }
@@ -76,8 +93,48 @@ data)
     --n "$N" --seed "$SEED" --holdout-tasks "${HOLDOUT_TASKS:-8}" --max-ctx "$MAX_CTX" --think-budget "$THINK_BUDGET" --reply-cap "$MAX_TOK" $([ "$T2T" = on ] && echo --text-to-thought) || exit 1
   du -sh "$MC/$ARM" | sed 's/^/  records on disk: /'
   echo "📷 the rows → … line, the printed-only line and the == line ($(( $(date +%s) - T0 )) s)" ;;
+check)      # non-Gemma: our rendering of the logged requests = the prompts the server built?
+  [ -d "$PROBE_DIR/records" ] || { echo "no $PROBE_DIR/records: run the probe of BOX_PLAN (req_log.py proxy + summarize) first"; exit 1; }
+  $PY train/render_tmpl.py "$PROBE_DIR/records" --tokenizer "$(tokdir)" --check "$PROBE_DIR/server_prompts" --max-len "$MAX_CTX" \
+    | grep -E "^render_tmpl|^calls|^FAIL|^MALFORMED|^RESULT" | cut -c1-600
+  echo "📷 the calls … line and RESULT (FAIL lines too) ($(( $(date +%s) - T0 )) s)" ;;
 render)
   [ -d "$MC/$ARM" ] || { echo "no $MC/$ARM: run data first"; exit 1; }
+  if [ "$FAMILY" != gemma ]; then             # the model's own chat template; the same records as Gemma's run
+    TOK="$(tokdir)"; pids=()
+    for i in $(seq 0 $(( RENDER_PROCS - 1 ))); do
+      $PY train/render_tmpl.py "$MC/$ARM" --tokenizer "$TOK" --max-len "$MAX_LEN" --shard "$i/$RENDER_PROCS" --out "$RD.part$i.jsonl" \
+        --stats "$RD.render$i.json" > "$RD.render$i.log" 2>&1 & pids+=($!)
+    done
+    for p in "${pids[@]}"; do wait "$p"; done
+    cat "$RD".part*.jsonl > "$RD.rendered.jsonl"; rm -f "$RD".part*.jsonl
+    if [ -d "$MC/${ARM}_holdout" ]; then
+      $PY train/render_tmpl.py "$MC/${ARM}_holdout" --tokenizer "$TOK" --max-len "$MAX_LEN" --out "$RD.holdout.rendered.jsonl" > "$RD.holdout.render.log" 2>&1
+      echo "  holdout: $(wc -l < "$RD.holdout.rendered.jsonl") sequences from $(ls "$MC/${ARM}_holdout" | grep -c json) records · $(grep -E '^calls' "$RD.holdout.render.log" | cut -c1-330) · $(grep -E '^RESULT' "$RD.holdout.render.log")"
+    else
+      echo "  no $MC/${ARM}_holdout: training falls back to --holdout 8"
+    fi
+    $PY - "$RD" "$RENDER_PROCS" "$MAX_LEN" <<'EOF'
+import collections, json, os, sys
+rd, n, ml = sys.argv[1], int(sys.argv[2]), sys.argv[3]
+T, missing = collections.Counter(), 0
+for i in range(n):
+    f = f"{rd}.render{i}.json"
+    if not os.path.exists(f):
+        missing += 1; print(f"  shard {i}: no stats → tail {rd}.render{i}.log"); continue
+    for k, v in json.load(open(f)).items():
+        if k not in ("len p50", "len max"):
+            T[k] += v
+lens = sorted(len(json.loads(l)["input_ids"]) for l in open(f"{rd}.rendered.jsonl"))
+br = " · ".join(f"{k[7:]} {v}" for k, v in sorted(T.items()) if k.startswith("break: ")) or "none"
+bad = T["fail"] + missing
+print(f"== render {os.path.basename(rd)}: {T['records']} records · {T['calls']} calls · label tokens {T['label tokens']} · {len(lens)} sequences, "
+      f"{sum(lens):,} tokens (len p50 {lens[len(lens) // 2] if lens else 0}, max {lens[-1] if lens else 0}) · breaks: {br} · replies without a thought "
+      f"{T['replies without a thought']} · over {ml}: {T['sequences over ' + ml]} sequences ({T['label tokens in sequences over ' + ml]} label tokens; "
+      f"sft_lora drops them) · malformed calls {T['calls skipped (malformed)']} · FAIL {bad} → {'PASS' if not bad else 'FAIL: grep FAIL ' + rd + '.render*.log'}")
+EOF
+    echo "📷 the holdout line and the == render line ($(( $(date +%s) - T0 )) s)"; exit 0
+  fi
   TOK="$(tokdir)"; pids=()
   for i in $(seq 0 $(( RENDER_PROCS - 1 ))); do
     $PY train/render.py "$MC/$ARM" --tokenizer "$TOK" --wire "$WIRE" $([ "$PACK" = on ] && echo --pack --split-runs) --sample 4 --shard "$i/$RENDER_PROCS" \
@@ -123,29 +180,32 @@ env)
     bash train/setup_train_env.sh 2>&1 | tail -4
   echo "📷 the version line ($(( $(date +%s) - T0 )) s)" ;;
 dequant)
+  [ "$FAMILY" = gemma ] || { echo "  $MODEL is bf16 already: no dequant, the base is the HF repo"; exit 0; }
   if [ -f "$DQ/config.json" ] && ls "$DQ"/*.safetensors >/dev/null 2>&1; then echo "  $DQ exists ($(du -sh "$DQ" | cut -f1)), skipping"; exit 0; fi
   df -h runs | tail -1 | awk '{print "  free disk for runs/: " $4}'
   CUDA_VISIBLE_DEVICES=${GL[0]} $TPY train/dequant_ct.py --model "$MODEL" --out "$DQ" 2>&1 | grep -v Warning | tail -6 | cut -c1-200
   echo "  $(du -sh "$DQ" | cut -f1) in $DQ · 📷 these lines ($(( $(date +%s) - T0 )) s)" ;;
 smoke)      # one rank, the 16 longest sequences, 1 optimizer step: does it fit, how fast
-  [ -s "$MC/$ARM.rendered.jsonl" ] || { echo "no $MC/$ARM.rendered.jsonl: run render first"; exit 1; }
-  $PY - "$MC/$ARM.rendered.jsonl" "$MC/$ARM.smoke.jsonl" <<'EOF'
+  [ -s "$RD.rendered.jsonl" ] || { echo "no $RD.rendered.jsonl: run render first"; exit 1; }
+  $PY - "$RD.rendered.jsonl" "$RD.smoke.jsonl" "$MAX_LEN" <<'EOF'
 import json, sys
-rows = sorted((json.loads(l) for l in open(sys.argv[1])), key=lambda r: -len(r["input_ids"]))[:16]
+rows = sorted((r for r in (json.loads(l) for l in open(sys.argv[1])) if len(r["input_ids"]) <= int(sys.argv[3])),
+              key=lambda r: -len(r["input_ids"]))[:16]                      # the longest that training keeps (≤ MAX_LEN)
 with open(sys.argv[2], "w") as w:
     for r in rows: w.write(json.dumps(r) + "\n")
 print(f"  smoke data: the 16 longest sequences, {len(rows[0]['input_ids'])}–{len(rows[-1]['input_ids'])} tokens")
 EOF
-  rm -rf adapters/smoke_mc
-  CUDA_VISIBLE_DEVICES=$(rank_cards 0) $TPY train/sft_lora.py $SFT --data "$MC/$ARM.smoke.jsonl" --holdout 0 --max-steps 1 --eval-every 0 \
-    --out adapters/smoke_mc 2>&1 | grep -v Warning | tee runs/sft_mc_smoke.log | grep -E "model|step|done|Error|error|CUDA" | cut -c1-250
+  SM=adapters/smoke_mc$(echo "$RSUF" | tr . _); rm -rf "$SM"
+  CUDA_VISIBLE_DEVICES=$(rank_cards 0) $TPY train/sft_lora.py $SFT --data "$RD.smoke.jsonl" --holdout 0 --max-steps 1 --eval-every 0 \
+    --out "$SM" 2>&1 | grep -v Warning | tee runs/sft_mc_smoke.log | grep -E "model|base |step|epoch|done|Error|error|CUDA|falling back" | cut -c1-250
+  echo "  smoke adapter (1 step): $SM/epoch1"
   echo "📷 the model / step / done lines: peak GB (one rank on $(rank_cards 0)) and tok/s → full run ≈ total tokens × $EPOCHS / (tok/s × $NR ranks) ($(( $(date +%s) - T0 )) s)" ;;
 train)
-  [ -s "$MC/$ARM.rendered.jsonl" ] || { echo "no $MC/$ARM.rendered.jsonl: run render first"; exit 1; }
-  [ -f "$DQ/config.json" ] || { echo "no bf16 base in $DQ: run dequant first"; exit 1; }
+  [ -s "$RD.rendered.jsonl" ] || { echo "no $RD.rendered.jsonl: run render first"; exit 1; }
+  [ "$FAMILY" != gemma ] || [ -f "$DQ/config.json" ] || { echo "no bf16 base in $DQ: run dequant first"; exit 1; }
   rm -rf "$OUTD"; PIDS=(); LOGB=runs/sft_$(basename "$OUTD")
   for i in $(seq 1 $(( NR - 1 ))); do       # ranks 1…: in the background; rank 0 in front, it logs and exports
-    CUDA_VISIBLE_DEVICES=$(rank_cards $i) $TPY train/sft_lora.py $SFT --data "$MC/$ARM.rendered.jsonl" $HOLD --out "$OUTD" \
+    CUDA_VISIBLE_DEVICES=$(rank_cards $i) $TPY train/sft_lora.py $SFT --data "$RD.rendered.jsonl" $HOLD --out "$OUTD" \
       --world $NR --rank $i --dist-port $DIST_PORT > $LOGB.rank$i.log 2>&1 &
     PIDS+=($!)
   done
@@ -155,7 +215,7 @@ train)
           pgrep -f "sft_lora.py.*--out $OUTD --world $NR --rank 0 " >/dev/null && { echo "  a rank ended early (see $LOGB.rank*.log): stopping the others"; pkill -f "sft_lora.py.*--out $OUTD --world"; }
           exit; fi; done; done ) & WATCH=$!
   fi
-  CUDA_VISIBLE_DEVICES=$(rank_cards 0) $TPY train/sft_lora.py $SFT --data "$MC/$ARM.rendered.jsonl" $HOLD --out "$OUTD" \
+  CUDA_VISIBLE_DEVICES=$(rank_cards 0) $TPY train/sft_lora.py $SFT --data "$RD.rendered.jsonl" $HOLD --out "$OUTD" \
     --world $NR --rank 0 --dist-port $DIST_PORT 2>&1 | grep -v Warning | tee $LOGB.log | cut -c1-250
   if [ $NR -gt 1 ]; then
     { kill $WATCH; wait $WATCH; } 2>/dev/null; sleep 10; pkill -f "sft_lora.py.*--out $OUTD --world" && echo "  stopped ranks still running after rank 0 ended"
