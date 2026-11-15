@@ -806,10 +806,8 @@ Reading, set before the data (125 tasks, paired):
   distribution; ContextWindowExceeded should now be rare — if it is still frequent, say so before reading resolved.
   The base's number is not the paper's 53.9 % (other harness, 262K, all 500, other sampling); it is a sanity check only.
 
-**Step 6 (later, not written as commands yet): back to 32K with a harness that compacts.** The scorer's window is 32K, so
-the final setting must finish inside it: switch from this harness to one with history compaction (old tool outputs
-folded, the last turns kept), render the training data under the same rule (then the 808 long trajectories may fit),
-retrain, and compare at 32K. To be planned after step 5's result.
+**B-9 ends with step 5.** B-9 only has to show whether the LoRA training helps; a 32K setting with a compacting harness
+(first sketched here as step 6) is cancelled as part of B-9 (2026-11-14).
 
 **Reading (set before the data).**
 - Qwen + our LoRA does not copy and resolves ≥ its base → our data, rendering idea and recipe are sound on a model the
