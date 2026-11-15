@@ -89,7 +89,7 @@ def main():
         cs = [R["calls"][i] for i in ids if i in R["calls"]]
         print(f"   {R['tag']}: exits {dict(st.most_common())} · empty patches {len(R['empty'] & set(ids))}"
               f" · model calls p50 {pct(cs, 0.5)} p90 {pct(cs, 0.9)}")
-    cwe = lambda R: {i for i in ids if R["exit"].get(i) == "ContextWindowExceeded"}
+    cwe = lambda R: {i for i in ids if str(R["exit"].get(i, "")).startswith("ContextWindowExceeded")}   # litellm names it …Error
     ca, cb = cwe(A), cwe(B)
     ea, eb = A["empty"] & set(ids), B["empty"] & set(ids)
     print(f"   ContextWindowExceeded: A {len(ca)} · B {len(cb)} · in both {len(ca & cb)} · A only {len(ca - cb)} · B only {len(cb - ca)}"
