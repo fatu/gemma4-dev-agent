@@ -55,6 +55,21 @@ def lr_at(step, total, warmup, lr, floor=0.1):
     return lr * (floor + (1 - floor) * 0.5 * (1 + math.cos(math.pi * min(t, 1.0))))
 
 
+def fla_path():
+    """which implementation transformers will use for gated-delta layers: fla's triton kernels or its torch reference"""
+    from importlib import metadata
+    try:
+        ver = metadata.version("flash-linear-attention")
+    except metadata.PackageNotFoundError:
+        return "flash-linear-attention NOT installed → transformers' torch reference (same model, ~8x slower: 340 vs 2,780 tok/s on the box)"
+    try:
+        from transformers.utils.import_utils import is_flash_linear_attention_available as ok
+        used = "used" if ok() else "installed but transformers reports it unavailable → torch reference (slow)"
+    except Exception as e:                                   # older / newer transformers without this helper
+        used = f"installed; transformers' availability check not found ({type(e).__name__})"
+    return f"flash-linear-attention {ver} · {used}"
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--base", default=None)
@@ -115,6 +130,8 @@ def main():
         print("  dry run: no model loaded"); return 0
     import torch
     torch.manual_seed(a.seed)
+    if not a.mock:
+        say("  linear-attention kernels (Qwen3.5-style layers only; other models ignore this): " + fla_path(), flush=True)
     t0 = time.time()
     dev = "cpu" if a.mock else "cuda"
     sync = (lambda: None) if a.mock else torch.cuda.synchronize

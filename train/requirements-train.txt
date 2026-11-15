@@ -2,3 +2,7 @@
 # On the laptop the eval venv already has this: .venv-eval/bin/python (transformers 5.20.2 at the time of writing).
 transformers>=5.13
 jinja2>=3.1
+# Training Qwen3.5 (B-9 part 3): the fast kernels for its linear-attention layers, installed into .venv-train on the box.
+# Without it transformers falls back to a torch reference: same losses (within 0.001 per sequence), 340 instead of 2,780 tok/s.
+# sft_lora.py prints which one is in use.
+# flash-linear-attention==0.6.0   (pulls fla-core 0.6.0, einops, ninja; torch stays as installed)

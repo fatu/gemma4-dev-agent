@@ -5,6 +5,10 @@
         --adapter ep2=adapters/mc_gemma-4-E4B_r1k_lr1e-5/epoch2 --adapter ep1=adapters/mc_gemma-4-E4B_r1k_lr1e-5/epoch1 \
         --expect base=0.7917,ep1=0.5863,ep2=0.5661
     python3 scripts/lora_nll_check.py --selftest          # laptop: alignment + verdicts with a fake engine
+    # Qwen3.5-9B (B-9 part 3 step 3f): the language model only, as the server runs it
+    CUDA_VISIBLE_DEVICES=0 .venv-eval/bin/python scripts/lora_nll_check.py runs/sft/mc/r1k.qwen3.5-9b.holdout.rendered.jsonl \
+        --model Qwen/Qwen3.5-9B --lm-only --adapter ep2=adapters/mc_Qwen3.5-9B_r1k_lr1e-5/epoch2 \
+        --adapter ep1=adapters/mc_Qwen3.5-9B_r1k_lr1e-5/epoch1 --expect base=<eval[base]>,ep1=<eval[epoch1]>,ep2=<eval[epoch2]>
 
 1. NLL: vLLM 0.19.1 offline (the eval venv; the same engine as the server, --enable-lora with the scorer's limits:
    max_loras = number of adapters, max_lora_rank = the largest r rounded up) scores every rendered sequence once with
@@ -77,7 +81,9 @@ class VllmEngine:
         kw = {}
         if adapters:
             kw = dict(enable_lora=True, max_loras=len(adapters), max_lora_rank=next(s for s in SIZES if s >= top))
-        print(f"  vLLM: model {a.model} · max_len {a.max_len} · mbt {a.mbt} · gpu_util {a.gpu_util} · lora {kw or 'off'}"
+        if a.lm_only:
+            kw["language_model_only"] = True                 # = the server's --language-model-only (no vision tower)
+        print(f"  vLLM: model {a.model} · max_len {a.max_len} · mbt {a.mbt} · gpu_util {a.gpu_util} · lm_only {a.lm_only} · lora/extra {kw or 'off'}"
               f" · adapters {[(n, p, r) for (n, p), r in zip(adapters, ranks)]}", flush=True)
         self.llm = LLM(model=a.model, max_model_len=a.max_len, gpu_memory_utilization=a.gpu_util,
                        max_num_batched_tokens=a.mbt, enable_prefix_caching=False, **kw)
@@ -166,6 +172,7 @@ def main():
     ap.add_argument("--max-len", type=int, default=32768)
     ap.add_argument("--mbt", type=int, default=4096)
     ap.add_argument("--gpu-util", type=float, default=0.80)
+    ap.add_argument("--lm-only", action="store_true", help="vLLM language_model_only (multimodal checkpoints served with --language-model-only, e.g. Qwen3.5)")
     ap.add_argument("--gen", type=int, default=2, help="sequences whose first-call prompt is also generated from")
     ap.add_argument("--gen-tokens", type=int, default=1024)
     ap.add_argument("--selftest", action="store_true")

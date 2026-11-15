@@ -693,6 +693,30 @@ after the first sequence. Decide on the fast linear-attention kernels (`flash-li
 card is ≈ 5 h on 8 cards and needs nothing. The reference path is plain torch (a depthwise conv1d and a loop over
 64-token chunks per linear-attention layer), not a different model.
 
+**Step 3c / 3d result (box, 2026-11-14, from the box session's recaps).** 3c, same 16 sequences, 1 step, one card:
+transformers' torch reference 83–88 s per sequence ≈ 340 tok/s, step 1,360 s, peak 47.1 GB, loss 0.4026; with
+`flash-linear-attention` 0.6.0 installed into .venv-train (torch unchanged) 10–11 s ≈ **2,780 tok/s**, step 218 s, peak
+40.5 GB, loss 0.4025, every sequence's loss within 0.001 → the same model, 8× faster; export 400 tensors PASS both times.
+`causal_conv1d` could not be installed (no wheel for this torch; the box's nvcc is a different CUDA), it only covers the
+depthwise convolution. Full run ≈ 22.5 M tokens × 2 / (2,780 × 8) ≈ 35 min plus the held-out evaluations, assuming the
+speed holds on shorter sequences and 8 cards scale linearly (neither measured). `sft_lora.py` now prints a
+`linear-attention kernels` line: it must say `flash-linear-attention 0.6.0 · used`; if it says NOT installed, stop (the
+run would take ~8× longer). 3d: vLLM up in 70 s, `Loaded new LoRA adapter`, no LoRA error, no ignored module; same prompt
+at temperature 0: base −4.3439, adapter −4.6573 → the adapter acts. This does not show that the LoRA on the 24
+linear-attention layers is applied (the difference could come from the other modules) → 3f.
+
+**3f · after 3e, before step 4: does vLLM serve the trained adapter as trained?** (one free card, ~10 min; stop any server
+on that card first.) Same check as for Gemma in part 2; if the linear-attention LoRA were dropped when served, the vLLM
+NLL would sit above the trainer's.
+```bash
+grep -E "eval\[" runs/mc_train_q9.log            # the three trainer numbers → --expect
+CUDA_VISIBLE_DEVICES=0 .venv-eval/bin/python scripts/lora_nll_check.py runs/sft/mc/r1k.qwen3.5-9b.holdout.rendered.jsonl \
+    --model Qwen/Qwen3.5-9B --lm-only --adapter ep2=adapters/mc_Qwen3.5-9B_r1k_lr1e-5/epoch2 \
+    --adapter ep1=adapters/mc_Qwen3.5-9B_r1k_lr1e-5/epoch1 --expect base=…,ep1=…,ep2=…      # 📷 from 'base: vLLM NLL' down
+```
+Go on to step 4 if the VERDICT lines say "serves the adapter as trained". This script has not run on Qwen before
+(`--lm-only` = vLLM's `language_model_only`, read in the v0.19.1 source, not run): if it errors, photo the error.
+
 **Step 4 (after training).** `python3 scripts/copy_stats.py runs/verified/vf_q9_th runs/verified/vf_q9_mc` prints the
 copy counts (on part 2's E4B adapter trajectories it gives 78.6 % exact copies in 118 / 148, as analysed then). Base and adapter on the same 125 tasks
 as part 2's graded chunks, same export as step 1 plus `NTASK=125 CHUNK=25`: `TAG=vf_q9_th … full`, then
