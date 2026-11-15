@@ -806,8 +806,65 @@ Reading, set before the data (125 tasks, paired):
   distribution; ContextWindowExceeded should now be rare — if it is still frequent, say so before reading resolved.
   The base's number is not the paper's 53.9 % (other harness, 262K, all 500, other sampling); it is a sanity check only.
 
-**B-9 ends with step 5.** B-9 only has to show whether the LoRA training helps; a 32K setting with a compacting harness
-(first sketched here as step 6) is cancelled as part of B-9 (2026-11-14).
+**Step 4 / 5 result (2026-11-14/15, one run per arm, 125 tasks).** 32K: base 7, adapter 13 (+4.8 points, CI −0.6 … +10.2,
+p 0.146). 128K: base 27, adapter 25 (−1.6 points, CI −9.3 … +6.1, p 0.839) → no measurable effect. Why (laptop analysis
+of the 500 trajectories): exact copies of the previous turn rise with the adapter, 41.7 % → 70.5 % of turn pairs at 128K
+(52 → 85 trajectories), and every resolved task is in a trajectory without a copy. Once a turn has been repeated, both
+arms repeat it again 99.8 % of the time; the arms differ in how often a new turn is followed by its copy: 0.7 % (base) vs
+3.1 % (adapter). Where neither arm copies the adapter resolves more (20 vs 16 of 30) and its submissions are right more
+often (69 % vs 53 %). The 40 training records checked contain no copies.
+
+**Step 6 · temperature 1.0, and the epoch-1 adapter (decided 2026-11-15).** Two questions, three arms, one run:
+- Does a higher temperature reduce the copying? All runs so far used 0.2; the paper evaluated at 1.0 (read from a
+  summary of its appendix, not verbatim), and looping is known to be worst at low temperature.
+- Does the epoch-1 adapter copy less than epoch 2? (Held-out NLL 0.4064 → 0.3589 after epoch 1 → 0.3547 after epoch 2.)
+
+Only the temperature changes against step 5: `TEMP=1.0`. Still 128K, top_p 0.95, thinking budget 4096, thoughts kept,
+same 125 tasks, same harness. No top_k is sent (the script has no such knob; adding one would change a second thing).
+Three arms side by side: base on cards 0–2, epoch 2 on cards 3–5, epoch 1 on cards 6–7. The two adapters need
+different names: both `serve` calls would otherwise rebuild the same `runs/verified/adapter_lora/` directory.
+```bash
+cd gemma4-dev-agent && git pull && git log --oneline -1
+nvidia-smi --query-gpu=index,memory.used --format=csv,noheader      # 📷 all 8 free? (a second 128K round may still run: wait for it)
+export MODEL=Qwen/Qwen3.5-9B SUBSET=verified WORKERS=8 EVAL_JOBS=6 THINK_HIST=1 MAX_TOK=8192 TOP_P=0.95 THINK_BUDGET=4096
+export NTASK=125 CHUNK=25 KEEP_IMAGES=1 MAX_LEN=131072 TEMP=1.0
+A2=adapters/mc_Qwen3.5-9B_r1k_lr1e-5/epoch2; A1=adapters/mc_Qwen3.5-9B_r1k_lr1e-5/epoch1
+GPUS="0 1 2" PORT=8010 bash scripts/verified_box.sh serve                                        # 📷 'vLLM up'
+ADAPTER=$A2 ADAPTER_NAME=lora_ep2 GPUS="3 4 5" PORT=8020 bash scripts/verified_box.sh serve      # 📷 + "the adapter acts"
+ADAPTER=$A1 ADAPTER_NAME=lora_ep1 GPUS="6 7" PORT=8030 bash scripts/verified_box.sh serve        # 📷 + "the adapter acts"
+GPUS="0 1 2" PORT=8010 TAG=vf_q9_th128_t1 nohup bash scripts/verified_box.sh full > runs/verified/vf_q9_th128_t1.full.log 2>&1 &
+ADAPTER=$A2 ADAPTER_NAME=lora_ep2 GPUS="3 4 5" PORT=8020 TAG=vf_q9_mc128_t1 nohup bash scripts/verified_box.sh full > runs/verified/vf_q9_mc128_t1.full.log 2>&1 &
+ADAPTER=$A1 ADAPTER_NAME=lora_ep1 GPUS="6 7" PORT=8030 TAG=vf_q9_mc128e1_t1 nohup bash scripts/verified_box.sh full > runs/verified/vf_q9_mc128e1_t1.full.log 2>&1 &
+head -2 runs/verified/vf_q9_*_t1.full.log | cut -c1-700     # 📷 each header: temperature 1.0 · max len 131072 · the right adapter and name
+# when all three print '== full … done'
+grep -h '^== chunk\|graded\|STOP\|== full' runs/verified/vf_q9_*_t1.full.log        # 📷
+TAG=vf_q9_th128_t1 bash scripts/verified_box.sh report                                                  # 📷
+ADAPTER=$A2 ADAPTER_NAME=lora_ep2 TAG=vf_q9_mc128_t1 bash scripts/verified_box.sh report                # 📷
+ADAPTER=$A1 ADAPTER_NAME=lora_ep1 TAG=vf_q9_mc128e1_t1 bash scripts/verified_box.sh report              # 📷
+R=runs/verified
+python3 scripts/paired.py $R/vf_q9_th128_t1 $R/vf_q9_mc128_t1        # 📷 adapter (epoch 2) − base at 1.0
+python3 scripts/paired.py $R/vf_q9_th128_t1 $R/vf_q9_mc128e1_t1      # 📷 adapter (epoch 1) − base at 1.0
+python3 scripts/paired.py $R/vf_q9_mc128e1_t1 $R/vf_q9_mc128_t1      # 📷 epoch 2 − epoch 1
+python3 scripts/paired.py $R/vf_q9_th128 $R/vf_q9_th128_t1           # 📷 base: 1.0 − 0.2
+python3 scripts/paired.py $R/vf_q9_mc128 $R/vf_q9_mc128_t1           # 📷 epoch 2: 1.0 − 0.2
+python3 scripts/copy_stats.py $R/vf_q9_th128 $R/vf_q9_mc128 $R/vf_q9_th128_t1 $R/vf_q9_mc128_t1 $R/vf_q9_mc128e1_t1   # 📷
+# clean up
+GPUS="0 1 2" PORT=8010 bash scripts/verified_box.sh stop; GPUS="3 4 5" PORT=8020 bash scripts/verified_box.sh stop; GPUS="6 7" PORT=8030 bash scripts/verified_box.sh stop
+docker images --format '{{.Repository}}:{{.Tag}}' | grep -E 'sweb\.eval\.x86_64\.' | xargs -r docker rmi > /dev/null; df -h /var/lib/docker | tail -1
+```
+Not tried before: three `full` runs at once, and an adapter name other than `lora`. The epoch-1 arm has 2 cards, so it
+finishes last. **Stop and photo** if a header shows temperature 0.2 or max len 32768, if an adapter check does not say
+"the adapter acts", or if the disk check stops a run. If the second 128K round at 0.2 (`…r2`) has finished, photo its
+paired block too: it shows how much two runs of the same setting differ, which every reading below depends on.
+
+Reading, set before the data (125 tasks, single runs; a difference under about 8–10 points is not separable):
+- **Copying falls at 1.0** (exact copies well below 41.7 % for the base and 70.5 % for the adapter, in fewer
+  trajectories) → low temperature was a large part of the loop; then read adapter − base at 1.0 as the LoRA result:
+  CI above 0 = the training helps, includes 0 = still not shown.
+- **Copying does not fall** → temperature is not the lever; the loop is in what the model learned.
+- **Epoch 1 copies clearly less than epoch 2 and resolves at least as many** → the second epoch adds copying, use
+  epoch 1; **about the same** → the amount of training between these two is not the lever.
+- Resolved can also fall at 1.0 (more malformed tool calls): compare the exit statuses and the submitted counts.
 
 **Reading (set before the data).**
 - Qwen + our LoRA does not copy and resolves ≥ its base → our data, rendering idea and recipe are sound on a model the
