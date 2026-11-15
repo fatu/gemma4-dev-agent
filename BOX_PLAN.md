@@ -753,6 +753,64 @@ Not tried before: two `full` runs at once. Ports, proxies (port + 100) and outpu
 uses 8 jobs per arm instead of 16. If anything else collides, stop and photo. The base hit the 32K limit on all 3 smoke
 tasks (step 1d): read the exit statuses of both arms next to resolved and the copy rate.
 
+**Step 4 interim (box, 2026-11-14, while chunk 3 of 5 ran): the 32K window decides, not the model.** Finished so far:
+base 100 tasks, 90 ContextWindowExceeded, 10 submitted; adapter 97 tasks, 84 ContextWindowExceeded, 13 submitted; on the
+first 75 graded tasks base 4 resolved, adapter 8. This harness (mini-swe-agent) has no history compaction: a run that
+passes the window ends with an empty patch. The training set holds only trajectories that fit 30,720 tokens (952 of the
+1,760 resolved ones; 808 dropped; resolved peak p50 28,818, p90 65,660). Let step 4 finish and photo its report /
+paired / copy_stats as written, but **skip its last line (do not delete the images)**: step 5 uses them.
+
+**Step 5 · the same comparison at 128K (decided 2026-11-14).** Purpose: does the LoRA training improve the 9B model when
+the window is not what stops it? Only the window changes: `MAX_LEN=131072` (the model card's advice for coding is
+≥ 128K; the paper evaluated at 262K). Same 125 tasks, same adapter (epoch 2, trained on ≤ 30,720-token trajectories),
+same sampling, same harness, same side-by-side layout, new tags. No code change: MAX_LEN is an existing knob of
+`verified_box.sh` / `serve_vllm.sh` and is printed in both header lines.
+```bash
+cd gemma4-dev-agent && git pull && git log --oneline -1
+# the 32K servers must be gone first (the window is set when the server starts)
+GPUS="0 1 2 3" PORT=8010 bash scripts/verified_box.sh stop; GPUS="4 5 6 7" PORT=8020 bash scripts/verified_box.sh stop
+docker images --format '{{.Repository}}' | grep -cE 'sweb\.eval\.x86_64\.'     # 📷 how many task images are still there
+export MODEL=Qwen/Qwen3.5-9B SUBSET=verified WORKERS=8 EVAL_JOBS=8 THINK_HIST=1 MAX_TOK=8192 TOP_P=0.95 THINK_BUDGET=4096
+export NTASK=125 CHUNK=25 KEEP_IMAGES=1 MAX_LEN=131072
+A=adapters/mc_Qwen3.5-9B_r1k_lr1e-5/epoch2
+GPUS="0 1 2 3" PORT=8010 bash scripts/verified_box.sh serve                 # 📷 header (max len 131072) + the 'vLLM up' lines
+ADAPTER=$A GPUS="4 5 6 7" PORT=8020 bash scripts/verified_box.sh serve      # 📷 + "the adapter acts"
+grep -h -i -E "max_model_len|KV cache|maximum concurrency" runs/verified/vllm_gpu0.log runs/verified/vllm_gpu4.log | cut -c1-200   # 📷
+GPUS="0 1 2 3" PORT=8010 TAG=vf_q9_th128 nohup bash scripts/verified_box.sh full > runs/verified/vf_q9_th128.full.log 2>&1 &
+ADAPTER=$A GPUS="4 5 6 7" PORT=8020 TAG=vf_q9_mc128 nohup bash scripts/verified_box.sh full > runs/verified/vf_q9_mc128.full.log 2>&1 &
+head -2 runs/verified/vf_q9_th128.full.log runs/verified/vf_q9_mc128.full.log | cut -c1-600    # 📷 knobs: max len 131072 in both
+# when both print '== full … done'
+grep -h '^== chunk\|graded\|STOP\|== full' runs/verified/vf_q9_th128.full.log runs/verified/vf_q9_mc128.full.log   # 📷
+TAG=vf_q9_th128 bash scripts/verified_box.sh report                         # 📷
+ADAPTER=$A TAG=vf_q9_mc128 bash scripts/verified_box.sh report              # 📷
+python3 scripts/paired.py runs/verified/vf_q9_th128 runs/verified/vf_q9_mc128      # 📷 the == paired block (the answer)
+python3 scripts/copy_stats.py runs/verified/vf_q9_th128 runs/verified/vf_q9_mc128  # 📷
+python3 scripts/paired.py runs/verified/vf_q9_th runs/verified/vf_q9_th128         # 📷 what the window alone did to the base
+# clean up
+GPUS="0 1 2 3" PORT=8010 bash scripts/verified_box.sh stop; GPUS="4 5 6 7" PORT=8020 bash scripts/verified_box.sh stop
+docker images --format '{{.Repository}}:{{.Tag}}' | grep -E 'sweb\.eval\.x86_64\.' | xargs -r docker rmi > /dev/null; df -h /var/lib/docker | tail -1
+```
+Not measured: how long it takes (runs go on up to the 250-step limit instead of stopping at ~27 turns, and prompts are
+up to 4× longer; photo the first `== chunk` line's minutes and decide from that) and how many 128K requests one card
+serves at once (the grep above shows vLLM's own number; if the server refuses to start or reports too little KV cache,
+stop and photo, do not lower MAX_LEN silently). **Stop and photo** also if a header line shows max len 32768.
+
+Reading, set before the data (125 tasks, paired):
+- **Adapter − base, paired 95 % CI above 0** → the training improves the 9B model on this harness; data and recipe work
+  on a model that can use them, and E4B's collapse is E4B's (with the confound already stated: size and family differ).
+- **CI includes 0** → no measurable effect at n = 125 (about ± 8–10 points is the smallest difference this can show);
+  report the point estimate, the discordant counts and the copy rate, and decide whether 500 tasks are worth it.
+- **CI below 0, or the copy rate jumps as it did for E4B** → the recipe harms this model too: the cause is in the data
+  or the recipe, not in Gemma.
+- Limits: the adapter saw only trajectories ≤ 30,720 tokens, so beyond that length it is outside its training
+  distribution; ContextWindowExceeded should now be rare — if it is still frequent, say so before reading resolved.
+  The base's number is not the paper's 53.9 % (other harness, 262K, all 500, other sampling); it is a sanity check only.
+
+**Step 6 (later, not written as commands yet): back to 32K with a harness that compacts.** The scorer's window is 32K, so
+the final setting must finish inside it: switch from this harness to one with history compaction (old tool outputs
+folded, the last turns kept), render the training data under the same rule (then the 808 long trajectories may fit),
+retrain, and compare at 32K. To be planned after step 5's result.
+
 **Reading (set before the data).**
 - Qwen + our LoRA does not copy and resolves ≥ its base → our data, rendering idea and recipe are sound on a model the
   paper used; the collapse is specific to E4B (family or size, see the confound).
