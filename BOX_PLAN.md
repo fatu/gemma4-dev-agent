@@ -868,6 +868,12 @@ same 25 tasks gave base 6 and 8, adapter 6 and 3. Exact copies of the previous t
 One base task was graded as an error after a 30-minute grading timeout and counts as not resolved. By the reading set in
 advance: low temperature was a large part of the loop. Adapter − base needs all 125 tasks.
 
+**Step 6 result (box, 2026-11-15, 125 tasks, one run per arm, from the box session's recap).** Base 63 / 125 (50.4 %),
+adapter 68 / 125 (54.4 %); both 51, base only 12, adapter only 17; adapter − base +4.0 points, CI −4.4 … +12.4, p 0.458
+→ still not shown; a second round at 1.0 is the next step. Temperature is the large effect: base 27 → 63, adapter
+25 → 68. Exact copies: base 41.7 % → 0 %, adapter 70.5 % → 0.03 %. Submitted 118 / 125 in both arms. Adapter calls p50
+48 vs 79, empty patches 8 vs 14. Repetition inside a thought: adapter 43 / 125 trajectories, base 5 / 125.
+
 **Step 7 · the same temperature change on E4B, 25 tasks (written 2026-11-15, user: "写进计划"; run after step 6 has
 ended and its servers are stopped).** Question: does temperature 1.0 also remove the copying of the E4B adapter? At 0.2
 (part 2) the E4B adapter resolved 0 / 125 (base 12) and 78.6 % of its turn pairs were exact copies, in 118 of 148
@@ -905,6 +911,12 @@ Reading, set before the data (25 tasks; the base resolved 12 / 125 at 0.2, so 2�
   low-temperature loop, as for Qwen; the next step is all 125 tasks at 1.0 for adapter − base.
 - **The copies stay** → for E4B the loop is not a temperature effect; the next check is the adapter at half strength.
 - Also read: thought loops per arm (`copy_stats.py` prints them), exits, empty patches.
+
+**Step 7 result (box, 2026-11-15, 25 tasks, from the box session's recap).** Resolved: base 2 (0.2) and 2 (1.0), adapter
+0 and 0. Adapter exact copies 79.4 % in 19 / 25 trajectories → 2.0 % in 3 / 25. Adapter exits at 1.0: 23
+ContextWindowExceeded, 2 submitted; 25 empty patches. Its tool outputs are 3× the base's (p90 8.7K characters vs 3.2K),
+calls p50 26 vs 13. The copies fall but it does not edit and submit: at 32K it fills the window first. Temperature 1.0
+removes the copying of the E4B adapter, not its failure.
 
 **Reading (set before the data).**
 - Qwen + our LoRA does not copy and resolves ≥ its base → our data, rendering idea and recipe are sound on a model the
