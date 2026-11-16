@@ -23,9 +23,11 @@
 #   GPUS=0 bash train/mc_box.sh smoke · GPUS=… bash train/mc_box.sh train      # base = the HF repo (bf16 already: no
 #                                   # dequant), LoRA on TARGET_LEAVES, adapters/mc_<model>_<arm>_lr<LR>
 # probe / data are Gemma's steps (the records are tokenizer-free; the 30,720 fit was decided with Gemma's tokenizer).
+# Any family (B-9 part 3 step 9): ARM=r1k_nt LIKE=r1k T2T=off bash train/mc_box.sh like = the SAME trajectories and held-out
+#   tasks as $MC/$LIKE, rebuilt from the raw rows with this T2T ($MC/$ARM, $MC/${ARM}_holdout); then render / train with that ARM.
 set -uo pipefail
 cd "$(dirname "$0")/.."
-STEP="${1:?probe|data|check|render|env|dequant|smoke|train}"
+STEP="${1:?probe|data|like|check|render|env|dequant|smoke|train}"
 MODEL="${MODEL:-google/gemma-4-E4B-it-qat-w4a16-ct}"; SERVED="$(basename "$MODEL" | tr '[:upper:]' '[:lower:]')"
 GPU="${GPU:-0}"; PORT="${PORT:-8011}"; PROBE_SLICE="${PROBE_SLICE:-0:2}"
 N="${N:-1000}"; SEED="${SEED:-0}"; MAX_CTX="${MAX_CTX:-30720}"; ARM="${ARM:-r1k}"; RENDER_PROCS="${RENDER_PROCS:-16}"
@@ -93,6 +95,14 @@ data)
     --n "$N" --seed "$SEED" --holdout-tasks "${HOLDOUT_TASKS:-8}" --max-ctx "$MAX_CTX" --think-budget "$THINK_BUDGET" --reply-cap "$MAX_TOK" $([ "$T2T" = on ] && echo --text-to-thought) || exit 1
   du -sh "$MC/$ARM" | sed 's/^/  records on disk: /'
   echo "📷 the rows → … line, the printed-only line and the == line ($(( $(date +%s) - T0 )) s)" ;;
+like)       # the same trajectories as $MC/$LIKE with this T2T setting (no tokenizer, nothing selected again)
+  LIKE="${LIKE:?LIKE=<existing arm, e.g. r1k>}"
+  [ "$T2T" = on ] || [ "$T2T" = off ] || { echo "set T2T=on|off"; exit 1; }
+  [ "$ARM" != "$LIKE" ] || { echo "ARM must differ from LIKE ($LIKE): e.g. ARM=r1k_nt"; exit 1; }
+  [ -d "$MC/$LIKE" ] || { echo "no $MC/$LIKE"; exit 1; }
+  echo "  like $MC/$LIKE → $MC/$ARM · T2T $T2T"
+  $PY train/mc_prep.py like --raw "$MC/raw" --like "$MC/$LIKE" --out "$MC/$ARM" $([ "$T2T" = on ] && echo --text-to-thought) || exit 1
+  echo "📷 the two → lines and the == line ($(( $(date +%s) - T0 )) s)" ;;
 check)      # non-Gemma: our rendering of the logged requests = the prompts the server built?
   [ -d "$PROBE_DIR/records" ] || { echo "no $PROBE_DIR/records: run the probe of BOX_PLAN (req_log.py proxy + summarize) first"; exit 1; }
   $PY train/render_tmpl.py "$PROBE_DIR/records" --tokenizer "$(tokdir)" --check "$PROBE_DIR/server_prompts" --max-len "$MAX_CTX" \

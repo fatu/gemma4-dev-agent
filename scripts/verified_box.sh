@@ -54,6 +54,9 @@ THINK_HIST="${THINK_HIST:-0}"
 # (vLLM falls back to the model's generation_config); THINK_BUDGET > 0 = vLLM's per-request thinking_token_budget
 # (extra_body; serve_vllm.sh sets --reasoning-config, which it needs), the same field the Kaggle harness sends.
 TOP_P="${TOP_P:-}"; THINK_BUDGET="${THINK_BUDGET:-0}"
+# TOP_K (B-9 part 3 step 9): "" = not sent. vLLM takes top_k as an extra field, so it goes into extra_body (Qwen3.5's
+# model card and the MetaCurate paper sample with top_k 20; all runs before step 9 sent none).
+TOP_K="${TOP_K:-}"
 CHUNK="${CHUNK:-100}"; KEEP_IMAGES="${KEEP_IMAGES:-0}"; MIN_FREE_GB="${MIN_FREE_GB:-50}"
 # ADAPTER (B-9 part 2): a PEFT dir with adapter_config.json + adapter_model.safetensors. serve mounts it through
 # serve_vllm.sh (runs/verified/adapter_<ADAPTER_NAME>/adapters/<ADAPTER_NAME>/ → --enable-lora, the scorer's limits);
@@ -67,7 +70,7 @@ if [ -n "$ADAPTER" ]; then
 fi
 has_model() { curl -s --max-time 3 "http://127.0.0.1:$1/v1/models" | grep -Eq "\"id\": ?\"$2\""; }   # port · model id
 port_of() { echo $(( PORT + $1 )); }                       # card k of GPUS (0-based) → its port
-echo "verified_box $STEP · model $MODEL (served $SERVED) · gpus ${GPUS[*]} → ports $PORT..$(port_of $(( NP - 1 ))) ($NP part(s), $NTASK tasks) · tag $TAG · subset $SUBSET (grading dataset $DS) · slice ${SLICE:-all} · workers $WORKERS · step limit $STEPS · temperature $TEMP · top_p ${TOP_P:-not sent} · thinking budget $THINK_BUDGET · max tokens $MAX_TOK · pull timeout $PULL_TIMEOUT s · eval jobs $EVAL_JOBS · max len $MAX_LEN · gpu util $GPU_UTIL · api port offset $API_PORT_OFFSET · think hist $THINK_HIST · adapter $AINFO (requests go to $REQ) · chunk $CHUNK keep images $KEEP_IMAGES min free $MIN_FREE_GB GB (full) · mini-swe-agent $MSA · swebench $SWEB · code $(git log --oneline -1 | cut -c1-40)"
+echo "verified_box $STEP · model $MODEL (served $SERVED) · gpus ${GPUS[*]} → ports $PORT..$(port_of $(( NP - 1 ))) ($NP part(s), $NTASK tasks) · tag $TAG · subset $SUBSET (grading dataset $DS) · slice ${SLICE:-all} · workers $WORKERS · step limit $STEPS · temperature $TEMP · top_p ${TOP_P:-not sent} · top_k ${TOP_K:-not sent} · thinking budget $THINK_BUDGET · max tokens $MAX_TOK · pull timeout $PULL_TIMEOUT s · eval jobs $EVAL_JOBS · max len $MAX_LEN · gpu util $GPU_UTIL · api port offset $API_PORT_OFFSET · think hist $THINK_HIST · adapter $AINFO (requests go to $REQ) · chunk $CHUNK keep images $KEEP_IMAGES min free $MIN_FREE_GB GB (full) · mini-swe-agent $MSA · swebench $SWEB · code $(git log --oneline -1 | cut -c1-40)"
 T0=$(date +%s)
 part() {  # one part: $1 port · $2 output dir · $3 slice ("" = all) · $4 log
   has_model "$1" "$REQ" || { echo "no model $REQ on port $1: run serve first (with the same ADAPTER)"; return 1; }
@@ -93,7 +96,10 @@ model:
     drop_params: true
 EOF
   [ -n "$TOP_P" ] && printf '    top_p: %s\n' "$TOP_P" >> "$cfg"
-  [ "$THINK_BUDGET" -gt 0 ] 2>/dev/null && printf '    extra_body:\n      thinking_token_budget: %s\n' "$THINK_BUDGET" >> "$cfg"
+  local eb=""
+  [ "$THINK_BUDGET" -gt 0 ] 2>/dev/null && eb="$eb      thinking_token_budget: $THINK_BUDGET"$'\n'
+  [ -n "$TOP_K" ] && eb="$eb      top_k: $TOP_K"$'\n'
+  [ -n "$eb" ] && printf '    extra_body:\n%s' "$eb" >> "$cfg"
   MSWEA_COST_TRACKING=ignore_errors $VS/mini-extra swebench --subset "$SUBSET" --split test ${3:+--slice "$3"} \
     -m "hosted_vllm/$REQ" -c swebench.yaml -c "$cfg" -w "$WORKERS" -o "$2" > "$4" 2>&1
   local rc=$?

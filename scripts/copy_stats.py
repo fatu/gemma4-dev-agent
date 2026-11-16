@@ -24,6 +24,17 @@ def loops(th):
     return len(th) > 12000 or (bool(s) and collections.Counter(s).most_common(1)[0][1] >= 5)
 
 
+def prose_loops(th):
+    """the same rule without code: fenced blocks dropped, sentences of 30+ characters that do not look like a code line.
+    (The first rule also counts repeated code lines such as `return True`; B-9 part 3, 2026-11-16.)"""
+    if len(th) > 12000:
+        return True
+    t = re.sub(r"```.*?```", "", th, flags=re.S)
+    s = [x.strip() for x in re.split(r"(?<=[.!?\n])\s+", t) if len(x.strip()) >= 30]
+    s = [x for x in s if not x.startswith(("-", "`", "return", "if ", "elif", "else"))]
+    return bool(s) and collections.Counter(s).most_common(1)[0][1] >= 5
+
+
 def stats(d, only=None):
     C, exits, first, runs, thl = collections.Counter(), collections.Counter(), [], [], []
     for f in sorted(glob.glob(os.path.join(d, "**", "*.traj.json"), recursive=True)):
@@ -32,16 +43,22 @@ def stats(d, only=None):
             continue
         t = json.load(open(f))
         exits[(t.get("info") or {}).get("exit_status") or "?"] += 1
+        asst = [m for m in t.get("messages") or [] if m.get("role") == "assistant"]
         turns = [((m.get("reasoning_content") or "").strip(),
                   json.dumps([(tc.get("function") or {}).get("arguments") for tc in m.get("tool_calls") or []]),
                   bool(m.get("tool_calls")))
-                 for m in t.get("messages") or [] if m.get("role") == "assistant"]
+                 for m in asst]
+        C["turns with text beside a tool call"] += sum(1 for m in asst if m.get("tool_calls") and isinstance(m.get("content"), str) and m["content"].strip())
+        C["turns with several tool calls"] += sum(1 for m in asst if len(m.get("tool_calls") or []) > 1)
         C["trajectories"] += 1; C["turns"] += len(turns)
-        fc, run, best, any_loop = None, 1, 1, False
+        fc, run, best, any_loop, any_prose = None, 1, 1, False, False
         for k, (th, cmd, has) in enumerate(turns):
             thl.append(len(th)); C["turns without a tool call"] += not has
             if loops(th):
                 C["turns with a thought loop"] += 1; any_loop = True
+            if prose_loops(th):
+                C["turns with a prose loop"] += 1; any_prose = True
+            C["thoughts over 3000 chars"] += len(th) > 3000; C["thoughts over 12000 chars"] += len(th) > 12000
             if k == 0:
                 continue
             C["pairs"] += 1
@@ -53,7 +70,7 @@ def stats(d, only=None):
                 C["exact copy pairs"] += 1
                 if fc is None:
                     fc = k + 1
-        runs.append(best); C["trajectories with a thought loop"] += any_loop
+        runs.append(best); C["trajectories with a thought loop"] += any_loop; C["trajectories with a prose loop"] += any_prose
         if fc is not None:
             first.append(fc); C["trajectories with an exact copy"] += 1
     n, p = C["trajectories"], max(C["pairs"], 1)
@@ -64,6 +81,11 @@ def stats(d, only=None):
           f" · longest run per trajectory p50 {q(runs, .5)} p90 {q(runs, .9)} max {max(runs) if runs else None}")
     print(f"   thought loops: {C['turns with a thought loop']} turns in {C['trajectories with a thought loop']} / {n} trajectories"
           f" · turns without a tool call {C['turns without a tool call']} · thought chars p50 {q(thl, .5)} p90 {q(thl, .9)}")
+    T = max(C["turns"], 1)
+    print(f"   prose loops (code left out): {C['turns with a prose loop']} turns in {C['trajectories with a prose loop']} / {n} trajectories"
+          f" · thoughts over 3,000 chars {C['thoughts over 3000 chars']} = {C['thoughts over 3000 chars'] / T:.1%} · over 12,000 chars {C['thoughts over 12000 chars']}")
+    print(f"   turns with text beside a tool call {C['turns with text beside a tool call']} = {C['turns with text beside a tool call'] / T:.1%}"
+          f" · turns with several tool calls {C['turns with several tool calls']} = {C['turns with several tool calls'] / T:.1%}")
     print(f"   exits {dict(exits.most_common())}")
 
 

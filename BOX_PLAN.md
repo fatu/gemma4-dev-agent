@@ -1011,6 +1011,89 @@ hold (13 and 3 resolved, the exits, exact copies 12.7 % of pairs in 53 trajector
   Copies are in 26 of 53 window exits, 26 of 35 step-limit exits, 1 of 37 submitted trajectories.
 - Step 7's statement "temperature 1.0 removes the copying of the E4B adapter" is withdrawn: it delays it.
 
+**Step 9 · Qwen again: retrain without the text-to-thought rule, then one chunk with top_k 20 (decided 2026-11-16, user:
+"接下来的plan是重新训练，然后用topK=20来评测一个chunk"; recipe "只关掉规则"; arms "base + 旧适配器 + 新适配器").** Two things
+differ between our Qwen runs and the paper's / the model card's setup and are tested here, one each:
+- **Training data.** Our records moved the text of a text + tool-call reply to the end of the thought (T2T, a rule made
+  for a Gemma template bug; Qwen's template has no such bug). About 1 reply in 6 is affected, and the old adapter writes
+  text beside a tool call in 0.1 % of its turns (base 5–7 %). New adapter: the SAME 944 + 8 trajectories with the text
+  left where the teacher wrote it; everything else as before (r32 α32, LR 1e-5, 2 epochs, ≤ 30,720 tokens).
+- **Sampling.** Qwen3.5-9B's model card (thinking mode) and the paper sample with top_k 20; we sent none. New knob
+  `TOP_K` in `verified_box.sh` (extra_body, printed in the header as `top_k 20`; "not sent" when unset).
+Question: do the adapter's thought loops at temperature 1.0 come from the rule, from the missing top_k, or neither?
+Laptop (2026-11-16): `mc_prep.py like` on 223 local records PASS (with T2T on it reproduces the old records exactly, 0
+targets changed; with T2T off 962 + 18 of 5,491 targets changed, 0 tool calls differ; the wrapper step stops with FAIL when the raw shards are missing); those records render with the Qwen
+template into the same number of sequences (324), RESULT PASS, no new breaks. Not run on the laptop: training, serving.
+
+**9a · data and training (CPU ~2 min, then 8 cards; the old run took 45 min).**
+```bash
+cd gemma4-dev-agent && git pull && git log --oneline -1
+nvidia-smi --query-gpu=index,memory.used --format=csv,noheader      # 📷 all 8 free?
+export MODEL=Qwen/Qwen3.5-9B
+ARM=r1k_nt LIKE=r1k T2T=off bash train/mc_box.sh like               # 📷 the two → lines + '== mc_prep like … PASS'
+ARM=r1k_nt bash train/mc_box.sh render                              # 📷 the holdout line + the == render line
+ARM=r1k_nt GPUS=0,1,2,3,4,5,6,7 nohup bash train/mc_box.sh train > runs/mc_train_q9_nt.log 2>&1 &
+grep -E "linear-attention|schedule|eval\[|== epoch|done|Error" runs/mc_train_q9_nt.log | cut -c1-250   # 📷 when it ends
+ls adapters/mc_Qwen3.5-9B_r1k_nt_lr1e-5/                            # 📷 epoch1 epoch2
+```
+Expected: `like` 944 records and 8 held out, tool calls differ 0, about 1 call in 6 "with text beside a tool call";
+render about 1,348 sequences and 0 over 30,720 (a few more tokens than before: the text now sits after `</think>`).
+**Stop and photo** if `like` is not PASS or a record count differs from 944 / 8, if render is not PASS or drops
+sequences, if the trainer does not print `flash-linear-attention 0.6.0 · used`, or if the held-out NLL rises. The
+held-out NLL is not comparable with the old adapter's 0.3547 to the third digit: the labels differ in about 1 reply in 6.
+
+**9b · chunk 0 (the first 25 tasks) with top_k 20: base, the old adapter, the new adapter, at the same time.** 128K,
+temperature 1.0, top_p 0.95, thinking budget 4096, thoughts kept, as in step 6; only `TOP_K=20` is new. Cards: base 0–2,
+old adapter 3–5, new adapter 6–7 (fewer cards = fewer parallel parts, not another setting).
+```bash
+export MODEL=Qwen/Qwen3.5-9B SUBSET=verified WORKERS=8 EVAL_JOBS=8 THINK_HIST=1 MAX_TOK=8192 TOP_P=0.95 THINK_BUDGET=4096
+export NTASK=25 CHUNK=25 KEEP_IMAGES=1 MAX_LEN=131072 TEMP=1.0 TOP_K=20
+A=adapters/mc_Qwen3.5-9B_r1k_lr1e-5/epoch2; N=adapters/mc_Qwen3.5-9B_r1k_nt_lr1e-5/epoch2; V=runs/verified
+GPUS="0 1 2" PORT=8010 bash scripts/verified_box.sh serve                   # 📷 'vLLM up'
+ADAPTER=$A GPUS="3 4 5" PORT=8020 bash scripts/verified_box.sh serve        # 📷 + "the adapter acts"
+ADAPTER=$N GPUS="6 7" PORT=8030 bash scripts/verified_box.sh serve          # 📷 + "the adapter acts"
+GPUS="0 1 2" PORT=8010 TAG=vf_q9_th128_t1k20 nohup bash scripts/verified_box.sh full > $V/vf_q9_th128_t1k20.full.log 2>&1 &
+ADAPTER=$A GPUS="3 4 5" PORT=8020 TAG=vf_q9_mc128_t1k20 nohup bash scripts/verified_box.sh full > $V/vf_q9_mc128_t1k20.full.log 2>&1 &
+ADAPTER=$N GPUS="6 7" PORT=8030 TAG=vf_q9_nt128_t1k20 nohup bash scripts/verified_box.sh full > $V/vf_q9_nt128_t1k20.full.log 2>&1 &
+head -2 $V/vf_q9_*_t1k20.full.log | cut -c1-760                             # 📷 three headers: temperature 1.0 · top_k 20 · max len 131072 · 25 tasks
+grep -h -A3 extra_body $V/vf_q9_nt128_t1k20/c0/part0.model.yaml             # 📷 thinking_token_budget and top_k in the request config
+
+# when all three print '== full … done' (step 6: about 50 min for this chunk on 4 cards per arm)
+grep -h '^== chunk\|graded\|STOP\|== full' $V/vf_q9_*_t1k20.full.log         # 📷
+python3 scripts/copy_stats.py $V/vf_q9_th128_t1/c0 $V/vf_q9_mc128_t1/c0 \
+    $V/vf_q9_th128_t1k20 $V/vf_q9_mc128_t1k20 $V/vf_q9_nt128_t1k20           # 📷 all five == blocks (the first two: step 6, no top_k)
+python3 scripts/paired.py $V/vf_q9_mc128_t1k20 $V/vf_q9_nt128_t1k20         # 📷 new − old adapter
+python3 scripts/paired.py $V/vf_q9_th128_t1k20 $V/vf_q9_nt128_t1k20         # 📷 new adapter − base
+GPUS="0 1 2" PORT=8010 bash scripts/verified_box.sh stop; GPUS="3 4 5" PORT=8020 bash scripts/verified_box.sh stop; GPUS="6 7" PORT=8030 bash scripts/verified_box.sh stop
+docker images --format '{{.Repository}}:{{.Tag}}' | grep -E 'sweb\.eval\.x86_64\.' | xargs -r docker rmi > /dev/null; df -h /var/lib/docker | tail -1
+# trajectories of the three arms → the private Kaggle dataset of the Qwen runs (as step 6's zip; without test outputs)
+(cd $V && rm -f q9_verified_traj_t1k20.zip && zip -qr q9_verified_traj_t1k20.zip vf_q9_th128_t1k20 vf_q9_mc128_t1k20 vf_q9_nt128_t1k20 \
+   vf_q9_th128_t1k20.full.log vf_q9_mc128_t1k20.full.log vf_q9_nt128_t1k20.full.log -x '*test_output.txt')
+ls -lh $V/q9_verified_traj_t1k20.zip; unzip -l $V/q9_verified_traj_t1k20.zip | grep -c 'traj.json'   # 📷 75 expected
+```
+**Stop and photo** if a header does not show `top_k 20`, `temperature 1.0` and `max len 131072`, if the model yaml has no
+`top_k`, if an adapter check does not say "the adapter acts", or if port 8030 is taken (then pick another PORT for the
+third arm and say so). `copy_stats.py` now also prints "prose loops (code left out)" (the old loop rule counted repeated
+code lines), thoughts over 3,000 / 12,000 characters, turns with text beside a tool call, turns with several tool calls.
+
+Reference, step 6 chunk 0 (no top_k, laptop count with the new `copy_stats.py`): base 0 prose-loop turns in 0 / 25
+trajectories, thoughts over 3,000 characters 3.2 %, text beside a tool call 5.4 %; old adapter **44 turns in 7 / 25**,
+12.0 %, 42 thoughts over 12,000 characters, text beside a tool call 0.1 %, several tool calls 9.0 %; resolved 12 and 13.
+
+Reading, set before the data (25 tasks, one run: resolved is reported but not read; one trajectory gave 17 of the 44
+loop turns, so trajectories with a loop is the first number, and a change of 1–2 trajectories is noise):
+- **top_k:** old adapter with top_k 20 at ≤ 3 loop trajectories (step 6: 7) → the missing top_k was a large part; 5 or
+  more → not top_k.
+- **the rule:** new adapter at ≤ half of the old adapter's loop trajectories in this run (both with top_k 20), and its
+  share of thoughts over 3,000 characters near the base's → the rule was a cause; about the same → not the rule.
+- **Check that the retraining did what it should:** the new adapter writes text beside a tool call in a few percent of
+  turns (the old one 0.1 %). If it is still near 0, the new data did not reach the adapter: stop and say so.
+- Next: the adapter with fewer loops and the base go to all 125 tasks with top_k 20 (adapter − base is read only there).
+  If neither change reduces the loops: the under-training hypothesis (the paper's LoRA is r64 α128 LR 1e-4; ours is a
+  tenth of that learning rate) or the existing epoch-1 adapter as a dose check.
+- Limits: 25 tasks; the three arms differ in card count (speed only); the paper's 9B result is full fine-tuning for 3
+  epochs on 128K sequences, which this step does not reproduce.
+
 **Reading (set before the data).**
 - Qwen + our LoRA does not copy and resolves ≥ its base → our data, rendering idea and recipe are sound on a model the
   paper used; the collapse is specific to E4B (family or size, see the confound).

@@ -190,6 +190,40 @@ def cmd_build(a):
     print(f"== mc_prep: {len(pick)} records in {a.out}")
 
 
+def cmd_like(a):
+    """The SAME trajectories as an existing records dir (and its _holdout), rebuilt from the raw rows with another
+    text-to-thought setting. No tokenizer: nothing is selected again, peak_ctx is copied from the old record."""
+    print(f"mc_prep like · {REPO_ID}@{REVISION[:12]} · like {a.like} (+ _holdout) · text to thought {a.text_to_thought} · out {a.out}")
+    rows = {r["id"]: r for r in load_rows(a.raw)}
+    tot = collections.Counter()
+    for src, dst in ((a.like.rstrip("/"), a.out.rstrip("/")), (a.like.rstrip("/") + "_holdout", a.out.rstrip("/") + "_holdout")):
+        files = sorted(f for f in glob.glob(os.path.join(src, "*.json")) if not os.path.basename(f).startswith("_"))
+        if not files:
+            print(f"  {src}: no records"); continue
+        os.makedirs(dst, exist_ok=True)
+        c = collections.Counter()
+        for f in files:
+            old = json.load(open(f)); r = rows.get(old["instance_id"])
+            if r is None:
+                c["row missing in raw"] += 1; continue
+            calls = to_calls(r["messages"], old["history"], a.text_to_thought)
+            if len(calls) != len(old["calls"]):
+                c["call count differs"] += 1; continue
+            for x, y in zip(calls, old["calls"]):
+                tx, ty = x["target"], y["target"]
+                c["calls"] += 1; c["turns with text beside a tool call"] += bool(tx["content"].strip() and tx["tool_calls"])
+                c["targets changed"] += (tx["reasoning"], tx["content"]) != (ty["reasoning"], ty["content"])
+                c["tool calls differ (must be 0)"] += tx["tool_calls"] != ty["tool_calls"]
+            rec = dict(old); rec["calls"] = calls; rec["text_to_thought"] = a.text_to_thought; rec["like"] = a.like
+            json.dump(rec, open(os.path.join(dst, os.path.basename(f)), "w")); c["records"] += 1
+        tot.update(c)
+        print(f"  {src} ({len(files)} records, text to thought {json.load(open(files[0])).get('text_to_thought')}) → {dst}: "
+              + " · ".join(f"{k} {v}" for k, v in sorted(c.items())))
+    bad = tot["row missing in raw"] + tot["call count differs"] + tot["tool calls differ (must be 0)"]
+    print(f"== mc_prep like: {tot['records']} records · text to thought {a.text_to_thought} · {'PASS' if tot['records'] and not bad else 'FAIL'}")
+    return 0 if tot["records"] and not bad else 1
+
+
 def norm_req(m):
     """compare what matters to the template: role, content, tool calls (name, parsed args, id), tool_call_id, reasoning"""
     tcs = []
@@ -255,11 +289,14 @@ def main():
     b.add_argument("--reply-cap", type=int, default=8192, help="count (not drop) turns whose whole reply is longer")
     b.add_argument("--text-to-thought", action="store_true", help="move the text of text + tool-call replies into the thought")
     b.add_argument("--max-ctx", type=int, default=30720); b.add_argument("--limit", type=int, default=0, help="debug: first rows only")
+    k = sub.add_parser("like", help="the same trajectories as --like, with another text-to-thought setting")
+    k.add_argument("--raw", required=True); k.add_argument("--like", required=True); k.add_argument("--out", required=True)
+    k.add_argument("--text-to-thought", action="store_true")
     v = sub.add_parser("verify")
     v.add_argument("--traj", required=True); v.add_argument("--probe", required=True)
     v.add_argument("--history", choices=["keep", "drop"], required=True)
     a = ap.parse_args()
-    return {"download": cmd_download, "build": cmd_build, "verify": cmd_verify}[a.cmd](a) or 0
+    return {"download": cmd_download, "build": cmd_build, "like": cmd_like, "verify": cmd_verify}[a.cmd](a) or 0
 
 
 if __name__ == "__main__":
