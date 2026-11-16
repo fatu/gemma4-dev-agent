@@ -981,6 +981,20 @@ Reading, set before the data:
   expected and the interval will be wide).
 - Limit: the adapter was trained on trajectories of at most 30,720 tokens; beyond that it is outside its training range.
 
+**Step 8 result (box, 2026-11-16, 125 tasks, one run per arm, from the box session's recap; not recomputed on the
+laptop).** Resolved: base 13 / 125 (10.4 %), adapter 3 / 125 (2.4 %). Paired: both 3, base only 10, adapter only 0;
+adapter − base −8.0 points (95 % CI −12.8 … −3.2, McNemar p 0.002). Per chunk: base 2 5 1 2 3, adapter 0 2 1 0 0.
+Exits: base 124 submitted; adapter 53 ContextWindowExceeded, 37 submitted, 35 at the step limit. Empty patches 39 vs
+100. Calls p50 13 vs 130. Exact copies of the previous turn: base in 0 / 125 trajectories, adapter in 55 / 125 (12.8 %
+of turn pairs; step 7 at 32K: 2.0 %, 25 tasks). Same command back-to-back 2.0 % vs 26.7 % of pairs, longest run 238.
+Thought loops in 27 vs 63 trajectories. By the reading set in advance: with 128K the adapter still ends on the window or
+with an empty patch in most trajectories, so the window is not the cause; the interval is below 0, so this LoRA harms
+E4B at 128K and 1.0 as it did at 32K and 0.2 (0 vs 12). With room the copying returns: the longer trajectories (130
+calls against 26 at 32K) are mostly repeated commands. Same data and recipe on Qwen3.5-9B at 1.0: 68 vs 63. The
+trajectories of both arms and of step 7's arms (300 files) are in the private Kaggle trajectory dataset; three adapter
+trajectories are 0.7–1.7 GB unpacked (a grep over the whole filesystem; the harness stores the raw output, the model saw
+the truncated one). Not in the recap: the chunk-0 count of non-empty adapter patches, last prompt tokens.
+
 **Reading (set before the data).**
 - Qwen + our LoRA does not copy and resolves ≥ its base → our data, rendering idea and recipe are sound on a model the
   paper used; the collapse is specific to E4B (family or size, see the confound).
