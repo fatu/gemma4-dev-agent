@@ -918,45 +918,67 @@ ContextWindowExceeded, 2 submitted; 25 empty patches. Its tool outputs are 3× t
 calls p50 26 vs 13. The copies fall but it does not edit and submit: at 32K it fills the window first. Temperature 1.0
 removes the copying of the E4B adapter, not its failure.
 
-**Step 8 · E4B at 128K, temperature 1.0, the same 25 tasks (written 2026-11-15, user: "把E4B测试改成128K").** Question:
+**Step 8 · E4B at 128K, temperature 1.0, all 125 tasks, trajectories to Kaggle (written 2026-11-15, user: "把E4B测试改成128K";
+widened the same day from 25 to 125 tasks, user: "在第8步plan里面加上跑125题，输出base和adapter轨迹上传kaggle").** Question:
 is the 32K window what keeps the E4B adapter from editing and submitting? In step 7 it no longer copied, but 23 of 25
 trajectories filled 32K and all 25 patches were empty. Only the window changes against step 7: `MAX_LEN=131072`. Still
-temperature 1.0, top_p 0.95, thinking budget 4096, thoughts kept, the first 25 Verified tasks, the same epoch-2 adapter,
-base on cards 0–3 and adapter on cards 4–7.
+temperature 1.0, top_p 0.95, thinking budget 4096, thoughts kept, the same epoch-2 adapter, base on cards 0–3 and
+adapter on cards 4–7. Tasks: the 125 Verified tasks of part 2 in 5 chunks of 25 (`NTASK=125 CHUNK=25`); chunk 0 is step
+7's 25 tasks, so the 32K comparison is read on chunk 0 and adapter − base on all 125. At the end both arms' trajectories
+go to Kaggle (the laptop has no E4B base trajectories and none at temperature 1.0).
 ```bash
 cd gemma4-dev-agent && git pull && git log --oneline -1
 nvidia-smi --query-gpu=index,memory.used --format=csv,noheader      # 📷 all 8 free?
 export MODEL=google/gemma-4-E4B-it-qat-w4a16-ct SUBSET=verified WORKERS=8 EVAL_JOBS=8 THINK_HIST=1 MAX_TOK=8192 TOP_P=0.95 THINK_BUDGET=4096
-export NTASK=25 CHUNK=25 KEEP_IMAGES=1 MAX_LEN=131072 TEMP=1.0
+export NTASK=125 CHUNK=25 KEEP_IMAGES=1 MAX_LEN=131072 TEMP=1.0
 A=adapters/mc_gemma-4-E4B_r1k_lr1e-5/epoch2; V=runs/verified
 GPUS="0 1 2 3" PORT=8010 bash scripts/verified_box.sh serve                 # 📷 'vLLM up' — or the error if 131072 is refused
 ADAPTER=$A GPUS="4 5 6 7" PORT=8020 bash scripts/verified_box.sh serve      # 📷 + "the adapter acts"
 GPUS="0 1 2 3" PORT=8010 TAG=vf_e4b_th128_t1 nohup bash scripts/verified_box.sh full > $V/vf_e4b_th128_t1.full.log 2>&1 &
 ADAPTER=$A GPUS="4 5 6 7" PORT=8020 TAG=vf_e4b_mc128_t1 nohup bash scripts/verified_box.sh full > $V/vf_e4b_mc128_t1.full.log 2>&1 &
-head -2 $V/vf_e4b_th128_t1.full.log $V/vf_e4b_mc128_t1.full.log | cut -c1-700   # 📷 both headers: temperature 1.0 · max len 131072 · 25 tasks
+head -2 $V/vf_e4b_th128_t1.full.log $V/vf_e4b_mc128_t1.full.log | cut -c1-700   # 📷 both headers: temperature 1.0 · max len 131072 · 125 tasks
+
+# after chunk 0 of both arms is graded (the first 25 tasks = step 7's): the early look, the run goes on
+python3 scripts/copy_stats.py $V/vf_e4b_mc_t1 $V/vf_e4b_th128_t1/c0 $V/vf_e4b_mc128_t1/c0   # 📷 exits, copies, thought loops
+grep -h '^== chunk\|graded' $V/vf_e4b_th128_t1.full.log $V/vf_e4b_mc128_t1.full.log        # 📷 resolved in chunk 0
 
 # when both print '== full … done'
 grep -h '^== chunk\|graded\|STOP\|== full' $V/vf_e4b_th128_t1.full.log $V/vf_e4b_mc128_t1.full.log   # 📷
 TAG=vf_e4b_th128_t1 bash scripts/verified_box.sh report                     # 📷
 ADAPTER=$A TAG=vf_e4b_mc128_t1 bash scripts/verified_box.sh report          # 📷
-python3 scripts/paired.py $V/vf_e4b_th128_t1 $V/vf_e4b_mc128_t1             # 📷 adapter − base at 128K
-python3 scripts/paired.py $V/vf_e4b_mc_t1 $V/vf_e4b_mc128_t1                # 📷 adapter: 128K − 32K
-python3 scripts/paired.py $V/vf_e4b_th_t1 $V/vf_e4b_th128_t1                # 📷 base: 128K − 32K
-python3 scripts/copy_stats.py $V/vf_e4b_th_t1 $V/vf_e4b_mc_t1 $V/vf_e4b_th128_t1 $V/vf_e4b_mc128_t1   # 📷
+python3 scripts/paired.py $V/vf_e4b_th128_t1 $V/vf_e4b_mc128_t1 --out $V/paired_e4b_th128_mc128_t1.json   # 📷 adapter − base at 128K, 125 tasks
+python3 scripts/paired.py $V/vf_e4b_mc_t1 $V/vf_e4b_mc128_t1                # 📷 adapter: 128K − 32K (only the 25 tasks in both)
+python3 scripts/paired.py $V/vf_e4b_th_t1 $V/vf_e4b_th128_t1                # 📷 base: 128K − 32K (only the 25 tasks in both)
+python3 scripts/copy_stats.py $V/vf_e4b_th_t1 $V/vf_e4b_mc_t1 $V/vf_e4b_th128_t1 $V/vf_e4b_mc128_t1   # 📷 32K: 25 tasks · 128K: 125 tasks
 GPUS="0 1 2 3" PORT=8010 bash scripts/verified_box.sh stop; GPUS="4 5 6 7" PORT=8020 bash scripts/verified_box.sh stop
 docker images --format '{{.Repository}}:{{.Tag}}' | grep -E 'sweb\.eval\.x86_64\.' | xargs -r docker rmi > /dev/null; df -h /var/lib/docker | tail -1
-```
-**Stop and photo** if vLLM refuses `max len 131072` for this model (photo the error line: it names the model's limit;
-do not pick another length yourself), if a header shows temperature 0.2 or max len 32768, or if the adapter check does
-not say "the adapter acts". Also report for the adapter: how many trajectories edit a file, the exits, the last prompt
-tokens p50 / p90 / max, and thought loops per arm. Time: not measured for this setting.
 
-Reading, set before the data (25 tasks; the base resolved 2 of them at 32K, so a resolved difference is not readable):
-- **The adapter submits non-empty patches in most trajectories** → the window was the obstacle at 32K; then the full
-  125 tasks at 128K and 1.0 give adapter − base for E4B. Note for the submission: the scorer serves 32K, so a gain that
-  needs 128K does not transfer as it is.
+# trajectories to Kaggle: this step's two arms and step 7's two arms (base AND adapter), without the test outputs
+Z=$V/e4b_verified_traj_t1.zip; rm -f $Z
+(cd $V && zip -qr $(basename $Z) vf_e4b_th128_t1 vf_e4b_mc128_t1 vf_e4b_th_t1 vf_e4b_mc_t1 paired_e4b_th128_mc128_t1.json \
+   vf_e4b_th128_t1.full.log vf_e4b_mc128_t1.full.log -x '*test_output.txt')
+ls -lh $Z; unzip -l $Z | grep -c 'traj.json'     # 📷 size · trajectory files: 300 expected (125 + 125 + 25 + 25)
+```
+Then upload `$Z` as a new version of the **private** Kaggle dataset that already holds the E4B adapter's 0.2
+trajectories (`vf_e4b_mc`), the same way step 6's zip was added to the Qwen one: the earlier files stay, the dataset
+stays private. 📷 the version line and the file list. If the count is not 300, say which arm is short; upload anyway.
+
+**Stop and photo** if vLLM refuses `max len 131072` for this model (photo the error line: it names the model's limit;
+do not pick another length yourself), if a header shows temperature 0.2, max len 32768 or a task count other than 125,
+or if the adapter check does not say "the adapter acts". Also report for the adapter: how many trajectories edit a file,
+the exits, the last prompt tokens p50 / p90 / max, and thought loops per arm. Time: not measured for this setting (5
+chunks; step 7's one chunk at 32K is the only reference, and 128K trajectories run longer).
+
+Reading, set before the data:
+- **Window (chunk 0, the 25 tasks of step 7): the adapter submits non-empty patches in most trajectories** → the window
+  was the obstacle at 32K. Note for the submission: the scorer serves 32K, so a gain that needs 128K does not transfer
+  as it is.
 - **Still ContextWindowExceeded or empty patches in most** → the window is not the cause; the adapter does not get to an
-  edit on E4B even with room. Next: the adapter at half strength, or stop the E4B adapter line.
+  edit on E4B even with room. Next: the adapter at half strength, or stop the E4B adapter line. The run still finishes
+  all 125 tasks: the trajectories are wanted either way.
+- **Adapter − base (all 125 tasks, paired):** the 95 % interval above 0 → the LoRA helps E4B at 128K and 1.0; an interval
+  that contains 0 → not shown (one run per arm; at 0.2 and 32K the base resolved 12 of 125, so few discordant tasks are
+  expected and the interval will be wide).
 - Limit: the adapter was trained on trajectories of at most 30,720 tokens; beyond that it is outside its training range.
 
 **Reading (set before the data).**
