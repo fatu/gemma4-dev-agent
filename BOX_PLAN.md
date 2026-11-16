@@ -1025,55 +1025,88 @@ Laptop (2026-11-16): `mc_prep.py like` on 223 local records PASS (with T2T on it
 targets changed; with T2T off 962 + 18 of 5,491 targets changed, 0 tool calls differ; the wrapper step stops with FAIL when the raw shards are missing); those records render with the Qwen
 template into the same number of sequences (324), RESULT PASS, no new breaks. Not run on the laptop: training, serving.
 
-**9a · data and training (CPU ~2 min, then 8 cards; the old run took 45 min).**
+**Two boxes, started at the same time (user, 2026-11-16: "训练用4卡的box做，测试用8卡，可以同时开始").** 9a trains on the
+4-card box while 9b runs base + the old adapter on the 8-card box; 9c runs the new adapter on the 8-card box once it
+has arrived there. 9b alone already answers the top_k question.
+
+**9a · the 4-card box: data and training (CPU ~2 min, then 4 cards).** The trainer deals each step's 16 sequences to
+the cards and sums the gradients, so 4 cards give the same steps as 8 (the old run: 8 cards, 45 min; 4 cards about
+twice that, not measured).
 ```bash
 cd gemma4-dev-agent && git pull && git log --oneline -1
-nvidia-smi --query-gpu=index,memory.used --format=csv,noheader      # 📷 all 8 free?
+nvidia-smi --query-gpu=index,memory.used --format=csv,noheader      # 📷 all 4 free?
+# what this box must already have (📷 the five lines; anything missing → stop, say which)
+ls runs/sft/mc/r1k | grep -vc '^_'; ls runs/sft/mc/r1k_holdout | wc -l; ls runs/sft/mc/raw/data | wc -l     # 944 · 8 · 4
+ls -d ~/.cache/huggingface/hub/models--Qwen--Qwen3.5-9B && .venv-train/bin/python -c "from importlib import metadata as m; print('flash-linear-attention', m.version('flash-linear-attention'))"
 export MODEL=Qwen/Qwen3.5-9B
 ARM=r1k_nt LIKE=r1k T2T=off bash train/mc_box.sh like               # 📷 the two → lines + '== mc_prep like … PASS'
 ARM=r1k_nt bash train/mc_box.sh render                              # 📷 the holdout line + the == render line
-ARM=r1k_nt GPUS=0,1,2,3,4,5,6,7 nohup bash train/mc_box.sh train > runs/mc_train_q9_nt.log 2>&1 &
+ARM=r1k_nt GPUS=0,1,2,3 nohup bash train/mc_box.sh train > runs/mc_train_q9_nt.log 2>&1 &
 grep -E "linear-attention|schedule|eval\[|== epoch|done|Error" runs/mc_train_q9_nt.log | cut -c1-250   # 📷 when it ends
 ls adapters/mc_Qwen3.5-9B_r1k_nt_lr1e-5/                            # 📷 epoch1 epoch2
+(cd adapters/mc_Qwen3.5-9B_r1k_nt_lr1e-5/epoch2 && sha256sum adapter_model.safetensors adapter_config.json)   # 📷
 ```
 Expected: `like` 944 records and 8 held out, tool calls differ 0, about 1 call in 6 "with text beside a tool call";
-render about 1,348 sequences and 0 over 30,720 (a few more tokens than before: the text now sits after `</think>`).
-**Stop and photo** if `like` is not PASS or a record count differs from 944 / 8, if render is not PASS or drops
-sequences, if the trainer does not print `flash-linear-attention 0.6.0 · used`, or if the held-out NLL rises. The
-held-out NLL is not comparable with the old adapter's 0.3547 to the third digit: the labels differ in about 1 reply in 6.
+render about 1,348 sequences and 0 over 30,720 (a few more tokens than before: the text now sits after `</think>`);
+schedule `2 epochs × 85 optimizer steps (accum 16)`, 4 ranks.
+**Stop and photo** if one of the five lines is missing or differs (the records, the raw shards, the model and the fast
+kernels were made on the box that trained before: if this box lacks them, say so, do not rebuild or install without
+the user's word), if `like` is not PASS, if render is not PASS or drops sequences, if the schedule is not 85 steps per
+epoch, if the trainer does not print `flash-linear-attention 0.6.0 · used`, or if the held-out NLL rises. The held-out
+NLL is not comparable with the old adapter's 0.3547 to the third digit: the labels differ in about 1 reply in 6.
+**Then bring `adapters/mc_Qwen3.5-9B_r1k_nt_lr1e-5/epoch2` to the same path on the 8-card box** (the two files above;
+the way is the box session's: a direct copy if the boxes reach each other, else through a private Kaggle dataset) and
+📷 the same `sha256sum` there: both hashes must be equal.
 
-**9b · chunk 0 (the first 25 tasks) with top_k 20: base, the old adapter, the new adapter, at the same time.** 128K,
-temperature 1.0, top_p 0.95, thinking budget 4096, thoughts kept, as in step 6; only `TOP_K=20` is new. Cards: base 0–2,
-old adapter 3–5, new adapter 6–7 (fewer cards = fewer parallel parts, not another setting).
+**9b · the 8-card box, at the same time: chunk 0 (the first 25 tasks) with top_k 20, base and the old adapter.** 128K,
+temperature 1.0, top_p 0.95, thinking budget 4096, thoughts kept, base on cards 0–3 and the old adapter on cards 4–7,
+all as in step 6; only `TOP_K=20` is new.
+```bash
+cd gemma4-dev-agent && git pull && git log --oneline -1
+nvidia-smi --query-gpu=index,memory.used --format=csv,noheader      # 📷 all 8 free?
+export MODEL=Qwen/Qwen3.5-9B SUBSET=verified WORKERS=8 EVAL_JOBS=8 THINK_HIST=1 MAX_TOK=8192 TOP_P=0.95 THINK_BUDGET=4096
+export NTASK=25 CHUNK=25 KEEP_IMAGES=1 MAX_LEN=131072 TEMP=1.0 TOP_K=20
+A=adapters/mc_Qwen3.5-9B_r1k_lr1e-5/epoch2; V=runs/verified
+GPUS="0 1 2 3" PORT=8010 bash scripts/verified_box.sh serve                 # 📷 'vLLM up'
+ADAPTER=$A GPUS="4 5 6 7" PORT=8020 bash scripts/verified_box.sh serve      # 📷 + "the adapter acts"
+GPUS="0 1 2 3" PORT=8010 TAG=vf_q9_th128_t1k20 nohup bash scripts/verified_box.sh full > $V/vf_q9_th128_t1k20.full.log 2>&1 &
+ADAPTER=$A GPUS="4 5 6 7" PORT=8020 TAG=vf_q9_mc128_t1k20 nohup bash scripts/verified_box.sh full > $V/vf_q9_mc128_t1k20.full.log 2>&1 &
+head -2 $V/vf_q9_th128_t1k20.full.log $V/vf_q9_mc128_t1k20.full.log | cut -c1-760   # 📷 both headers: temperature 1.0 · top_k 20 · max len 131072 · 25 tasks
+grep -h -A3 extra_body $V/vf_q9_mc128_t1k20/c0/part0.model.yaml             # 📷 thinking_token_budget and top_k in the request config
+
+# when both print '== full … done' (step 6: about 50 min for this chunk)
+grep -h '^== chunk\|graded\|STOP\|== full' $V/vf_q9_th128_t1k20.full.log $V/vf_q9_mc128_t1k20.full.log   # 📷
+python3 scripts/copy_stats.py $V/vf_q9_th128_t1/c0 $V/vf_q9_mc128_t1/c0 $V/vf_q9_th128_t1k20 $V/vf_q9_mc128_t1k20   # 📷 four == blocks (the first two: step 6, no top_k)
+python3 scripts/paired.py $V/vf_q9_th128_t1k20 $V/vf_q9_mc128_t1k20         # 📷 old adapter − base, top_k 20
+ADAPTER=$A GPUS="4 5 6 7" PORT=8020 bash scripts/verified_box.sh stop       # the base server on 0–3 may stay; KEEP the images for 9c
+```
+This is the top_k answer: photo it without waiting for 9c.
+
+**9c · the 8-card box, when the new adapter is there: the same chunk, the new adapter.** Cards 4–7, same settings.
 ```bash
 export MODEL=Qwen/Qwen3.5-9B SUBSET=verified WORKERS=8 EVAL_JOBS=8 THINK_HIST=1 MAX_TOK=8192 TOP_P=0.95 THINK_BUDGET=4096
 export NTASK=25 CHUNK=25 KEEP_IMAGES=1 MAX_LEN=131072 TEMP=1.0 TOP_K=20
-A=adapters/mc_Qwen3.5-9B_r1k_lr1e-5/epoch2; N=adapters/mc_Qwen3.5-9B_r1k_nt_lr1e-5/epoch2; V=runs/verified
-GPUS="0 1 2" PORT=8010 bash scripts/verified_box.sh serve                   # 📷 'vLLM up'
-ADAPTER=$A GPUS="3 4 5" PORT=8020 bash scripts/verified_box.sh serve        # 📷 + "the adapter acts"
-ADAPTER=$N GPUS="6 7" PORT=8030 bash scripts/verified_box.sh serve          # 📷 + "the adapter acts"
-GPUS="0 1 2" PORT=8010 TAG=vf_q9_th128_t1k20 nohup bash scripts/verified_box.sh full > $V/vf_q9_th128_t1k20.full.log 2>&1 &
-ADAPTER=$A GPUS="3 4 5" PORT=8020 TAG=vf_q9_mc128_t1k20 nohup bash scripts/verified_box.sh full > $V/vf_q9_mc128_t1k20.full.log 2>&1 &
-ADAPTER=$N GPUS="6 7" PORT=8030 TAG=vf_q9_nt128_t1k20 nohup bash scripts/verified_box.sh full > $V/vf_q9_nt128_t1k20.full.log 2>&1 &
-head -2 $V/vf_q9_*_t1k20.full.log | cut -c1-760                             # 📷 three headers: temperature 1.0 · top_k 20 · max len 131072 · 25 tasks
-grep -h -A3 extra_body $V/vf_q9_nt128_t1k20/c0/part0.model.yaml             # 📷 thinking_token_budget and top_k in the request config
+N=adapters/mc_Qwen3.5-9B_r1k_nt_lr1e-5/epoch2; V=runs/verified
+(cd $N && sha256sum adapter_model.safetensors adapter_config.json)          # 📷 = the 4-card box's hashes
+ADAPTER=$N GPUS="4 5 6 7" PORT=8020 bash scripts/verified_box.sh serve      # 📷 + "the adapter acts"
+ADAPTER=$N GPUS="4 5 6 7" PORT=8020 TAG=vf_q9_nt128_t1k20 nohup bash scripts/verified_box.sh full > $V/vf_q9_nt128_t1k20.full.log 2>&1 &
+head -2 $V/vf_q9_nt128_t1k20.full.log | cut -c1-760                         # 📷 temperature 1.0 · top_k 20 · max len 131072 · 25 tasks · the r1k_nt adapter
 
-# when all three print '== full … done' (step 6: about 50 min for this chunk on 4 cards per arm)
-grep -h '^== chunk\|graded\|STOP\|== full' $V/vf_q9_*_t1k20.full.log         # 📷
-python3 scripts/copy_stats.py $V/vf_q9_th128_t1/c0 $V/vf_q9_mc128_t1/c0 \
-    $V/vf_q9_th128_t1k20 $V/vf_q9_mc128_t1k20 $V/vf_q9_nt128_t1k20           # 📷 all five == blocks (the first two: step 6, no top_k)
+# when it prints '== full … done'
+grep -h '^== chunk\|graded\|STOP\|== full' $V/vf_q9_nt128_t1k20.full.log    # 📷
+python3 scripts/copy_stats.py $V/vf_q9_th128_t1k20 $V/vf_q9_mc128_t1k20 $V/vf_q9_nt128_t1k20   # 📷 three == blocks
 python3 scripts/paired.py $V/vf_q9_mc128_t1k20 $V/vf_q9_nt128_t1k20         # 📷 new − old adapter
 python3 scripts/paired.py $V/vf_q9_th128_t1k20 $V/vf_q9_nt128_t1k20         # 📷 new adapter − base
-GPUS="0 1 2" PORT=8010 bash scripts/verified_box.sh stop; GPUS="3 4 5" PORT=8020 bash scripts/verified_box.sh stop; GPUS="6 7" PORT=8030 bash scripts/verified_box.sh stop
+GPUS="0 1 2 3" PORT=8010 bash scripts/verified_box.sh stop; GPUS="4 5 6 7" PORT=8020 bash scripts/verified_box.sh stop
 docker images --format '{{.Repository}}:{{.Tag}}' | grep -E 'sweb\.eval\.x86_64\.' | xargs -r docker rmi > /dev/null; df -h /var/lib/docker | tail -1
 # trajectories of the three arms → the private Kaggle dataset of the Qwen runs (as step 6's zip; without test outputs)
 (cd $V && rm -f q9_verified_traj_t1k20.zip && zip -qr q9_verified_traj_t1k20.zip vf_q9_th128_t1k20 vf_q9_mc128_t1k20 vf_q9_nt128_t1k20 \
    vf_q9_th128_t1k20.full.log vf_q9_mc128_t1k20.full.log vf_q9_nt128_t1k20.full.log -x '*test_output.txt')
 ls -lh $V/q9_verified_traj_t1k20.zip; unzip -l $V/q9_verified_traj_t1k20.zip | grep -c 'traj.json'   # 📷 75 expected
 ```
-**Stop and photo** if a header does not show `top_k 20`, `temperature 1.0` and `max len 131072`, if the model yaml has no
-`top_k`, if an adapter check does not say "the adapter acts", or if port 8030 is taken (then pick another PORT for the
-third arm and say so). `copy_stats.py` now also prints "prose loops (code left out)" (the old loop rule counted repeated
+**Stop and photo** (9b, 9c) if a header does not show `top_k 20`, `temperature 1.0` and `max len 131072`, if the model
+yaml has no `top_k`, if an adapter check does not say "the adapter acts", or if the hashes of the new adapter differ
+between the boxes. `copy_stats.py` now also prints "prose loops (code left out)" (the old loop rule counted repeated
 code lines), thoughts over 3,000 / 12,000 characters, turns with text beside a tool call, turns with several tool calls.
 
 Reference, step 6 chunk 0 (no top_k, laptop count with the new `copy_stats.py`): base 0 prose-loop turns in 0 / 25
@@ -1091,7 +1124,7 @@ loop turns, so trajectories with a loop is the first number, and a change of 1�
 - Next: the adapter with fewer loops and the base go to all 125 tasks with top_k 20 (adapter − base is read only there).
   If neither change reduces the loops: the under-training hypothesis (the paper's LoRA is r64 α128 LR 1e-4; ours is a
   tenth of that learning rate) or the existing epoch-1 adapter as a dose check.
-- Limits: 25 tasks; the three arms differ in card count (speed only); the paper's 9B result is full fine-tuning for 3
+- Limits: 25 tasks; the new adapter runs in a second wave (same settings, another hour of the day); the paper's 9B result is full fine-tuning for 3
   epochs on 128K sequences, which this step does not reproduce.
 
 **Reading (set before the data).**
