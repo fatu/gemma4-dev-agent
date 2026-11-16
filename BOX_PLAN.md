@@ -918,6 +918,47 @@ ContextWindowExceeded, 2 submitted; 25 empty patches. Its tool outputs are 3× t
 calls p50 26 vs 13. The copies fall but it does not edit and submit: at 32K it fills the window first. Temperature 1.0
 removes the copying of the E4B adapter, not its failure.
 
+**Step 8 · E4B at 128K, temperature 1.0, the same 25 tasks (written 2026-11-15, user: "把E4B测试改成128K").** Question:
+is the 32K window what keeps the E4B adapter from editing and submitting? In step 7 it no longer copied, but 23 of 25
+trajectories filled 32K and all 25 patches were empty. Only the window changes against step 7: `MAX_LEN=131072`. Still
+temperature 1.0, top_p 0.95, thinking budget 4096, thoughts kept, the first 25 Verified tasks, the same epoch-2 adapter,
+base on cards 0–3 and adapter on cards 4–7.
+```bash
+cd gemma4-dev-agent && git pull && git log --oneline -1
+nvidia-smi --query-gpu=index,memory.used --format=csv,noheader      # 📷 all 8 free?
+export MODEL=google/gemma-4-E4B-it-qat-w4a16-ct SUBSET=verified WORKERS=8 EVAL_JOBS=8 THINK_HIST=1 MAX_TOK=8192 TOP_P=0.95 THINK_BUDGET=4096
+export NTASK=25 CHUNK=25 KEEP_IMAGES=1 MAX_LEN=131072 TEMP=1.0
+A=adapters/mc_gemma-4-E4B_r1k_lr1e-5/epoch2; V=runs/verified
+GPUS="0 1 2 3" PORT=8010 bash scripts/verified_box.sh serve                 # 📷 'vLLM up' — or the error if 131072 is refused
+ADAPTER=$A GPUS="4 5 6 7" PORT=8020 bash scripts/verified_box.sh serve      # 📷 + "the adapter acts"
+GPUS="0 1 2 3" PORT=8010 TAG=vf_e4b_th128_t1 nohup bash scripts/verified_box.sh full > $V/vf_e4b_th128_t1.full.log 2>&1 &
+ADAPTER=$A GPUS="4 5 6 7" PORT=8020 TAG=vf_e4b_mc128_t1 nohup bash scripts/verified_box.sh full > $V/vf_e4b_mc128_t1.full.log 2>&1 &
+head -2 $V/vf_e4b_th128_t1.full.log $V/vf_e4b_mc128_t1.full.log | cut -c1-700   # 📷 both headers: temperature 1.0 · max len 131072 · 25 tasks
+
+# when both print '== full … done'
+grep -h '^== chunk\|graded\|STOP\|== full' $V/vf_e4b_th128_t1.full.log $V/vf_e4b_mc128_t1.full.log   # 📷
+TAG=vf_e4b_th128_t1 bash scripts/verified_box.sh report                     # 📷
+ADAPTER=$A TAG=vf_e4b_mc128_t1 bash scripts/verified_box.sh report          # 📷
+python3 scripts/paired.py $V/vf_e4b_th128_t1 $V/vf_e4b_mc128_t1             # 📷 adapter − base at 128K
+python3 scripts/paired.py $V/vf_e4b_mc_t1 $V/vf_e4b_mc128_t1                # 📷 adapter: 128K − 32K
+python3 scripts/paired.py $V/vf_e4b_th_t1 $V/vf_e4b_th128_t1                # 📷 base: 128K − 32K
+python3 scripts/copy_stats.py $V/vf_e4b_th_t1 $V/vf_e4b_mc_t1 $V/vf_e4b_th128_t1 $V/vf_e4b_mc128_t1   # 📷
+GPUS="0 1 2 3" PORT=8010 bash scripts/verified_box.sh stop; GPUS="4 5 6 7" PORT=8020 bash scripts/verified_box.sh stop
+docker images --format '{{.Repository}}:{{.Tag}}' | grep -E 'sweb\.eval\.x86_64\.' | xargs -r docker rmi > /dev/null; df -h /var/lib/docker | tail -1
+```
+**Stop and photo** if vLLM refuses `max len 131072` for this model (photo the error line: it names the model's limit;
+do not pick another length yourself), if a header shows temperature 0.2 or max len 32768, or if the adapter check does
+not say "the adapter acts". Also report for the adapter: how many trajectories edit a file, the exits, the last prompt
+tokens p50 / p90 / max, and thought loops per arm. Time: not measured for this setting.
+
+Reading, set before the data (25 tasks; the base resolved 2 of them at 32K, so a resolved difference is not readable):
+- **The adapter submits non-empty patches in most trajectories** → the window was the obstacle at 32K; then the full
+  125 tasks at 128K and 1.0 give adapter − base for E4B. Note for the submission: the scorer serves 32K, so a gain that
+  needs 128K does not transfer as it is.
+- **Still ContextWindowExceeded or empty patches in most** → the window is not the cause; the adapter does not get to an
+  edit on E4B even with room. Next: the adapter at half strength, or stop the E4B adapter line.
+- Limit: the adapter was trained on trajectories of at most 30,720 tokens; beyond that it is outside its training range.
+
 **Reading (set before the data).**
 - Qwen + our LoRA does not copy and resolves ≥ its base → our data, rendering idea and recipe are sound on a model the
   paper used; the collapse is specific to E4B (family or size, see the confound).
