@@ -995,6 +995,22 @@ trajectories of both arms and of step 7's arms (300 files) are in the private Ka
 trajectories are 0.7–1.7 GB unpacked (a grep over the whole filesystem; the harness stores the raw output, the model saw
 the truncated one). Not in the recap: the chunk-0 count of non-empty adapter patches, last prompt tokens.
 
+**Step 8 trajectories read on the laptop (2026-11-16, all 300 files, raw tool outputs dropped).** The recap's numbers
+hold (13 and 3 resolved, the exits, exact copies 12.7 % of pairs in 53 trajectories, same command 26.7 %, longest run 238).
+- Length: base calls p50 12, last prompt p50 9.7K tokens, max 25.8K: the base never needs more than 32K. Adapter calls
+  p50 128 (p90 250 = the step limit), last prompt p50 90K, completion tokens 5.44M against 0.67M.
+- Editing: first edit-like command (a rough pattern, not read by hand) at call p50 5 for the base, 16 for the adapter;
+  none in 11 base and 54 adapter trajectories. All 88 adapter trajectories that end on the window or the step limit
+  have an empty patch; of its 37 submitted ones 25 have a patch and 3 resolve.
+- Copies by context length (adapter): below 16K prompt tokens 4 of 2,321 pairs (0.2 %); 16–32K 16.5 %; 32–64K 11.9 %;
+  above 64K 16.4 %. The copying starts once the context passes about 16K tokens, at temperature 1.0 too. Step 7's 2.0 %
+  at 32K therefore understated it: those runs ended at 24.5K prompt tokens at most. On step 7's 25 tasks at 128K the
+  adapter copies in 14 trajectories (13.1 % of pairs), 23 empty patches, 0 resolved: chunk 0 answers the window question
+  with "not the window".
+- A repeated command gets the same output as the turn before in 4,620 of 4,712 cases (mostly sed, git, python).
+  Copies are in 26 of 53 window exits, 26 of 35 step-limit exits, 1 of 37 submitted trajectories.
+- Step 7's statement "temperature 1.0 removes the copying of the E4B adapter" is withdrawn: it delays it.
+
 **Reading (set before the data).**
 - Qwen + our LoRA does not copy and resolves ≥ its base → our data, rendering idea and recipe are sound on a model the
   paper used; the collapse is specific to E4B (family or size, see the confound).
