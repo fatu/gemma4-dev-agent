@@ -1561,6 +1561,51 @@ adapter 31 loop trajectories and 106 loop turns, base 1 and 1):
   chosen on chunk 0 with top_k 20, and chunk 0 is part of the 125, so 25 of the tasks are not fresh for the choice;
   astropy and django only.
 
+**Step 15 result (2026-11-17, box run and laptop recount of the 250 trajectories).** Both runs complete: 125 of 125
+predictions, no `top_k` in any of the 40 `model.yaml` files, headers `r 32 alpha 32` (action-only) and `r 64 alpha 128`
+(r64 epoch 1), code `b5a164e`. The laptop recount from the swebench reports and `copy_stats.py` equals the box's numbers.
+
+| 125 tasks, no top_k, one run per arm | base (step 6) | first adapter (step 6) | action-only | r64 epoch 1 |
+|---|---|---|---|---|
+| resolved | 63 | 68 | **73** | 67 |
+| resolved on tasks 25:125 (not used to choose adapters) | 51 | 55 | 60 | 54 |
+| prose-loop trajectories / turns | 1 / 1 | 31 / 106 | **4 / 5** | 16 / 40 |
+| thoughts over 12,000 chars | 1 | 102 | 5 | 39 |
+| turns with a sentence repeated 5 times | 0 | 43 | 0 | 2 |
+| thoughts over 3,000 chars | 1.7 % | 8.0 % | 2.1 % | 6.7 % |
+| turns | 11,081 | 6,953 | 8,861 | 7,343 |
+| text beside a tool call | 7.2 % | 0.1 % | 2.7 % | 5.1 % |
+| several tool calls in a turn | 0.0 % | 9.8 % | 8.6 % | 6.6 % |
+| turns with an empty thought | 0.0 % | 0.3 % | 0.0 % | 6.3 % |
+| empty patches | 14 | 8 | 10 | 6 |
+| grading errors (patch does not apply) | 14 | 0 | 0 | 0 |
+
+(The box's "loops 8 / 31" for the two new arms and "5 / 43" for the references are the `thought loops` line, code
+included; the criterion below was set on the `prose loops` line, where the first adapter has 31.)
+
+Paired, adapter − base (laptop: bootstrap over tasks, exact McNemar): action-only **+8.0 points** (only base 9, only
+adapter 19; 95 % CI 0.0 … +16.0, p 0.087); r64 epoch 1 +3.2 (15 / 19; CI −5.6 … +12.0, p 0.61); first adapter +4.0
+(12 / 17; CI −4.8 … +12.8, p 0.46). Action-only − first adapter +4.0 (CI −4.0 … +12.0); action-only − r64 +4.8 (CI
+−2.4 … +12.0). On tasks 25:125 alone: action-only 60 vs base 51, +9.0 (CI 0.0 … +18.0, p 0.093).
+
+Read against what was set before the data:
+- **Training helps: not shown at 95 %.** The interval of action-only − base touches 0. All three adapters are above
+  the base and none is separated from it. Per the rule this calls for a second run, not another recipe.
+- **Loops: the action-only result holds** (4 prose-loop trajectories, limit 6; no turn with a repeated sentence in
+  8,861). **The r64 epoch-1 result does not hold** (16, at the limit of "does not hold"): on the first 25 tasks with
+  top_k 20 it had 5 loop trajectories and no repeated sentence, on 125 tasks without top_k it has half of the first
+  adapter's loops, almost all budget-length thoughts. 13 of its 16 loop tasks are loop tasks of the first adapter too.
+- **Where the adapter's gain is.** The base has 14 grading errors; in 13 the submission is not a diff (raw code or
+  prose). No adapter arm has one in 375 trajectories. Of the action-only adapter's 19 own wins, 7 are on these 14
+  tasks, 5 on tasks where the base's patch is empty, 7 where the base's patch was graded and failed. On the 111 tasks
+  without a base grading error: action-only 66, r64 60, first adapter 61, base 63. So most of the measured gain is
+  that the adapters submit a patch in the right form, not that they fix more of the tasks the base attempts properly.
+  That is an effect of training, but a narrow one.
+
+Limits: base and first adapter are from another day; one run per arm; not read: the long thoughts, and the base
+trajectories with a non-diff submission (why it submits the file content is not known). Time on the box: about 4 h for
+each arm on 4 cards (chunks 27–56 min). Step 14 (top_k 20) was not run.
+
 **Reading (set before the data).**
 - Qwen + our LoRA does not copy and resolves ≥ its base → our data, rendering idea and recipe are sound on a model the
   paper used; the collapse is specific to E4B (family or size, see the confound).
