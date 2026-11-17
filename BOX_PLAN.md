@@ -41,7 +41,7 @@ dropped too.
 
 ---
 
-## B-10 · Our own MetaCurate-style data: teacher trajectories from GLM-5.3 through a gateway (plan 2026-11-13, revised the same day: generation settings as the paper, GLM-5.3 only, the official rule logic, SWE-Gym left out; **scope changed 2026-11-17: B-10 = data generation, the students are chosen afterwards**) — step 1 `setup` ✓ · `check` ✓ for SWE-rebench-V2 · `diag` ✓ (2026-11-13: both SWE-rebench problems explained and fixed in the scripts) · ▶ **now on the box: the commands under "On the box now" below**, 📷
+## B-10 · Our own MetaCurate-style data: teacher trajectories from GLM-5.3 through a gateway (plan 2026-11-13, revised the same day: generation settings as the paper, GLM-5.3 only, the official rule logic, SWE-Gym left out; **scope changed 2026-11-17: B-10 = data generation, the students are chosen afterwards**) — step 1 `setup` ✓ · `check` ✓ for SWE-rebench-V2 · `diag` ✓ (2026-11-13: both SWE-rebench problems explained and fixed in the scripts) · ▶ **now on the box: the commands under "On the box now" below**, 📷 · **B-10b (2026-11-17): three data lines against the thought loops, gated on B-9 part 3 step 19 — see the end of this section**
 
 **On the box now (2026-11-13, after `diag`; no tokens except a few cents for the probe).**
 ```
@@ -198,6 +198,76 @@ the student (Qwen3.5-9B, Gemma 31B or E4B) is chosen when the pool exists. **Rea
 our own generation becomes the data source for the Kaggle-harness stage (plan 24 P2); otherwise the public pool stays.
 **Optional:** Gemma 31B as the teacher for E4B (free, GPU) on the same tasks, if step 2 shows teacher thoughts far from
 Gemma's style (native thoughts; distillation inside the family).
+
+### B-10b · Three data lines against the thought loops (written 2026-11-17, user: "把2，3，4写进B-10") — ⏸ gated on B-9 part 3 step 19; nothing here runs yet
+
+**Why here.** B-9 part 3 found that a LoRA trained with a loss on the teacher's thoughts loops (125 tasks, no top_k:
+102 thoughts over 12,000 characters, base 1) and that the same data without the thought loss does not (5). The
+teacher data itself has no loops. The working explanation (arXiv 2512.12895: loops are errors in learning) is that
+the teacher's thoughts are a target the 9B student cannot learn. Leaving the thoughts untrained (line 1, done in B-9
+part 3) removes the loops but never trains thought and action together. The three lines below change the **data** so
+that the thought target is one the student can learn. All three are data generation, which is B-10's scope; training
+and evaluation stay in the B-9 parts. **Gate:** step 19 of B-9 part 3 (held-out NLL split into thought and action).
+If the thought part is the part that does not learn → line 2 first. If thought and action learn alike → none of
+these is started; the cause is looked for by analysis first.
+
+| line | what is generated | by whom | what is kept | tests run again |
+|---|---|---|---|---|
+| 1 · action-only (B-9 part 3, done) | nothing | – | the 952 teacher trajectories, no loss on thoughts | no |
+| **2 · the student's own thoughts** | one thought per step | the student's base model | the teacher's context and actions; only the thought is replaced | no |
+| **3 · the student's own resolved runs** | whole trajectories | the student, from scratch | runs whose tests pass | yes, every run |
+| **4 · a teacher nearer to the student** | whole trajectories | a mid-size model | runs whose tests pass | yes, every run |
+
+**Line 2 · the student's own thoughts on the teacher's actions.** For each step of the 952 trajectories the base
+model (Qwen3.5-9B, no adapter) sees the teacher's context up to that step and writes the thought; the teacher's action
+follows it in the training row; thought and action both get loss. GPU only, no containers, no grading. Two ways to
+make the thought, to be compared on a small sample before any batch:
+- **2a · free:** the base writes thought and action freely (k samples); a step is kept only if its own action is the
+  teacher's (the rule for "the same action" has to be fixed first: same command after whitespace normalisation is the
+  strict form). Clean, but it drops the steps the student would not take, and those are the ones worth learning.
+- **2b · told the action:** the base is shown the teacher's action and asked for the thought that leads to it. Keeps
+  every step, but the thought is written backwards from the answer, which one prior work avoids on purpose
+  (arXiv 2608.20670 keeps only thoughts the base wrote unprompted and that led to the right decision).
+Pilot before the batch (one card, minutes): 50 steps from the held-out trajectories, both ways; 📷 the share of steps
+2a keeps, thought length against the teacher's and the base's own on Verified, and the base's NLL of the produced
+thoughts (`nll_split.py`) against its NLL of the teacher's thoughts — the produced thoughts must be clearly easier
+for the student, or the line has no point. Not built: the generation script. (`train/relabel_thoughts.py` in the
+repo belongs to another session's work on Gemma; whether it is reused is the user's call, it is not touched here.)
+No prior result exists for this line on long tool-use trajectories: it is our own experiment.
+
+**Line 3 · the student's own resolved runs (rejection sampling).** The student's base model solves B-10's tasks
+itself through the same pipeline as the teacher pool (`rebench_mini.sh run | grade` with a local vLLM endpoint in
+place of the gateway; temperature 1.0 as its Verified runs, several attempts per task); only resolved runs that
+pass the rule filter of step 4 are kept. Thought and action then come from one distribution: nothing in the target is
+out of the student's reach. Needs the task containers and the grader of B-10 step 1 (done for SWE-rebench-V2,
+SWE-rebench after `diag`), one card set for serving, and the gold check on the 1,221 tasks. Unknown, measured by a
+pilot on `pilot30` × 3 attempts before the scale: the student's resolved rate on these tasks (on Verified 125: 50 %
+at temperature 1.0), how many resolved runs fit the 30,720-token training limit (its Verified runs have a median
+of 79 turns), and the yield per card-hour. A student with a low base rate has too little to learn from: E4B solves
+13 of 125 on Verified, so this line is for Qwen3.5-9B first. Limit by design: it teaches the student only what it
+can already sometimes do.
+
+**Line 4 · a teacher nearer to the student.** The same pipeline with a model between the student and DeepSeek V4 Pro
+as the teacher (a larger model of the student's own family is the first candidate; the model is the user's choice,
+and a local one costs GPU hours in place of gateway tokens). In arXiv 2512.12895 the students loop more the further
+they are below their teacher; nobody has tested the reverse. This line narrows the gap, it does not remove "imitate
+another model's thoughts", so by the working explanation it reduces the loops and does not end them: it is the
+last of the three, and only if lines 2 and 3 leave a gap in resolved tasks. (B-10's earlier "optional: Gemma 31B as
+the teacher for E4B" is this line for Gemma.)
+
+**How each line is judged (the B-9 part 3 protocol, set before the data).** A Qwen3.5-9B LoRA with the recipe of
+step 9a (r32 α32, LR 1e-5, 2 epochs; label scope `reply`, so thoughts are trained), then the 125 Verified tasks at
+128K, temperature 1.0, no top_k, submission fallback on, beside the base and the action-only adapter.
+- **Loops:** both rules of `copy_stats.py` (prose loops; a 30-gram 20 times) and thought tokens per turn. At the
+  base's level (≤ 6 prose-loop trajectories, no 30-gram turn, thought tokens per turn within 25 % of the base's)
+  → the thought target was the cause and this data removes it. As the first adapter (≥ 16 trajectories) → a loss on
+  thoughts loops whatever the thoughts are; then action-only is the answer and not a workaround.
+- **Resolved:** against the action-only adapter, paired, with the fallback on. Above it with a 95 % interval over 0
+  → training thought and action together is worth the data. Inside the interval → action-only stays: it is cheaper.
+- A line is not read as a success because loops fall while resolved tasks fall too.
+
+**Order.** Step 19 → line 2's pilot → line 2 (batch, train, evaluate) → line 3's pilot → line 3 → line 4 only if
+needed. Lines 3 and 4 share the containers with the GLM-5.3 pool above and do not need it to exist.
 
 **Timeline.** 11-14 steps 0–1 · 11-15 pilot · 11-16 → 11-18 scale (beside B-9 part 2) · then the pool is handed to training (student chosen then). Behind this
 timeline on 11-17: the box runs of "On the box now" are still awaited.
