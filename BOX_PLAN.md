@@ -1199,7 +1199,7 @@ ls -lh $V/q9_verified_traj_t1k20.zip; unzip -l $V/q9_verified_traj_t1k20.zip | g
 Upload it as a new version of the private Kaggle dataset of the Qwen runs, the way step 6's zip went up; the old files
 stay. 📷 the version line and the file list.
 
-**11b · the half-strength arm.**
+**11b · the half-strength arm (cards 4–7).**
 ```bash
 export MODEL=Qwen/Qwen3.5-9B SUBSET=verified WORKERS=8 EVAL_JOBS=8 THINK_HIST=1 MAX_TOK=8192 TOP_P=0.95 THINK_BUDGET=4096
 export NTASK=25 CHUNK=25 KEEP_IMAGES=1 MAX_LEN=131072 TEMP=1.0 TOP_K=20
@@ -1235,7 +1235,42 @@ the adapter check says IDENTICAL. The adapter check's sum logprob should lie bet
 adapter's value of 9c (same prompt): photo it. The task images were removed after 9c, so they are pulled again (longer
 than 9c).
 
-Reading, set before the data (25 tasks, one run; 1–2 trajectories are noise; resolved is reported, not read). Reference
+**11c · the epoch-1 arm (cards 0–3, at the same time as 11b; added 2026-11-16, user: "看epoch 1，写进plan").** The
+other dose check: the same training run (9a, rule off) stopped after 1 of its 2 epochs, at full alpha. The 8-card box
+has only epoch 2, so epoch 1 is copied from the 4-card box first (step 10 is training there: copying two files does
+not disturb it).
+```bash
+# on the 4-card box
+E=adapters/mc_Qwen3.5-9B_r1k_nt_lr1e-5/epoch1
+ls -l $E/ && (cd $E && sha256sum adapter_model.safetensors adapter_config.json)   # 📷 missing → say so, 11b runs alone
+# copy $E to the same path on the 8-card box (as epoch2 was copied for 9c), then on the 8-card box:
+export MODEL=Qwen/Qwen3.5-9B SUBSET=verified WORKERS=8 EVAL_JOBS=8 THINK_HIST=1 MAX_TOK=8192 TOP_P=0.95 THINK_BUDGET=4096
+export NTASK=25 CHUNK=25 KEEP_IMAGES=1 MAX_LEN=131072 TEMP=1.0 TOP_K=20
+E=adapters/mc_Qwen3.5-9B_r1k_nt_lr1e-5/epoch1; N=adapters/mc_Qwen3.5-9B_r1k_nt_lr1e-5/epoch2; V=runs/verified
+(cd $E && sha256sum adapter_model.safetensors adapter_config.json)          # 📷 = the 4-card box's hashes
+(cd $N && sha256sum adapter_model.safetensors)                              # 📷 must DIFFER from epoch1's weights
+ADAPTER=$E GPUS="0 1 2 3" PORT=8010 bash scripts/verified_box.sh serve      # 📷 header "r 32 alpha 32" + the adapter check lines
+ADAPTER=$E GPUS="0 1 2 3" PORT=8010 TAG=vf_q9_nt128_t1k20_e1 nohup bash scripts/verified_box.sh full > $V/vf_q9_nt128_t1k20_e1.full.log 2>&1 &
+head -2 $V/vf_q9_nt128_t1k20_e1.full.log | cut -c1-760                      # 📷 temperature 1.0 · top_k 20 · max len 131072 · 25 tasks · …/epoch1
+
+# when it prints '== full … done' (do the image removal of 11b only after BOTH arms are done: KEEP_IMAGES=1 shares them)
+grep -h '^== chunk\|graded\|STOP\|== full' $V/vf_q9_nt128_t1k20_e1.full.log    # 📷
+python3 scripts/copy_stats.py $V/vf_q9_th128_t1k20 $V/vf_q9_nt128_t1k20_e1 $V/vf_q9_nt128_t1k20_a16 $V/vf_q9_nt128_t1k20   # 📷 base · epoch 1 · half · full
+python3 scripts/paired.py $V/vf_q9_nt128_t1k20 $V/vf_q9_nt128_t1k20_e1      # 📷 epoch 1 − epoch 2
+python3 scripts/paired.py $V/vf_q9_th128_t1k20 $V/vf_q9_nt128_t1k20_e1      # 📷 epoch 1 − base
+GPUS="0 1 2 3" PORT=8010 bash scripts/verified_box.sh stop
+(cd $V && rm -f q9_verified_traj_t1k20_e1.zip && zip -qr q9_verified_traj_t1k20_e1.zip vf_q9_nt128_t1k20_e1 vf_q9_nt128_t1k20_e1.full.log -x '*test_output.txt')
+ls -lh $V/q9_verified_traj_t1k20_e1.zip; unzip -l $V/q9_verified_traj_t1k20_e1.zip | grep -c 'traj.json'   # 📷 25 expected
+```
+Upload this zip to the same private dataset too (📷). **Stop and photo** if the epoch-1 hashes differ between the
+boxes, if epoch 1's weights hash equals epoch 2's, or if the adapter check says IDENTICAL. Start 11b and 11c close
+together so both pull the task images once.
+
+Reading, set before the data (25 tasks, one run; 1–2 trajectories are noise; resolved is reported, not read). The
+thresholds below apply to each of the two arms separately (half alpha; epoch 1). Both low → the loops follow the dose;
+both high → the dose is not the lever in this range; one low and one high → the two kinds of dose differ, say which and
+decide nothing more from 25 tasks. Earlier note (B-9 part 2, E4B, not Qwen): an epoch-1 adapter looped on a short
+prompt where epoch 2 did not, so epoch 1 looping MORE than epoch 2 here would not be new. Reference
 from 9c: base 3 loop trajectories / 3 loop turns / 3 thoughts over 12,000 characters; full strength 6 / 32 / 27.
 - Half strength at ≤ 3 loop trajectories AND loop turns ≤ 10 → the loops follow the dose. Then step 10's adapter (about
   20× the update) is expected to loop more, and the next candidates are weaker or action-only adapters.
@@ -1244,8 +1279,8 @@ from 9c: base 3 loop trajectories / 3 loop turns / 3 thoughts over 12,000 charac
 - In between → not decided by this run.
 - Side check: text beside a tool call between the base's 12.4 % and the full adapter's 5.9 % is expected at half
   strength; outside that range, say so.
-- Limits: one dose point; half alpha is not the same as half the training (an epoch-1 adapter would be the other dose
-  check); vLLM honouring `lora_alpha` is checked only through the adapter check's logprob.
+- Limits: two dose points of different kinds (half the update; half the training, where the learning rate was also
+  higher on average in epoch 1's schedule); vLLM honouring `lora_alpha` is checked only through the adapter check's logprob.
 
 **Reading (set before the data).**
 - Qwen + our LoRA does not copy and resolves ≥ its base → our data, rendering idea and recipe are sound on a model the
