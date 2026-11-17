@@ -1606,6 +1606,73 @@ Limits: base and first adapter are from another day; one run per arm; not read: 
 trajectories with a non-diff submission (why it submits the file content is not known). Time on the box: about 4 h for
 each arm on 4 cards (chunks 27–56 min). Step 14 (top_k 20) was not run.
 
+**Laptop reading of the base's non-diff submissions (2026-11-17, step 6's base, no GPU).** Read: the last 8 messages
+of 7 of the 13 trajectories, and the final submit command of all 500 trajectories of the four arms by script. In all 13
+the base edits the source, looks at `git diff` (the diff is on screen), and then submits with the right marker but
+prints something else than the patch: lines of the edited file (`cat file | sed -n '170,195p'`, 8 cases), the whole
+file (3), its own fix script (1), a sentence describing the fix (1). It never ran step 1 of the task's submission
+instructions (`git diff -- files > patch.txt`) in any of them. Over the base's 118 submitted trajectories the final
+command is exactly `… && cat patch.txt` in 78; 26 never create `patch.txt`; 17 print a `git diff` inline instead (most
+of those are graded normally). The adapters: 117 of 118 (first), 116 of 117 (action-only), 120 of 120 (r64 epoch 1) end
+with exactly `cat patch.txt` after creating it. So the base does not follow the submission steps of the prompt in a
+third of its runs, and every adapter does; the teacher trajectories end this way. Not checked: whether the 13 fixes
+would have passed (the edits are gone with the containers); the other 6 of the 13 were read through their final command
+only.
+
+**Step 16 · the 8-card box: second run of the base and the action-only adapter, side by side, 125 tasks without top_k
+(written 2026-11-17, user: "让 base 和只训动作的适配器同一天并排再跑一次 125 题").** Same settings as steps 6 and 15: 128K,
+temperature 1.0, top_p 0.95, thinking budget 4,096, 250 steps, **TOP_K not set**. Base on cards 0–3, action-only on
+cards 4–7, new tags so nothing of run 1 is skipped or overwritten. Needs all 8 cards.
+```bash
+cd gemma4-dev-agent && git pull && git log --oneline -1
+nvidia-smi --query-gpu=index,memory.used --format=csv,noheader      # 📷 all 8 free
+unset TOP_K ADAPTER
+export MODEL=Qwen/Qwen3.5-9B SUBSET=verified WORKERS=8 EVAL_JOBS=8 THINK_HIST=1 MAX_TOK=8192 TOP_P=0.95 THINK_BUDGET=4096
+export NTASK=125 CHUNK=25 KEEP_IMAGES=1 MAX_LEN=131072 TEMP=1.0
+A=adapters/mc_Qwen3.5-9B_r1k_nt_act_lr1e-5/epoch2; V=runs/verified
+ls -d $V/vf_q9_th128_t1_r2 $V/vf_q9_act128_t1_r2 2>/dev/null        # 📷 nothing: the tags are new
+(cd $A && sha256sum adapter_model.safetensors adapter_config.json)  # 📷 = step 15's hashes
+GPUS="0 1 2 3" PORT=8010 bash scripts/verified_box.sh serve                    # 📷 base, no adapter line
+ADAPTER=$A GPUS="4 5 6 7" PORT=8020 bash scripts/verified_box.sh serve         # 📷 "r 32 alpha 32" + "the adapter acts"
+GPUS="0 1 2 3" PORT=8010 TAG=vf_q9_th128_t1_r2 nohup bash scripts/verified_box.sh full > $V/vf_q9_th128_t1_r2.full.log 2>&1 &
+ADAPTER=$A GPUS="4 5 6 7" PORT=8020 TAG=vf_q9_act128_t1_r2 nohup bash scripts/verified_box.sh full > $V/vf_q9_act128_t1_r2.full.log 2>&1 &
+head -2 $V/vf_q9_th128_t1_r2.full.log $V/vf_q9_act128_t1_r2.full.log | cut -c1-760   # 📷 125 tasks · temperature 1.0 · top_k not sent · max len 131072 · adapter only in the second
+grep -c top_k $V/vf_q9_th128_t1_r2/c0/part0.model.yaml $V/vf_q9_act128_t1_r2/c0/part0.model.yaml   # 📷 0 and 0
+
+# when both print '== full … done'
+grep -h '^== chunk\|graded\|STOP\|== full' $V/vf_q9_th128_t1_r2.full.log $V/vf_q9_act128_t1_r2.full.log   # 📷
+TAG=vf_q9_th128_t1_r2 bash scripts/verified_box.sh report                    # 📷
+ADAPTER=$A TAG=vf_q9_act128_t1_r2 bash scripts/verified_box.sh report        # 📷
+python3 scripts/paired.py $V/vf_q9_th128_t1_r2 $V/vf_q9_act128_t1_r2 --out $V/paired_q9_th128_act128_t1_r2.json   # 📷 run 2: action-only − base
+python3 scripts/paired.py $V/vf_q9_th128_t1 $V/vf_q9_th128_t1_r2             # 📷 base: run 2 − run 1
+python3 scripts/paired.py $V/vf_q9_act128_t1 $V/vf_q9_act128_t1_r2           # 📷 action-only: run 2 − run 1
+python3 scripts/copy_stats.py $V/vf_q9_th128_t1_r2 $V/vf_q9_act128_t1_r2     # 📷 two == blocks, 125 trajectories each
+GPUS="0 1 2 3" PORT=8010 bash scripts/verified_box.sh stop; GPUS="4 5 6 7" PORT=8020 bash scripts/verified_box.sh stop
+docker images --format '{{.Repository}}:{{.Tag}}' | grep -E 'sweb\.eval\.x86_64\.' | xargs -r docker rmi > /dev/null; df -h /var/lib/docker | tail -1
+(cd $V && rm -f q9_verified_traj_t1_r2.zip && zip -qr q9_verified_traj_t1_r2.zip vf_q9_th128_t1_r2 vf_q9_act128_t1_r2 paired_q9_th128_act128_t1_r2.json \
+   vf_q9_th128_t1_r2.full.log vf_q9_act128_t1_r2.full.log -x '*test_output.txt')
+ls -lh $V/q9_verified_traj_t1_r2.zip; unzip -l $V/q9_verified_traj_t1_r2.zip | grep -c 'traj.json'   # 📷 250 expected
+```
+Then upload the zip to the private dataset of the Qwen runs as a new version (📷). Time: step 15 took about 4 h per
+arm (chunks 27–56 min). **Stop and photo** if a header shows a top_k value, if the base's header shows an adapter, if
+a tag directory already exists, if the hashes differ from step 15's, or at a STOP line.
+
+Reading, set before the data (run 1: base 63, action-only 73, +8.0 points, CI 0.0 … +16.0):
+- **Is the training useful:** the two runs are read together on the laptop: per task, the adapter's solves of 2 minus
+  the base's solves of 2, bootstrap over the 125 tasks. 95 % CI above 0 → the LoRA training helps on this model. CI
+  includes 0 → not shown with two runs; it is reported as it is and no third run is added to reach it. Run 2 alone is
+  also reported.
+- **How much a run moves:** base run 2 − run 1 and action-only run 2 − run 1 (resolved, and tasks that flip). This
+  is the size of the noise the +8.0 has to be read against.
+- **Where the gain is:** counted in both runs: the base's grading errors, its submitted trajectories whose final
+  command is not exactly `cat patch.txt` (run 1: 14 and 40 of 118; action-only 0 and 1 of 117). The difference is also
+  given on the tasks without a base grading error in either run. If that difference has a CI around 0 while the full
+  one is above 0 → the adapter's gain is following the submission steps.
+- **Loops:** action-only at ≤ 6 prose-loop trajectories of 125 again → holds (run 1: 4; base 1). The two parts
+  (thoughts over 12,000 characters; a sentence repeated 5 times) are reported apart.
+- Limits: run 1's base is from another day than run 1's adapter; astropy and django only; the adapter was chosen on
+  the first 25 tasks.
+
 **Reading (set before the data).**
 - Qwen + our LoRA does not copy and resolves ≥ its base → our data, rendering idea and recipe are sound on a model the
   paper used; the collapse is specific to E4B (family or size, see the confound).
