@@ -1127,6 +1127,20 @@ loop turns, so trajectories with a loop is the first number, and a change of 1�
 - Limits: 25 tasks; the new adapter runs in a second wave (same settings, another hour of the day); the paper's 9B result is full fine-tuning for 3
   epochs on 128K sequences, which this step does not reproduce.
 
+**Step 9b result (8-card box, 2026-11-16, chunk 0 = 25 tasks, one run per arm, from the box session's recap; not
+recomputed on the laptop).** Columns: base without top_k (step 6) · base top_k 20 · old adapter without top_k (step 6) ·
+old adapter top_k 20.
+- Trajectories with a prose loop: 0 · 3 · 7 · **5** of 25; loop turns 0 · 3 · 44 · 26.
+- Thoughts over 3,000 characters: 3.2 % · 3.6 % · 12.0 % · 10.0 %; over 12,000 characters: 0 · 3 · 42 · 20.
+- Text beside a tool call: 5.4 % · 12.4 % · 0.1 % · 0.1 %; several tool calls in a turn: 0 · 0 · 9.0 % · 7.2 %.
+- Resolved 12 · 11 · 13 · 13; old adapter − base with top_k 20: +8.0 points (95 % CI −7.4 … +23.4, p 0.625).
+By the reading set in advance: the old adapter has 5 loop trajectories with top_k 20 (≥ 5 → "not top_k"; 7 → 5 is inside
+the 1–2 trajectories of noise). The missing top_k is not the main cause of the thought loops. Loop turns and very long
+thoughts are about half (44 → 26, 42 → 20), still several times the base. Not expected: the base with top_k 20 has 3
+loop trajectories and 3 thoughts over 12,000 characters where it had none (one run, 25 tasks: not read as an effect).
+The old adapter still writes text beside a tool call in 0.1 % of turns: the check for 9c is whether the new adapter
+does so again. Resolved is not read on 25 tasks. 9a was still training when this was written.
+
 **Reading (set before the data).**
 - Qwen + our LoRA does not copy and resolves ≥ its base → our data, rendering idea and recipe are sound on a model the
   paper used; the collapse is specific to E4B (family or size, see the confound).
