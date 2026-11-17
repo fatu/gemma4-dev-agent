@@ -1309,6 +1309,23 @@ the base"; its text beside a tool call (5.4 %) is below the expected range (betw
 the full adapter's level. Resolved is not read on 25 tasks. The trajectories of 9c, 11b and 11c are on the private
 dataset (uploaded by the box session). The step-10 adapter (r64, epoch 1) is still not evaluated.
 
+**Laptop check of the 9c / 11 trajectories (2026-11-16, 125 trajectories from the private dataset).** `copy_stats.py`
+on the laptop gives the box's numbers for all five arms (base · old adapter · full · half · epoch 1). Four things the
+table does not show:
+- The loop count is mostly a length count. The rule flags a thought over 12,000 characters (about the 4,096-token
+  thinking budget) OR a sentence repeated 5 times. Thoughts over 12,000 characters: 3 · 20 · 27 · 6 · 27. Turns with a
+  sentence repeated 5 times (any length): 0 · 15 · 16 · 3 · 6. By repetition alone epoch 1 (6) is well below full
+  strength (16); by length they are equal. So "epoch 1 loops like epoch 2" holds for budget-length thoughts, not for
+  repeated sentences.
+- The loops sit on the same few tasks in every arm. One task gives 12 · 11 · 6 · 15 of the loop turns of the four
+  adapter arms (base 1). Without it: 2 · 14 · 21 · 2 · 13 loop turns. The order of the arms stays.
+- Two of the base's 14 unresolved tasks are submissions that are not a diff (prose, a piece of code); every adapter
+  resolves both tasks. The old adapter's one error is a test run that timed out after 1,800 s.
+- Half strength: header `r 32 alpha 16.0`, the weights hash of epoch 2. Its three loop trajectories resolve 0, the 22
+  others 14.
+Not done: reading the long thoughts of the new arms one by one; whether a long thought without a repeated sentence
+goes in circles (two ideas in turn) or is long work.
+
 **Step 12 · an action-only adapter: no loss on the thoughts (written 2026-11-16, user: "把只训动作的适配器也写进plan").**
 The loops are inside the thoughts. Question: do they come from training on the teacher's thoughts? Same data as 9a
 (rule off), same recipe as 9a (r32 α32, LR 1e-5, 2 epochs), one change: in every reply the thought and its `</think>`
