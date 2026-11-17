@@ -40,6 +40,9 @@ HISTORY="${HISTORY:-$($PY -c "import json; print(json.load(open('$PR/probe_summa
 # T2T: move the text of text + tool-call replies into the thought. On by the user's decision after the 31B probe
 # (2026-11-13: 782 such turns in 31B's own histories — the Gemma template bug HF #67/#115 hits the baseline).
 T2T="${T2T:-on}"
+# LABELS (B-9 part 3 step 12, non-Gemma render only): reply = loss on the whole reply; action = no loss on the thought
+# and its close token (render_tmpl.py --label-scope). Use it with its own ARM so the rendered files have their own name.
+LABELS="${LABELS:-reply}"
 # PACK: one sequence per trajectory only if the server renders earlier thoughts; vLLM 0.19.1 drops mini's
 # reasoning_content (probe 2026-11-13: 0 blocks), so then every call is its own sample (render.py without --pack).
 PACK="${PACK:-$($PY -c "import json; print('on' if json.load(open('$PR/probe_summary.json')).get('server renders earlier thoughts') else 'off')" 2>/dev/null || echo off)}"
@@ -111,15 +114,17 @@ check)      # non-Gemma: our rendering of the logged requests = the prompts the 
 render)
   [ -d "$MC/$ARM" ] || { echo "no $MC/$ARM: run data first"; exit 1; }
   if [ "$FAMILY" != gemma ]; then             # the model's own chat template; the same records as Gemma's run
+    [ "$LABELS" = reply ] || [ "$LABELS" = action ] || { echo "LABELS=$LABELS: reply|action"; exit 1; }
+    echo "  render labels: $LABELS$([ "$LABELS" = action ] && echo " (no loss on thoughts; train and held-out rows alike, so the held-out NLL is over action tokens only)")"
     TOK="$(tokdir)"; pids=()
     for i in $(seq 0 $(( RENDER_PROCS - 1 ))); do
-      $PY train/render_tmpl.py "$MC/$ARM" --tokenizer "$TOK" --max-len "$MAX_LEN" --shard "$i/$RENDER_PROCS" --out "$RD.part$i.jsonl" \
+      $PY train/render_tmpl.py "$MC/$ARM" --tokenizer "$TOK" --max-len "$MAX_LEN" --shard "$i/$RENDER_PROCS" --label-scope "$LABELS" --out "$RD.part$i.jsonl" \
         --stats "$RD.render$i.json" > "$RD.render$i.log" 2>&1 & pids+=($!)
     done
     for p in "${pids[@]}"; do wait "$p"; done
     cat "$RD".part*.jsonl > "$RD.rendered.jsonl"; rm -f "$RD".part*.jsonl
     if [ -d "$MC/${ARM}_holdout" ]; then
-      $PY train/render_tmpl.py "$MC/${ARM}_holdout" --tokenizer "$TOK" --max-len "$MAX_LEN" --out "$RD.holdout.rendered.jsonl" > "$RD.holdout.render.log" 2>&1
+      $PY train/render_tmpl.py "$MC/${ARM}_holdout" --tokenizer "$TOK" --max-len "$MAX_LEN" --label-scope "$LABELS" --out "$RD.holdout.rendered.jsonl" > "$RD.holdout.render.log" 2>&1
       echo "  holdout: $(wc -l < "$RD.holdout.rendered.jsonl") sequences from $(ls "$MC/${ARM}_holdout" | grep -c json) records · $(grep -E '^calls' "$RD.holdout.render.log" | cut -c1-330) · $(grep -E '^RESULT' "$RD.holdout.render.log")"
     else
       echo "  no $MC/${ARM}_holdout: training falls back to --holdout 8"
@@ -141,7 +146,9 @@ bad = T["fail"] + missing
 print(f"== render {os.path.basename(rd)}: {T['records']} records · {T['calls']} calls · label tokens {T['label tokens']} · {len(lens)} sequences, "
       f"{sum(lens):,} tokens (len p50 {lens[len(lens) // 2] if lens else 0}, max {lens[-1] if lens else 0}) · breaks: {br} · replies without a thought "
       f"{T['replies without a thought']} · over {ml}: {T['sequences over ' + ml]} sequences ({T['label tokens in sequences over ' + ml]} label tokens; "
-      f"sft_lora drops them) · malformed calls {T['calls skipped (malformed)']} · FAIL {bad} → {'PASS' if not bad else 'FAIL: grep FAIL ' + rd + '.render*.log'}")
+      f"sft_lora drops them) · thought label tokens masked {T['thought label tokens masked']} (replies with no thought close "
+      f"{T['replies with no thought close (all labels kept)']}, with several {T['replies with several thought closes (cut at the first)']}) "
+      f"· malformed calls {T['calls skipped (malformed)']} · FAIL {bad} → {'PASS' if not bad else 'FAIL: grep FAIL ' + rd + '.render*.log'}")
 EOF
     echo "📷 the holdout line and the == render line ($(( $(date +%s) - T0 )) s)"; exit 0
   fi

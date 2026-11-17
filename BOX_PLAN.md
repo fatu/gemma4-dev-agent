@@ -1292,6 +1292,67 @@ from 9c: base 3 loop trajectories / 3 loop turns / 3 thoughts over 12,000 charac
 - Limits: two dose points of different kinds (half the update; half the training, where the learning rate was also
   higher on average in epoch 1's schedule); vLLM honouring `lora_alpha` is checked only through the adapter check's logprob.
 
+**Step 12 · an action-only adapter: no loss on the thoughts (written 2026-11-16, user: "把只训动作的适配器也写进plan").**
+The loops are inside the thoughts. Question: do they come from training on the teacher's thoughts? Same data as 9a
+(rule off), same recipe as 9a (r32 α32, LR 1e-5, 2 epochs), one change: in every reply the thought and its `</think>`
+token get no loss; the loss is on the text, the tool calls and the end of turn. The thoughts stay in the sequences as
+context. New knob `LABELS=reply|action` of `train/mc_box.sh render` (`render_tmpl.py --label-scope`); code ≥ the commit
+of this step. Laptop test on 215 records: the sequences are identical, 51.2 % of the label tokens remain (593,896 of
+1,160,661), no close token is labelled, 0 replies without a close token.
+
+**12a · the 4-card box (free after step 10): data, render, train.**
+```bash
+cd gemma4-dev-agent && git pull && git log --oneline -1
+nvidia-smi --query-gpu=index,memory.used --format=csv,noheader      # 📷 all 4 free
+export MODEL=Qwen/Qwen3.5-9B
+ARM=r1k_nt_act LIKE=r1k_nt T2T=off bash train/mc_box.sh like         # 📷 the same records as r1k_nt under a new name · PASS
+ARM=r1k_nt_act LABELS=action bash train/mc_box.sh render             # 📷 "render labels: action", the holdout line, the == render line
+ARM=r1k_nt_act GPUS=0,1,2,3 nohup bash train/mc_box.sh train > runs/mc_train_q9_nt_act.log 2>&1 &
+head -3 runs/mc_train_q9_nt_act.log | cut -c1-700                    # 📷 --epochs 2 --lr 1e-5 --r 32 --alpha 32 · out adapters/mc_Qwen3.5-9B_r1k_nt_act_lr1e-5
+grep -E "schedule|eval\[|== epoch|done|Error" runs/mc_train_q9_nt_act.log | cut -c1-250   # 📷 when it ends
+for e in 1 2; do (cd adapters/mc_Qwen3.5-9B_r1k_nt_act_lr1e-5/epoch$e && sha256sum adapter_model.safetensors adapter_config.json); done   # 📷
+```
+Expected in the == render line: the records, calls, sequences and tokens of 9a's render; label tokens about half of
+9a's; `thought label tokens masked` > 0; replies with no thought close 0. Schedule as 9a (2 epochs × 85 steps), time
+about 9a's. The held-out NLL here is over action tokens only: its `eval[start]` is the base on those tokens, and the
+numbers are NOT comparable with 9a's 0.3524 or step 10's. **Stop and photo** if the == render line shows other
+sequence or token counts than 9a's, masked 0, replies with no thought close above a few, or FAIL.
+
+**12b · the 8-card box, when 11b / 11c are done and the adapter is copied: the same chunk.** As 9c with this adapter:
+```bash
+export MODEL=Qwen/Qwen3.5-9B SUBSET=verified WORKERS=8 EVAL_JOBS=8 THINK_HIST=1 MAX_TOK=8192 TOP_P=0.95 THINK_BUDGET=4096
+export NTASK=25 CHUNK=25 KEEP_IMAGES=1 MAX_LEN=131072 TEMP=1.0 TOP_K=20
+A=adapters/mc_Qwen3.5-9B_r1k_nt_act_lr1e-5/epoch2; V=runs/verified
+(cd $A && sha256sum adapter_model.safetensors adapter_config.json)          # 📷 = the 4-card box's hashes
+ADAPTER=$A GPUS="4 5 6 7" PORT=8020 bash scripts/verified_box.sh serve      # 📷 + "the adapter acts"
+ADAPTER=$A GPUS="4 5 6 7" PORT=8020 TAG=vf_q9_act128_t1k20 nohup bash scripts/verified_box.sh full > $V/vf_q9_act128_t1k20.full.log 2>&1 &
+head -2 $V/vf_q9_act128_t1k20.full.log | cut -c1-760                        # 📷 temperature 1.0 · top_k 20 · max len 131072 · 25 tasks · the r1k_nt_act adapter
+
+# when it prints '== full … done'
+grep -h '^== chunk\|graded\|STOP\|== full' $V/vf_q9_act128_t1k20.full.log   # 📷
+python3 scripts/copy_stats.py $V/vf_q9_th128_t1k20 $V/vf_q9_act128_t1k20 $V/vf_q9_nt128_t1k20   # 📷 base · action-only · full labels
+python3 scripts/paired.py $V/vf_q9_nt128_t1k20 $V/vf_q9_act128_t1k20        # 📷 action-only − full labels
+python3 scripts/paired.py $V/vf_q9_th128_t1k20 $V/vf_q9_act128_t1k20        # 📷 action-only − base
+GPUS="4 5 6 7" PORT=8020 bash scripts/verified_box.sh stop
+docker images --format '{{.Repository}}:{{.Tag}}' | grep -E 'sweb\.eval\.x86_64\.' | xargs -r docker rmi > /dev/null; df -h /var/lib/docker | tail -1
+(cd $V && rm -f q9_verified_traj_t1k20_act.zip && zip -qr q9_verified_traj_t1k20_act.zip vf_q9_act128_t1k20 vf_q9_act128_t1k20.full.log -x '*test_output.txt')
+ls -lh $V/q9_verified_traj_t1k20_act.zip; unzip -l $V/q9_verified_traj_t1k20_act.zip | grep -c 'traj.json'   # 📷 25 expected
+```
+Then upload the zip to the same private dataset as a new version (📷).
+
+Reading, set before the data (25 tasks, one run; reference from 9c: base 3 loop trajectories / 3 loop turns / 3
+thoughts over 12,000 characters; full labels 6 / 32 / 27):
+- Action-only at ≤ 3 loop trajectories AND ≤ 10 loop turns → the loops come with the loss on the thoughts. Then the
+  action-only adapter and the base go to all 125 tasks (adapter − base is read only there).
+- ≥ 5 loop trajectories or ≥ 20 loop turns → the loss on the thoughts is not the source; the adapter changes the
+  thoughts through the shared weights anyway.
+- In between → not decided.
+- Check that the adapter learned the actions: several tool calls in a turn above the base's 0 % (full labels: 5.8 %).
+  Near 0 → the adapter did little; say so before reading the loops.
+- Limits: 25 tasks, one run; the adapter still sees the teacher's thoughts as context, so its actions are trained
+  after teacher-style thoughts and used after its own; half the label tokens at the same LR is also a smaller dose,
+  which step 11 reads separately.
+
 **Reading (set before the data).**
 - Qwen + our LoRA does not copy and resolves ≥ its base → our data, rendering idea and recipe are sound on a model the
   paper used; the collapse is specific to E4B (family or size, see the confound).

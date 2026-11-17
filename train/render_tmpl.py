@@ -20,6 +20,11 @@ after a harness user message (the template stops rendering the thoughts before i
 across a reply boundary (e.g. an empty thought: "<think>\\n" + "\\n</think>" → one "\\n\\n" token in later prompts).
 Printed: calls, label tokens, sequences, breaks by reason, lengths, sequences over --max-len (not removed here:
 sft_lora.py drops them and prints the count). Every knob prints its value. Rows quote task text → runs/ only.
+
+--label-scope action (B-9 part 3 step 12): the same sequences, but in every reply the thought and the token that
+closes it (--think-close, default </think>) get label −100; the loss is on what follows (text, tool calls, end of
+turn). The cut is the FIRST close token of the reply; replies with none keep all labels and replies with more than
+one are counted.
 """
 import argparse
 import collections
@@ -64,8 +69,11 @@ def target_message(t):
 
 
 class Renderer:
-    def __init__(self, tok, template=None):
-        self.tok, self.template = tok, template
+    def __init__(self, tok, template=None, scope="reply", think_close="</think>"):
+        self.tok, self.template, self.scope = tok, template, scope
+        self.close_id = tok.convert_tokens_to_ids(think_close)
+        if scope == "action" and (self.close_id is None or self.close_id == tok.unk_token_id or tok.decode([self.close_id]) != think_close):
+            raise SystemExit(f"--label-scope action: {think_close!r} is not one token of this tokenizer")
         self.eot = tok.eos_token if isinstance(tok.eos_token, str) else "<|im_end|>"
 
     def text(self, messages, tools, gen):
@@ -117,11 +125,20 @@ def render_record(R, rec, stats, check=None, fails=None):
                     k = next((i for i, (x, y) in enumerate(zip(p, ref["prompt"])) if x != y), min(len(p), len(ref["prompt"])))
                     fails.append(f"FAIL A2 {rec['instance_id']} call {c['call']}: text_equal={te} tokens {len(pid)} vs "
                                  f"{ref['rendered_tokens']} · first diff at char {k}: ours={p[k:k + 60]!r} server={ref['prompt'][k:k + 60]!r}")
-        stats["calls"] += 1; stats["label tokens"] += len(rid)
+        lab = rid
+        if R.scope == "action":
+            n_close = rid.count(R.close_id)
+            stats["replies with no thought close (all labels kept)"] += n_close == 0
+            stats["replies with several thought closes (cut at the first)"] += n_close > 1
+            if n_close:
+                k = rid.index(R.close_id) + 1
+                lab = [-100] * k + rid[k:]
+                stats["thought label tokens masked"] += k
+        stats["calls"] += 1; stats["label tokens"] += sum(1 for x in lab if x != -100)
         empty = not (c["target"].get("reasoning") or "").strip()
         stats["replies without a thought"] += empty
         if S is not None and len(pid) >= len(S) and pid[:len(S)] == S:
-            L = L + [-100] * (len(pid) - len(S)) + rid
+            L = L + [-100] * (len(pid) - len(S)) + lab
             S = pid + rid
             cs.append((c["call"], c.get("segment", 0)))
         else:
@@ -130,7 +147,7 @@ def render_record(R, rec, stats, check=None, fails=None):
                        "an empty thought" if (empty or prev) else "another token boundary")
                 stats[f"break: {why}"] += 1
             flush()
-            S, L, cs = pid + rid, [-100] * len(pid) + rid, [(c["call"], c.get("segment", 0))]
+            S, L, cs = pid + rid, [-100] * len(pid) + lab, [(c["call"], c.get("segment", 0))]
         prev = empty
     flush()
     return rows
@@ -139,12 +156,14 @@ def render_record(R, rec, stats, check=None, fails=None):
 def run(a):
     from transformers import AutoTokenizer
     tok = AutoTokenizer.from_pretrained(a.tokenizer)
-    R = Renderer(tok, open(a.template).read() if a.template else None)
+    R = Renderer(tok, open(a.template).read() if a.template else None, a.label_scope, a.think_close)
     files = sorted(f for f in glob.glob(os.path.join(a.records, "*.json")) if not os.path.basename(f).startswith("_"))
     i, n = (int(x) for x in a.shard.split("/"))
     files = files[i::n]
     print(f"render_tmpl · records {a.records} ({len(files)} files, shard {a.shard}) · tokenizer {a.tokenizer} · template "
-          f"{a.template or 'the tokenizer own'} · end of turn {R.eot!r} · max len {a.max_len} (counted only) · check {a.check or 'off'} · out {a.out or 'none'}",
+          f"{a.template or 'the tokenizer own'} · end of turn {R.eot!r} · label scope {a.label_scope}"
+          + (f" (no loss up to and including {a.think_close!r} = token {R.close_id})" if a.label_scope == "action" else "") +
+          f" · max len {a.max_len} (counted only) · check {a.check or 'off'} · out {a.out or 'none'}",
           flush=True)
     stats, fails, lens = collections.Counter(), [], []
     out = open(a.out, "w") if a.out else None
@@ -181,6 +200,9 @@ def run(a):
           f"{stats['replies without a thought']} · over {a.max_len}: {stats[f'sequences over {a.max_len}']} sequences "
           f"({stats[f'label tokens in sequences over {a.max_len}']} label tokens) · malformed calls {stats['calls skipped (malformed)']} "
           f"· replies not decoding back {stats['replies that do not decode back']}"
+          + (f" · label scope action: thought label tokens masked {stats['thought label tokens masked']}, replies with no thought close "
+             f"{stats['replies with no thought close (all labels kept)']}, with several {stats['replies with several thought closes (cut at the first)']}"
+             if a.label_scope == "action" else "")
           + (f" · A2 text equal {stats['A2 text equal']}/{stats['A2 calls']}, token count equal {stats['A2 token count equal']}/{stats['A2 calls']}" if a.check else ""))
     hard = [x for x in fails if x.startswith("FAIL")]
     print(f"RESULT {'PASS' if not hard else 'FAIL'} ({len(hard)} FAIL lines, {len(fails) - len(hard)} malformed shown)")
@@ -240,6 +262,21 @@ def selftest(a):
     p1, r1 = R.call(calls[0], tools)
     assert first["input_ids"][:len(R.ids(p1))] == R.ids(p1) and all(x == -100 for x in first["labels"][:len(R.ids(p1))])
     assert stats["break: a user message"] == 1, stats
+    RA = Renderer(tok, open(a.template).read() if a.template else None, "action", a.think_close)
+    sa = collections.Counter()
+    rows_a = render_record(RA, {"instance_id": "t", "tools": tools, "calls": calls}, sa)
+    assert [r["input_ids"] for r in rows_a] == [r["input_ids"] for r in rows], "action scope must not change the sequences"
+    n_act = 0
+    for r in rows_a:
+        ids, lab = r["input_ids"], r["labels"]
+        starts = [i for i in range(len(ids)) if lab[i] != -100 and (i == 0 or lab[i - 1] == -100)]
+        assert len(starts) == len(r["calls"]), (starts, r["calls"])
+        for i in starts:
+            assert ids[i - 1] == RA.close_id, "a labelled span must start right after the thought close"
+        assert all(l == -100 or (l == t and t != RA.close_id) for t, l in zip(ids, lab))
+        n_act += sum(1 for x in lab if x != -100)
+    assert n_act == sa["label tokens"] == stats["label tokens"] - sa["thought label tokens masked"] and sa["thought label tokens masked"] > 0, (n_act, sa)
+    print(f"  label scope action: {n_act} of {stats['label tokens']} label tokens kept, {sa['thought label tokens masked']} masked, every span starts after {a.think_close!r}")
     print(f"  {len(rows)} sequences for 6 calls · calls per sequence {[r['calls'] for r in rows]} · breaks "
           f"{ {k: v for k, v in stats.items() if k.startswith('break')} }")
     print("  first reply:", repr(r1[:120]))
@@ -257,6 +294,9 @@ def main():
     ap.add_argument("--stats", default=None, help="write the counters as JSON (for the sharded launcher)")
     ap.add_argument("--max-len", type=int, default=30720, help="count the sequences longer than this (not removed)")
     ap.add_argument("--shard", default="0/1")
+    ap.add_argument("--label-scope", choices=["reply", "action"], default="reply",
+                    help="reply = loss on the whole reply; action = no loss on the thought and its close token")
+    ap.add_argument("--think-close", default="</think>", help="the single token that closes the thought (--label-scope action)")
     ap.add_argument("--selftest", action="store_true")
     a = ap.parse_args()
     if a.selftest:
