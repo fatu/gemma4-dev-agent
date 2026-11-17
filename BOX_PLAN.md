@@ -41,7 +41,7 @@ dropped too.
 
 ---
 
-## B-10 · Our own MetaCurate-style data for Gemma: teacher trajectories from GLM-5.3 through a gateway (plan 2026-11-13, revised the same day: generation settings as the paper, GLM-5.3 only, the official rule logic, SWE-Gym left out) — step 1 `setup` ✓ · `check` ✓ for SWE-rebench-V2 · `diag` ✓ (2026-11-13: both SWE-rebench problems explained and fixed in the scripts) · ▶ **now on the box: the commands under "On the box now" below**, 📷
+## B-10 · Our own MetaCurate-style data: teacher trajectories from GLM-5.3 through a gateway (plan 2026-11-13, revised the same day: generation settings as the paper, GLM-5.3 only, the official rule logic, SWE-Gym left out; **scope changed 2026-11-17: B-10 = data generation, the students are chosen afterwards**) — step 1 `setup` ✓ · `check` ✓ for SWE-rebench-V2 · `diag` ✓ (2026-11-13: both SWE-rebench problems explained and fixed in the scripts) · ▶ **now on the box: the commands under "On the box now" below**, 📷
 
 **On the box now (2026-11-13, after `diag`; no tokens except a few cents for the probe).**
 ```
@@ -85,6 +85,11 @@ command line, a script or a file under git. A 404 in turn 1 = the gateway does n
   860 usable runs on these tasks at 3 attempts (resolved ∧ fits ∧ rules 1–4), so 1,000 needs ~3.5 attempts per task
   or more tasks: decided from the pilot's yield.
 
+**Scope (user, 2026-11-17: "改B-10的任务主要为生成数据，之后可以给Qwen9B/Gemma31B或E4B训练").** B-10's product is the
+graded trajectory pool itself. It ends at step 4 with one pool that any student can be trained from: Qwen3.5-9B, Gemma
+31B or E4B. Nothing in generation or grading depends on the student. What depends on it (the token limit counted with
+that student's tokenizer, the thought rule, the rendering) is applied when a training subset is drawn, and training and
+evaluation belong to the B-9 parts, not to B-10.
 **Why.** B-9 part 2 tests the public DeepSeek V4 Pro pool. B-10 makes the same kind of data with teachers we can call,
 shaped for Gemma from the start, and asks whether the teacher matters for Gemma (DSv4Pro vs GLM-5.3 on the
 same tasks; user 2026-11-13: no teacher comparison, GLM-5.3 first). **Method = MetaCurate App. A**: tasks from SWE-rebench, SWE-rebench-V2 and SWE-Gym (prebuilt per-task
@@ -98,8 +103,8 @@ scripts" · the "you can also install it" sentence removed) · step limit 250 (t
 (15 % of turns carry 2–11 calls) · observations cut at 10,000 characters. Not recoverable, built here: the images for
 the three sources (SWE-Gym rows carry no image name), the grader (the dataset gives the expected F2P / P2P test names
 per row: used to check ours), the exact mini-swe-agent revision (2.4.6 is used), the reasoning request parameter.
-**Added for Gemma at curation, not at generation** (each printed): kept only if resolved, every model turn has a thought
-and the peak context is ≤ 30,720 Gemma tokens · first on **MetaCurate's own tasks** (1,221 of its 1,415: SWE-Gym left out 2026-11-13), so the teacher is the
+**Per student, at subset time, not at generation** (each printed; the Gemma values are the example): kept only if resolved, every model turn has a thought
+and the peak context is ≤ 30,720 Gemma tokens (for Qwen3.5-9B: its own tokenizer and limit) · first on **MetaCurate's own tasks** (1,221 of its 1,415: SWE-Gym left out 2026-11-13), so the teacher is the
 only difference from B-9 part 2's data.
 **Where.** The 8-card box, no GPU: the teacher is remote, the box runs the containers and the grading, so B-10 runs beside
 B-9 part 2's training (shared disk: the chunked image deletion of `verified_box.sh full` is reused).
@@ -168,7 +173,10 @@ cherry-pick, reflog, fsck, remote, ls-remote) · (3) ≥ 8 returns from a test r
 edits. Flag, counted and printed only (the paper's text; the released file rejects on these too): (5) > 10 % of turns
 without a command · (6) `print(`, `pdb` or `breakpoint()` on an added line of the patch · (7) edits but no test runner.
 Not published, chosen here: one turn per assistant message (`--turns msg`); 1,000 drawn at random (seed 0) from the
-survivors that are also resolved, fit and have thoughts → arm **G1k**. MetaCurate's own filter search only later: it
+survivors that are also resolved, fit and have thoughts → arm **G1k** (the Gemma subset; a Qwen3.5-9B subset is drawn
+the same way with its own token count). **The pool is kept whole**: every graded run stays, with its labels (resolved,
+the seven signals, turns with a thought, peak tokens per tokenizer) in one table, so a subset for another student is a
+filter on that table and needs no new generation. MetaCurate's own filter search only later: it
 needs a paid judge model (their code has an OpenAI-compatible client, so the gateway could be the judge).
 
 The rule filter on the public DSv4Pro pool (laptop, 2026-11-13, all 4,286 trajectories; fit = the teacher's own token
@@ -185,13 +193,14 @@ command 0 % · debug lines 1.5 % · edits without a test runner 40.6 %. The filt
 unresolved runs: resolved share 41.6 % among the survivors of signals 1–4, 41.1 % in the pool. With one turn per tool call
 (`--turns call`) the exploration signal fires on 12.6 % and 3,540 pass signals 1–4.
 
-**Step 5 · Train and evaluate exactly as B-9 part 2 steps 2–4** (same renderer, recipe, ADAPTER eval, paired.py), 31B
-first, any free box. **Read it (set before the data):** G1k vs base by B-9 part 2's criterion (improved or not); G1k vs R1k on the same 500 tasks: G1k ≥ R1k + 3 pts →
+**After B-10 (not part of it since 2026-11-17) · Train and evaluate as the B-9 parts do** (same renderer, recipe, ADAPTER eval, paired.py):
+the student (Qwen3.5-9B, Gemma 31B or E4B) is chosen when the pool exists. **Read it (set before the data):** G1k vs base by B-9 part 2's criterion (improved or not); G1k vs R1k on the same 500 tasks: G1k ≥ R1k + 3 pts →
 our own generation becomes the data source for the Kaggle-harness stage (plan 24 P2); otherwise the public pool stays.
 **Optional:** Gemma 31B as the teacher for E4B (free, GPU) on the same tasks, if step 2 shows teacher thoughts far from
 Gemma's style (native thoughts; distillation inside the family).
 
-**Timeline.** 11-14 steps 0–1 · 11-15 pilot · 11-16 → 11-18 scale (beside B-9 part 2) · 11-19 → 11-21 train + eval E4B.
+**Timeline.** 11-14 steps 0–1 · 11-15 pilot · 11-16 → 11-18 scale (beside B-9 part 2) · then the pool is handed to training (student chosen then). Behind this
+timeline on 11-17: the box runs of "On the box now" are still awaited.
 Final submission 12-02. **Risks:** token cost; gateway rate limits; reasoning not returned; ~1,400 image pulls (Docker Hub
 limits, disk); teacher licences.
 
