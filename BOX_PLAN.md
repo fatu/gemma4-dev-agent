@@ -1183,6 +1183,70 @@ of our first run: it may diverge; do not lower the LR yourself). Photo the `eval
 adapter with the lowest held-out NLL is the one to evaluate, and all three are kept. Nothing is evaluated in this step;
 what runs on the 8-card box after 9c is decided from 9c's result.
 
+**Step 11 · the 8-card box now: upload 9c's trajectories, then the new adapter at half strength (written 2026-11-16,
+user: "同意，但思考预算不用做，你把上传轨迹也写进plan").** 9b and 9c excluded top_k and the text-to-thought rule. Question
+here: do the thought loops follow the LoRA dose? One arm, no new training: 9a's adapter (rule off, epoch 2) with
+`lora_alpha` 32 → 16 in a copy of its config (vLLM scales the update by alpha / r, so 1.0 → 0.5; weights unchanged).
+Everything else as 9c: chunk 0, 128K, temperature 1.0, top_k 20, thinking budget 4,096, cards 4–7. Compared with 9c's
+three arms, which are not rerun.
+
+**11a · upload 9c's trajectories first (no GPU).** The zip of 9c's last block (75 trajectories, no test outputs):
+```bash
+cd gemma4-dev-agent && git pull && git log --oneline -1
+V=runs/verified
+ls -lh $V/q9_verified_traj_t1k20.zip; unzip -l $V/q9_verified_traj_t1k20.zip | grep -c 'traj.json'   # 📷 75; missing → run 9c's zip lines
+```
+Upload it as a new version of the private Kaggle dataset of the Qwen runs, the way step 6's zip went up; the old files
+stay. 📷 the version line and the file list.
+
+**11b · the half-strength arm.**
+```bash
+export MODEL=Qwen/Qwen3.5-9B SUBSET=verified WORKERS=8 EVAL_JOBS=8 THINK_HIST=1 MAX_TOK=8192 TOP_P=0.95 THINK_BUDGET=4096
+export NTASK=25 CHUNK=25 KEEP_IMAGES=1 MAX_LEN=131072 TEMP=1.0 TOP_K=20
+N=adapters/mc_Qwen3.5-9B_r1k_nt_lr1e-5/epoch2; H=adapters/mc_Qwen3.5-9B_r1k_nt_lr1e-5/epoch2_a16; V=runs/verified
+mkdir -p $H && ln -sf "$(cd $N && pwd)/adapter_model.safetensors" $H/adapter_model.safetensors
+python3 - $N/adapter_config.json $H/adapter_config.json <<'EOF2'
+import json, sys
+c = json.load(open(sys.argv[1])); old = c["lora_alpha"]; c["lora_alpha"] = old / 2
+json.dump(c, open(sys.argv[2], "w"), indent=2)
+print(f"== half strength: r {c['r']} · lora_alpha {old} -> {c['lora_alpha']} · use_rslora {c.get('use_rslora')} · scale {old / c['r']} -> {c['lora_alpha'] / c['r']}")
+EOF2
+# 📷 the == line: r 32 · lora_alpha 32 -> 16.0 · use_rslora False · scale 1.0 -> 0.5
+(cd $N && sha256sum adapter_model.safetensors); (cd $H && sha256sum adapter_model.safetensors adapter_config.json)   # 📷 same weights hash
+nvidia-smi --query-gpu=index,memory.used --format=csv,noheader              # 📷 cards 4–7 free
+ADAPTER=$H GPUS="4 5 6 7" PORT=8020 bash scripts/verified_box.sh serve      # 📷 header "r 32 alpha 16.0" + the adapter check lines
+ADAPTER=$H GPUS="4 5 6 7" PORT=8020 TAG=vf_q9_nt128_t1k20_a16 nohup bash scripts/verified_box.sh full > $V/vf_q9_nt128_t1k20_a16.full.log 2>&1 &
+head -2 $V/vf_q9_nt128_t1k20_a16.full.log | cut -c1-760                     # 📷 temperature 1.0 · top_k 20 · max len 131072 · 25 tasks · alpha 16.0
+
+# when it prints '== full … done'
+grep -h '^== chunk\|graded\|STOP\|== full' $V/vf_q9_nt128_t1k20_a16.full.log   # 📷
+python3 scripts/copy_stats.py $V/vf_q9_th128_t1k20 $V/vf_q9_nt128_t1k20_a16 $V/vf_q9_nt128_t1k20   # 📷 base · half · full
+python3 scripts/paired.py $V/vf_q9_nt128_t1k20 $V/vf_q9_nt128_t1k20_a16     # 📷 half − full
+python3 scripts/paired.py $V/vf_q9_th128_t1k20 $V/vf_q9_nt128_t1k20_a16     # 📷 half − base
+GPUS="4 5 6 7" PORT=8020 bash scripts/verified_box.sh stop
+docker images --format '{{.Repository}}:{{.Tag}}' | grep -E 'sweb\.eval\.x86_64\.' | xargs -r docker rmi > /dev/null; df -h /var/lib/docker | tail -1
+(cd $V && rm -f q9_verified_traj_t1k20_a16.zip && zip -qr q9_verified_traj_t1k20_a16.zip vf_q9_nt128_t1k20_a16 vf_q9_nt128_t1k20_a16.full.log -x '*test_output.txt')
+ls -lh $V/q9_verified_traj_t1k20_a16.zip; unzip -l $V/q9_verified_traj_t1k20_a16.zip | grep -c 'traj.json'   # 📷 25 expected
+```
+Then upload this zip to the same private dataset as another new version (📷). **Stop and photo** if the == line does
+not show scale 1.0 -> 0.5 or shows `use_rslora True` (then the scale is alpha / √r and this arm is not a half), if the
+weights hashes differ, if the header does not show alpha 16.0 with top_k 20 / temperature 1.0 / max len 131072, or if
+the adapter check says IDENTICAL. The adapter check's sum logprob should lie between the base's and the full-strength
+adapter's value of 9c (same prompt): photo it. The task images were removed after 9c, so they are pulled again (longer
+than 9c).
+
+Reading, set before the data (25 tasks, one run; 1–2 trajectories are noise; resolved is reported, not read). Reference
+from 9c: base 3 loop trajectories / 3 loop turns / 3 thoughts over 12,000 characters; full strength 6 / 32 / 27.
+- Half strength at ≤ 3 loop trajectories AND loop turns ≤ 10 → the loops follow the dose. Then step 10's adapter (about
+  20× the update) is expected to loop more, and the next candidates are weaker or action-only adapters.
+- Half strength at ≥ 5 loop trajectories or loop turns ≥ 20 → the loops do not shrink with the dose in this range; the
+  dose is not the lever, step 10 stays open.
+- In between → not decided by this run.
+- Side check: text beside a tool call between the base's 12.4 % and the full adapter's 5.9 % is expected at half
+  strength; outside that range, say so.
+- Limits: one dose point; half alpha is not the same as half the training (an epoch-1 adapter would be the other dose
+  check); vLLM honouring `lora_alpha` is checked only through the adapter check's logprob.
+
 **Reading (set before the data).**
 - Qwen + our LoRA does not copy and resolves ≥ its base → our data, rendering idea and recipe are sound on a model the
   paper used; the collapse is specific to E4B (family or size, see the confound).
