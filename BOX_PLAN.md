@@ -1503,6 +1503,64 @@ Reading, set before the data (125 tasks, one run per arm; reference without top_
 - Limits: one run per arm; chunk 0 was run earlier in the day than chunks 1–4; the first 125 tasks of Verified are
   astropy and django only.
 
+**Step 15 · the 8-card box: all 125 tasks WITHOUT top_k, the action-only adapter and the r64 epoch-1 adapter, against
+step 6's base (written 2026-11-16, user: "跑不带topk，只训动作和 r64 epoch 1的125题，然后跟base对比").** The base is not
+run again: step 6 has the base (`vf_q9_th128_t1`, 63 of 125) and the first adapter (`vf_q9_mc128_t1`, 68 of 125) on
+these 125 tasks with the same settings and no top_k. Two new arms, each all 5 chunks: action-only on cards 0–3, r64
+epoch 1 on cards 4–7. Settings as step 6: 128K, temperature 1.0, top_p 0.95, thinking budget 4,096, 250 steps;
+**TOP_K is not set** (the header must print `top_k not sent`). This step needs all 8 cards: it runs when they are free
+(after step 14 if that is running, or in its place: the user's call).
+```bash
+cd gemma4-dev-agent && git pull && git log --oneline -1
+nvidia-smi --query-gpu=index,memory.used --format=csv,noheader      # 📷 all 8 free
+unset TOP_K
+export MODEL=Qwen/Qwen3.5-9B SUBSET=verified WORKERS=8 EVAL_JOBS=8 THINK_HIST=1 MAX_TOK=8192 TOP_P=0.95 THINK_BUDGET=4096
+export NTASK=125 CHUNK=25 KEEP_IMAGES=1 MAX_LEN=131072 TEMP=1.0
+A=adapters/mc_Qwen3.5-9B_r1k_nt_act_lr1e-5/epoch2; P=adapters/mc_Qwen3.5-9B_r1k_nt_lr1e-4/epoch1; V=runs/verified
+ls -d $V/vf_q9_th128_t1 $V/vf_q9_mc128_t1 && TAG=vf_q9_th128_t1 bash scripts/verified_box.sh report | tail -3   # 📷 step 6's base is there: 63 of 125
+for d in $A $P; do (cd $d && sha256sum adapter_model.safetensors adapter_config.json); done   # 📷 = 12b's and step 13's hashes
+ADAPTER=$A GPUS="0 1 2 3" PORT=8010 bash scripts/verified_box.sh serve      # 📷 "r 32 alpha 32" + "the adapter acts"
+ADAPTER=$P GPUS="4 5 6 7" PORT=8020 bash scripts/verified_box.sh serve      # 📷 "r 64 alpha 128" + "the adapter acts"
+ADAPTER=$A GPUS="0 1 2 3" PORT=8010 TAG=vf_q9_act128_t1 nohup bash scripts/verified_box.sh full > $V/vf_q9_act128_t1.full.log 2>&1 &
+ADAPTER=$P GPUS="4 5 6 7" PORT=8020 TAG=vf_q9_r64e1_t1 nohup bash scripts/verified_box.sh full > $V/vf_q9_r64e1_t1.full.log 2>&1 &
+head -2 $V/vf_q9_act128_t1.full.log $V/vf_q9_r64e1_t1.full.log | cut -c1-760   # 📷 125 tasks · temperature 1.0 · top_k not sent · max len 131072
+grep -c top_k $V/vf_q9_act128_t1/c0/part0.model.yaml $V/vf_q9_r64e1_t1/c0/part0.model.yaml   # 📷 0 and 0
+
+# when both print '== full … done'
+grep -h '^== chunk\|graded\|STOP\|== full' $V/vf_q9_act128_t1.full.log $V/vf_q9_r64e1_t1.full.log   # 📷
+ADAPTER=$A TAG=vf_q9_act128_t1 bash scripts/verified_box.sh report          # 📷
+ADAPTER=$P TAG=vf_q9_r64e1_t1 bash scripts/verified_box.sh report           # 📷
+python3 scripts/paired.py $V/vf_q9_th128_t1 $V/vf_q9_act128_t1 --out $V/paired_q9_th128_act128_t1.json    # 📷 action-only − base
+python3 scripts/paired.py $V/vf_q9_th128_t1 $V/vf_q9_r64e1_t1 --out $V/paired_q9_th128_r64e1_t1.json      # 📷 r64 − base
+python3 scripts/paired.py $V/vf_q9_mc128_t1 $V/vf_q9_act128_t1              # 📷 action-only − the first adapter
+python3 scripts/paired.py $V/vf_q9_mc128_t1 $V/vf_q9_r64e1_t1               # 📷 r64 − the first adapter
+python3 scripts/paired.py $V/vf_q9_act128_t1 $V/vf_q9_r64e1_t1              # 📷 r64 − action-only
+python3 scripts/copy_stats.py $V/vf_q9_th128_t1 $V/vf_q9_mc128_t1 $V/vf_q9_act128_t1 $V/vf_q9_r64e1_t1   # 📷 four == blocks, 125 trajectories each
+GPUS="0 1 2 3" PORT=8010 bash scripts/verified_box.sh stop; GPUS="4 5 6 7" PORT=8020 bash scripts/verified_box.sh stop
+docker images --format '{{.Repository}}:{{.Tag}}' | grep -E 'sweb\.eval\.x86_64\.' | xargs -r docker rmi > /dev/null; df -h /var/lib/docker | tail -1
+(cd $V && rm -f q9_verified_traj_t1_act_r64.zip && zip -qr q9_verified_traj_t1_act_r64.zip vf_q9_act128_t1 vf_q9_r64e1_t1 paired_q9_th128_act128_t1.json \
+   paired_q9_th128_r64e1_t1.json vf_q9_act128_t1.full.log vf_q9_r64e1_t1.full.log -x '*test_output.txt')
+ls -lh $V/q9_verified_traj_t1_act_r64.zip; unzip -l $V/q9_verified_traj_t1_act_r64.zip | grep -c 'traj.json'   # 📷 250 expected
+```
+Then upload the zip to the private dataset of the Qwen runs as a new version (📷). Time: 5 chunks per arm; step 6's
+chunk 0 took 46–51 min. **Stop and photo** if a header shows a top_k value or a model yaml contains `top_k`, if step
+6's base directory is missing or does not report 63 of 125 (then the base must be rerun: ask), if the hashes differ from
+12b's and step 13's, or at a STOP line.
+
+Reading, set before the data (125 paired tasks, one run per arm; step 6: base 63, first adapter 68, +4.0 points; first
+adapter 31 loop trajectories and 106 loop turns, base 1 and 1):
+- **Is the training useful:** for each new adapter, adapter − base. 95 % CI above 0 → the LoRA training helps on this
+  model. CI includes 0 → not shown at 125 tasks; the number is reported as it is.
+- **Loops without top_k:** an adapter at ≤ 6 loop trajectories of 125 (the first adapter: 31) → its loop result of chunk
+  0 holds without top_k. At ≥ 16 (half of 31) → it does not hold. In between → reduced, not removed. Both parts of
+  the loop rule are reported apart on the laptop (thoughts over 12,000 characters; a sentence repeated 5 times).
+- **Between the two adapters:** r64 − action-only is reported; a difference inside its CI picks neither.
+- **Where a gain comes from:** the base's submissions that are not a diff and its empty patches are counted (step 6:
+  14 and 7). If an adapter's extra solves are mostly those tasks, the gain is in submitting, not in fixing.
+- Limits: the base was run on another day (step 6), not beside these arms; one run per arm; these adapters were
+  chosen on chunk 0 with top_k 20, and chunk 0 is part of the 125, so 25 of the tasks are not fresh for the choice;
+  astropy and django only.
+
 **Reading (set before the data).**
 - Qwen + our LoRA does not copy and resolves ≥ its base → our data, rendering idea and recipe are sound on a model the
   paper used; the collapse is specific to E4B (family or size, see the confound).
