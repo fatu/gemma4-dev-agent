@@ -1750,6 +1750,65 @@ empty patches, exact copies of the previous turn in 14 trajectories = 13.1 % of 
 - Limits: 25 tasks, one run; step 8's arms ran on another day; the adapter's own thoughts are untrained, so it thinks
   as the base does and acts as the teacher does, which the teacher data never showed together.
 
+**Step 18 · the 8-card box after step 16, cards 0–3: the base once more with a submission fallback (written
+2026-11-17, user: "兜底写进plan，再跑一次base").** Why: in step 6 the base loses 20 of 125 tasks before grading — 13
+submitted texts that are not a diff and 7 empty ones — although it had edited the source; the adapters lose 1 or 2.
+So adapter − base mixes "fixes more" with "follows the submission steps". The fallback takes the second part out.
+
+Code (this commit): `scripts/mini_fb.py` runs mini's SWE-bench runner with one change. When a run ends as Submitted
+and the submitted text holds no diff hunk (no `--- ` / `+++ ` / `@@ ` triple), it runs `git diff HEAD` in the task's
+container before the container is removed, and that becomes the prediction. A submission with a hunk is never touched;
+no other exit is touched; prompt and model see nothing of it. The text the model printed stays in the trajectory's last
+message; every instance gets a line in `<part dir>/fallback.jsonl`. `FALLBACK=1` in `verified_box.sh` switches it on
+and the header prints it. A replaced submission could not have resolved (nothing to apply), so one grading gives both
+numbers: resolved as submitted = resolved − resolved through the fallback (`mini_fb.py --stats` prints both).
+Tested on the laptop: the rule on the 500 existing submissions picks 20 of the base's (the 13 + 7; none resolved), 1 /
+2 / 1 of the adapters'; the wrapper with a stub of mini's runner on 8 cases (diff, headerless diff, prose, file lines,
+empty, empty tree, context exit, git failing). **Not tested: with the real mini-swe-agent** (not on the laptop; its
+v2.4.6 source was read) — hence the 4-task check first.
+```bash
+cd gemma4-dev-agent && git pull && git log --oneline -1
+unset TOP_K ADAPTER
+export MODEL=Qwen/Qwen3.5-9B SUBSET=verified WORKERS=8 EVAL_JOBS=8 THINK_HIST=1 MAX_TOK=8192 TOP_P=0.95 THINK_BUDGET=4096
+export KEEP_IMAGES=1 MAX_LEN=131072 TEMP=1.0 FALLBACK=1; V=runs/verified
+GPUS="0 1 2 3" PORT=8010 bash scripts/verified_box.sh serve                    # 📷 base, no adapter line
+# 18a · check on 4 tasks (one per card)
+NTASK=4 CHUNK=4 GPUS="0 1 2 3" PORT=8010 TAG=vf_q9_fb_check bash scripts/verified_box.sh full 2>&1 | tail -8      # 📷 header: "submission fallback ON"
+grep -h "^mini_fb" $V/vf_q9_fb_check/c0.part*.run.log | cut -c1-200            # 📷 4 lines "mini_fb · submission fallback ON"
+cat $V/vf_q9_fb_check/c0/part*/fallback.jsonl | cut -c1-330                    # 📷 4 lines, each with tree_rc 0
+python3 scripts/mini_fb.py --stats $V/vf_q9_fb_check                           # 📷
+# 18b · only if 18a shows 4 mini_fb lines and 4 log lines with tree_rc 0
+NTASK=125 CHUNK=25 GPUS="0 1 2 3" PORT=8010 TAG=vf_q9_th128_t1_fb nohup bash scripts/verified_box.sh full > $V/vf_q9_th128_t1_fb.full.log 2>&1 &
+head -2 $V/vf_q9_th128_t1_fb.full.log | cut -c1-900                            # 📷 125 tasks · temperature 1.0 · top_k not sent · max len 131072 · submission fallback ON
+# when it prints '== full … done'
+grep -h '^== chunk\|graded\|STOP\|== full' $V/vf_q9_th128_t1_fb.full.log       # 📷
+TAG=vf_q9_th128_t1_fb bash scripts/verified_box.sh report                      # 📷
+python3 scripts/mini_fb.py --stats $V/vf_q9_th128_t1_fb                        # 📷 used · resolved · resolved through the fallback · resolved as submitted
+python3 scripts/paired.py $V/vf_q9_th128_t1_fb $V/vf_q9_act128_t1              # 📷 action-only run 1 − base with fallback
+python3 scripts/paired.py $V/vf_q9_th128_t1_fb $V/vf_q9_act128_t1_r2           # 📷 action-only run 2 − base with fallback
+python3 scripts/copy_stats.py $V/vf_q9_th128_t1_fb                             # 📷
+GPUS="0 1 2 3" PORT=8010 bash scripts/verified_box.sh stop
+docker images --format '{{.Repository}}:{{.Tag}}' | grep -E 'sweb\.eval\.x86_64\.' | xargs -r docker rmi > /dev/null; df -h /var/lib/docker | tail -1
+(cd $V && rm -f q9_verified_traj_t1_fb.zip && zip -qr q9_verified_traj_t1_fb.zip vf_q9_th128_t1_fb vf_q9_fb_check vf_q9_th128_t1_fb.full.log -x '*test_output.txt')
+ls -lh $V/q9_verified_traj_t1_fb.zip; unzip -l $V/q9_verified_traj_t1_fb.zip | grep -c 'traj.json'; unzip -l $V/q9_verified_traj_t1_fb.zip | grep -c fallback.jsonl   # 📷 129 and 24 expected
+```
+Then upload the zip to the private dataset of the Qwen runs (📷). Time: about 4 h on 4 cards. Cards 4–7 stay free;
+the action-only adapter could run there with `FALLBACK=1` at the same time for a same-day pair (not asked for: say so
+first). **Stop and photo** if 18a shows no `mini_fb` line, a traceback, fewer than 4 log lines or a `tree_rc` other
+than 0 (do not start 18b), if a header shows a top_k value or `submission fallback off`, or at a STOP line.
+
+Reading, set before the data (the action-only adapter has 2 fallback candidates of 125 in run 1, so its numbers as
+submitted are used as they are):
+- **What the submission steps cost the base:** resolved through the fallback, in this run. Step 6 had 20 candidates.
+- **Does the adapter fix more:** action-only − base with fallback, paired, for each action-only run and for the mean
+  of the two. CI above 0 → the training improves fixing, beyond the submission steps. CI includes 0 with the point
+  estimate at +3 points or less → the measured gain of step 15 is the submission steps; a prompt line or this fallback
+  gives it without training. In between → not decided at this size.
+- **Check that the fallback changed no behaviour:** the base's count of submitted runs without a hunk should be near
+  step 6's 20 of 118, and its resolved-as-submitted near 63 and near step 16's base.
+- Limits: one run; not the same day as the action-only runs; the fallback also returns edits the model may not have
+  meant to submit (changed test files, half-finished edits), so it is an upper reading of the base's fixing.
+
 **Reading (set before the data).**
 - Qwen + our LoRA does not copy and resolves ≥ its base → our data, rendering idea and recipe are sound on a model the
   paper used; the collapse is specific to E4B (family or size, see the confound).
