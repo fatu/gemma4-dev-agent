@@ -1292,6 +1292,23 @@ from 9c: base 3 loop trajectories / 3 loop turns / 3 thoughts over 12,000 charac
 - Limits: two dose points of different kinds (half the update; half the training, where the learning rate was also
   higher on average in epoch 1's schedule); vLLM honouring `lora_alpha` is checked only through the adapter check's logprob.
 
+**Step 11 result (8-card box, 2026-11-16, chunk 0 = 25 tasks, one run per arm, top_k 20, from the box session's recap;
+not recomputed on the laptop).** Columns: base · half strength (epoch 2, alpha 16) · epoch 1 (alpha 32) · full strength
+(epoch 2, alpha 32; 9c).
+- Trajectories with a prose loop: 3 · **3** · **6** · 6 of 25; loop turns 3 · 8 · 28 · 32; thoughts over 12,000
+  characters 3 · 6 · 27 · 27; over 3,000 characters 3.6 % · 4.5 % · 8.5 % · 7.9 %.
+- Text beside a tool call: 12.4 % · 5.4 % · 5.8 % · 5.9 %; several tool calls in a turn: 0 % · 0.3 % · 9.0 % · 5.8 %.
+- Exits submitted / context window: 22 / 3 · 24 / 1 · 22 / 3 · 22 / 3. Resolved 11 · 14 · 12 · 14 (all paired
+  intervals include 0; half and full strength resolve the same 14 tasks).
+By the reading set in advance: half strength is in the low band (≤ 3 trajectories and ≤ 10 turns), epoch 1 in the high
+band (≥ 5 or ≥ 20) → "one low and one high: the two kinds of dose differ; decide nothing more from 25 tasks". Halving
+the size of the update brings the loops to about the base's level; stopping after half of the training does not (epoch
+1 loops like epoch 2). Two things to keep beside it: at half strength several tool calls in a turn are 0.3 % (base 0,
+full 5.8 %), so this adapter changes the behaviour little in that respect, and fewer loops may simply mean "closer to
+the base"; its text beside a tool call (5.4 %) is below the expected range (between 12.4 % and 5.9 %), i.e. already at
+the full adapter's level. Resolved is not read on 25 tasks. The trajectories of 9c, 11b and 11c are on the private
+dataset (uploaded by the box session). The step-10 adapter (r64, epoch 1) is still not evaluated.
+
 **Step 12 · an action-only adapter: no loss on the thoughts (written 2026-11-16, user: "把只训动作的适配器也写进plan").**
 The loops are inside the thoughts. Question: do they come from training on the teacher's thoughts? Same data as 9a
 (rule off), same recipe as 9a (r32 α32, LR 1e-5, 2 epochs), one change: in every reply the thought and its `</think>`
