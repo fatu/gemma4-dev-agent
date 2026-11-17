@@ -1183,6 +1183,16 @@ of our first run: it may diverge; do not lower the LR yourself). Photo the `eval
 adapter with the lowest held-out NLL is the one to evaluate, and all three are kept. Nothing is evaluated in this step;
 what runs on the 8-card box after 9c is decided from 9c's result.
 
+**Step 10 result (4-card box, 2026-11-16, from the box session's recap).** The training did not diverge. Held-out NLL
+(same labels as 9a, so comparable): start 0.3978 · epoch 1 **0.3424** · epoch 2 0.3438 · epoch 3 0.3515; mean training
+loss 0.3214 · 0.2827 · 0.2519. The held-out NLL is lowest after epoch 1 and rises while the training loss keeps
+falling: from epoch 2 on this recipe fits the training set more than the task. 9a's adapter (r32 α32, LR 1e-5, 2
+epochs) ended at 0.3524, so epoch 1 here is 0.010 lower and epoch 3 is about equal to it. 255 steps, 6,471 s (108
+min), peak memory 41.8 GB per card, 4 ranks; all three epochs kept (642 MB each), export checks passed, hashes in the
+box recap. By the rule written above, the adapter to evaluate is **epoch 1**. Not evaluated yet: whether it goes to
+the 8-card box is decided with step 11's result. A gain of 0.010 in held-out NLL says nothing yet about loops or
+resolved tasks (B-9 part 2: lower NLL came with more looping on E4B).
+
 **Step 11 · the 8-card box now: upload 9c's trajectories, then the new adapter at half strength (written 2026-11-16,
 user: "同意，但思考预算不用做，你把上传轨迹也写进plan").** 9b and 9c excluded top_k and the text-to-thought rule. Question
 here: do the thought loops follow the LoRA dose? One arm, no new training: 9a's adapter (rule off, epoch 2) with
