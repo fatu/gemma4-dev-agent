@@ -1370,6 +1370,47 @@ thoughts over 12,000 characters; full labels 6 / 32 / 27):
   after teacher-style thoughts and used after its own; half the label tokens at the same LR is also a smaller dose,
   which step 11 reads separately.
 
+**Step 13 · the 8-card box now, cards 0–3: the step-10 adapter (r64 α128, LR 1e-4, epoch 1) on the same chunk
+(written 2026-11-16, user: "同意，写进plan").** The other end of the dose: step 11 found fewer loops at half the update;
+this adapter has about 20× the update of 9a's and the lowest held-out NLL (0.3424). Same chunk and settings as 9c.
+Cards 4–7 stay free for 12b. The adapter is copied from the 4-card box first (12a is training there: copying two
+files does not disturb it).
+```bash
+# on the 4-card box
+P=adapters/mc_Qwen3.5-9B_r1k_nt_lr1e-4/epoch1; (cd $P && sha256sum adapter_model.safetensors adapter_config.json)   # 📷
+# copy $P to the same path on the 8-card box, then there:
+cd gemma4-dev-agent && git pull && git log --oneline -1
+export MODEL=Qwen/Qwen3.5-9B SUBSET=verified WORKERS=8 EVAL_JOBS=8 THINK_HIST=1 MAX_TOK=8192 TOP_P=0.95 THINK_BUDGET=4096
+export NTASK=25 CHUNK=25 KEEP_IMAGES=1 MAX_LEN=131072 TEMP=1.0 TOP_K=20
+P=adapters/mc_Qwen3.5-9B_r1k_nt_lr1e-4/epoch1; V=runs/verified
+(cd $P && sha256sum adapter_model.safetensors adapter_config.json)          # 📷 = the 4-card box's hashes
+ADAPTER=$P GPUS="0 1 2 3" PORT=8010 bash scripts/verified_box.sh serve      # 📷 header "r 64 alpha 128" + "the adapter acts" (vLLM must accept rank 64)
+ADAPTER=$P GPUS="0 1 2 3" PORT=8010 TAG=vf_q9_r64e1_t1k20 nohup bash scripts/verified_box.sh full > $V/vf_q9_r64e1_t1k20.full.log 2>&1 &
+head -2 $V/vf_q9_r64e1_t1k20.full.log | cut -c1-760                         # 📷 temperature 1.0 · top_k 20 · max len 131072 · 25 tasks · r 64 alpha 128
+
+# when it prints '== full … done' (KEEP_IMAGES=1: 12b on cards 4–7 shares the images; remove them after both)
+grep -h '^== chunk\|graded\|STOP\|== full' $V/vf_q9_r64e1_t1k20.full.log   # 📷
+python3 scripts/copy_stats.py $V/vf_q9_th128_t1k20 $V/vf_q9_nt128_t1k20_a16 $V/vf_q9_nt128_t1k20 $V/vf_q9_r64e1_t1k20   # 📷 base · half · full · r64
+python3 scripts/paired.py $V/vf_q9_nt128_t1k20 $V/vf_q9_r64e1_t1k20         # 📷 r64 − 9a's adapter
+python3 scripts/paired.py $V/vf_q9_th128_t1k20 $V/vf_q9_r64e1_t1k20         # 📷 r64 − base
+GPUS="0 1 2 3" PORT=8010 bash scripts/verified_box.sh stop
+(cd $V && rm -f q9_verified_traj_t1k20_r64e1.zip && zip -qr q9_verified_traj_t1k20_r64e1.zip vf_q9_r64e1_t1k20 vf_q9_r64e1_t1k20.full.log -x '*test_output.txt')
+ls -lh $V/q9_verified_traj_t1k20_r64e1.zip; unzip -l $V/q9_verified_traj_t1k20_r64e1.zip | grep -c 'traj.json'   # 📷 25 expected
+```
+Then upload the zip to the same private dataset (📷). **Stop and photo** if the hashes differ between the boxes, if
+vLLM refuses the rank-64 adapter, or if the adapter check says IDENTICAL.
+
+Reading, set before the data (25 tasks, one run; reference: base 3 loop trajectories / 3 turns, half 3 / 8, full 6 /
+32):
+- r64 at ≥ 8 loop trajectories or ≥ 50 loop turns → with step 11 the loops grow with the size of the update over three
+  points (0.5×, 1×, about 20×).
+- r64 at 5–7 trajectories and 20–49 turns → about the same as 9a's adapter: above some size the loops do not grow
+  further.
+- r64 at ≤ 3 trajectories and ≤ 10 turns → the loops do not follow the size of the update; step 11's half-strength
+  result would then need another explanation. Say so.
+- Whatever the result: the candidate for all 125 tasks is chosen after 12b, from the arms with loops at the base's
+  level.
+
 **Reading (set before the data).**
 - Qwen + our LoRA does not copy and resolves ≥ its base → our data, rendering idea and recipe are sound on a model the
   paper used; the collapse is specific to E4B (family or size, see the confound).
