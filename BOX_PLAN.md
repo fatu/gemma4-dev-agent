@@ -1619,6 +1619,21 @@ third of its runs, and every adapter does; the teacher trajectories end this way
 would have passed (the edits are gone with the containers); the other 6 of the 13 were read through their final command
 only.
 
+**Laptop reading of the action-only adapter's 5 long thoughts (2026-11-17, step 15, read in full).** None has a
+sentence repeated word for word, but all 5 go round in circles: the same point is restated in other words 4 to 8
+times. Two end by themselves (3,085 and 3,616 completion tokens), three are cut mid-sentence at the thinking budget.
+In turn order: tracing a matrix-stacking function, it finds the fix a quarter of the way in and then restates the
+cause about 8 times (task resolved); header-row positions of a table writer, "hard-coded for a single header row"
+about 6 times with contradicting line numbers (not resolved); a unit grammar, the same rewrite proposed 3 times
+(cut); the same task 15 turns later, the same three-rule grammar written out 4 times, each time traced to the same
+wrong result, called no help, and proposed again (cut; this is a loop in ideas if not in words; the task ends at
+the context limit, as in every arm); an off-by-one in a slice end, `end+idx` against `end+idx+1` weighed about 8
+times with the same indices recomputed (cut; task resolved). After 4 of the 5 the next thoughts are short again
+(under 1,700 characters); only the grammar task keeps long ones (5,288 and 2,938). So "no repeated sentence" is
+right and "not a loop" was too strong: these are the same failure in a milder form, 5 turns in 8,861 against the
+first adapter's 102. Not read: the base's one long thought, for comparison; the tool call after the fourth thought
+beyond its first 300 characters.
+
 **Step 16 · the 8-card box: second run of the base and the action-only adapter, side by side, 125 tasks without top_k
 (written 2026-11-17, user: "让 base 和只训动作的适配器同一天并排再跑一次 125 题").** Same settings as steps 6 and 15: 128K,
 temperature 1.0, top_p 0.95, thinking budget 4,096, 250 steps, **TOP_K not set**. Base on cards 0–3, action-only on
