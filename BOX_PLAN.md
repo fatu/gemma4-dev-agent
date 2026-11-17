@@ -1688,6 +1688,68 @@ Reading, set before the data (run 1: base 63, action-only 73, +8.0 points, CI 0.
 - Limits: run 1's base is from another day than run 1's adapter; astropy and django only; the adapter was chosen on
   the first 25 tasks.
 
+**Step 17 · the 4-card box: an action-only adapter for E4B (written 2026-11-17, user: "多加一步，让E4B也只训action").**
+On Qwen the loops came with the loss on the thoughts (step 12b, step 15). E4B's adapter failed differently (step 8:
+it copies whole turns once the context passes about 16K tokens, 100 of 125 patches empty, 3 resolved against the
+base's 13). Question: does the same change remove that too? One thing changes against E4B's adapter of part 2: no loss
+on the thought spans. Same 952 trajectories (`r1k`, text-to-thought rule on, as E4B's adapter had), same recipe (r32
+α32, LR 1e-5, 2 epochs, 16 per step, max len 30,720). It runs beside step 16, which holds the 8-card box.
+
+Code (this commit): `train/render.py --label-scope reply|action` — `action` sets the labels of every thought span
+(body and closing `<channel|>`; the opening tag is in the prompt) to −100; text, tool calls and the stop token keep
+theirs. `mc_box.sh render` passes `LABELS` to the Gemma renderer too and prints it. Laptop test on 28 local
+trajectories (665 calls, E4B tokenizer): input ids equal in both scopes, label tokens 133,052 → 67,475 (65,577
+masked, 49 %), 665 masked runs all ending with `<channel|>`, no channel tag left among the labels, RESULT PASS, the
+packed total equals the per-call total. Not tested: a training step (no GPU on the laptop).
+
+17a · train (4 cards). The records are copied, not rebuilt, so the two arms hold the same files:
+```bash
+cd gemma4-dev-agent && git pull && git log --oneline -1
+export MODEL=google/gemma-4-E4B-it-qat-w4a16-ct; MC=runs/sft/mc
+ls $MC/r1k | wc -l; ls $MC/r1k_holdout | wc -l; ls runs/dequant/gemma-4-E4B-dq/config.json     # 📷 the arm, its holdout, the bf16 base (missing base: bash train/mc_box.sh dequant)
+ls -d $MC/r1k_act 2>/dev/null                                                 # 📷 nothing
+cp -r $MC/r1k $MC/r1k_act && cp -r $MC/r1k_holdout $MC/r1k_act_holdout
+ARM=r1k_act LABELS=action bash train/mc_box.sh render       # 📷 "render labels: action", the holdout line, the == render line: "label scope action (thought label tokens masked …)" · PASS
+grep -h "^calls" $MC/r1k.render0.log | cut -c1-60; grep -h "^calls" $MC/r1k_act.render0.log | cut -c1-60   # 📷 same calls and targets, fewer label tokens
+ARM=r1k_act GPUS=0,1,2,3 nohup bash train/mc_box.sh train > runs/mc_train_e4b_act.log 2>&1 &
+grep -h "train ·\|schedule\|eval\|== epoch\|done" runs/mc_train_e4b_act.log | cut -c1-250   # 📷 when done: out adapters/mc_gemma-4-E4B_r1k_act_lr1e-5 · the NLL lines
+```
+The held-out NLL is over action tokens only, so it is not comparable with the first E4B adapter's.
+
+17b · evaluate the first 25 tasks (the same 4 cards, after training), settings of step 8: 128K, temperature 1.0,
+top_p 0.95, thinking budget 4,096, no top_k.
+```bash
+unset TOP_K
+export MODEL=google/gemma-4-E4B-it-qat-w4a16-ct SUBSET=verified WORKERS=8 EVAL_JOBS=8 THINK_HIST=1 MAX_TOK=8192 TOP_P=0.95 THINK_BUDGET=4096
+export NTASK=25 CHUNK=25 KEEP_IMAGES=1 MAX_LEN=131072 TEMP=1.0
+A=adapters/mc_gemma-4-E4B_r1k_act_lr1e-5/epoch2; V=runs/verified
+(cd $A && sha256sum adapter_model.safetensors adapter_config.json)             # 📷
+ADAPTER=$A GPUS="0 1 2 3" PORT=8010 bash scripts/verified_box.sh serve         # 📷 "r 32 alpha 32" + "the adapter acts"
+ADAPTER=$A GPUS="0 1 2 3" PORT=8010 TAG=vf_e4b_act128_t1 nohup bash scripts/verified_box.sh full > $V/vf_e4b_act128_t1.full.log 2>&1 &
+head -2 $V/vf_e4b_act128_t1.full.log | cut -c1-760                             # 📷 25 tasks · temperature 1.0 · top_k not sent · max len 131072
+# when it prints '== full … done'
+grep -h '^== chunk\|graded\|STOP\|== full' $V/vf_e4b_act128_t1.full.log        # 📷
+ADAPTER=$A TAG=vf_e4b_act128_t1 bash scripts/verified_box.sh report            # 📷
+python3 scripts/copy_stats.py $V/vf_e4b_act128_t1                              # 📷 exits, exact copies, same command, thought loops, prose loops
+ls -d $V/vf_e4b_th128_t1/c0 $V/vf_e4b_mc128_t1/c0 2>/dev/null && python3 scripts/copy_stats.py $V/vf_e4b_th128_t1/c0 $V/vf_e4b_mc128_t1/c0   # 📷 step 8's chunk 0, if on this box
+GPUS="0 1 2 3" PORT=8010 bash scripts/verified_box.sh stop
+(cd $V && rm -f e4b_verified_traj_t1_act.zip && zip -qr e4b_verified_traj_t1_act.zip vf_e4b_act128_t1 vf_e4b_act128_t1.full.log -x '*test_output.txt')
+ls -lh $V/e4b_verified_traj_t1_act.zip; unzip -l $V/e4b_verified_traj_t1_act.zip | grep -c 'traj.json'   # 📷 25 expected
+```
+Then upload the zip to the private E4B trajectory dataset as a new version (📷). **Stop and photo** if `r1k` or its
+holdout is missing, if the render line does not say `label scope action` or is not PASS, if the masked share is far
+from one half of the label tokens, if a header shows a top_k value or max len 32768, or at a STOP line.
+
+Reading, set before the data (25 tasks, one run; step 8 on these 25: base 2 resolved, first adapter 0 resolved, 23
+empty patches, exact copies of the previous turn in 14 trajectories = 13.1 % of turn pairs, base 0):
+- **Copying:** ≤ 2 trajectories with an exact copy and under 2 % of pairs → on E4B too the collapse comes with the
+  loss on the thoughts. ≥ 7 trajectories → it does not: the copied turns are learned through the actions, and this
+  line ends. In between → reduced.
+- **Does it work at all:** most trajectories submit a non-empty patch (first adapter: 2 of 25) → worth the 125 tasks
+  against step 8's base (13 of 125); the user decides. Resolved on 25 tasks is reported, not read.
+- Limits: 25 tasks, one run; step 8's arms ran on another day; the adapter's own thoughts are untrained, so it thinks
+  as the base does and acts as the teacher does, which the teacher data never showed together.
+
 **Reading (set before the data).**
 - Qwen + our LoRA does not copy and resolves ≥ its base → our data, rendering idea and recipe are sound on a model the
   paper used; the collapse is specific to E4B (family or size, see the confound).

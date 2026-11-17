@@ -228,7 +228,12 @@ def main():
                     help="with --pack: where the prefix property breaks (an expected break), start a new packed sequence "
                          "instead of unpacking the whole segment into one sample per call (exact either way)")
     ap.add_argument("--shard", default="0/1", help="i/n: render records i, i+n, i+2n, … (sorted by file name)")
+    ap.add_argument("--label-scope", choices=["reply", "action"], default="reply",
+                    help="reply = loss on the whole reply; action = no loss on the thought span (its channel tags "
+                         "included): loss on text, tool calls and the stop token only. A record's own "
+                         "label_scope: tool_call still applies to that call.")
     a = ap.parse_args()
+    print(f"render · label scope {a.label_scope}" + (" (thought spans get no loss)" if a.label_scope == "action" else ""))
     WIRE["mode"] = a.wire
     sh_i, sh_n = (int(x) for x in a.shard.split("/"))
     print(f"render · wire {a.wire} · shard {sh_i}/{sh_n} · pack {a.pack} · split runs {a.split_runs} · check {a.check or 'none'} · sample {a.sample}")
@@ -245,6 +250,7 @@ def main():
         n_rendered += 1
         if w_out:
             w_out.write(json.dumps(row) + "\n")
+    scope_action = {"tokens": 0, "calls": 0, "no_thought": 0}
     n_src = {"delta": 0, "synthetic": 0, "mixed": 0, "delta!=synthetic": 0, "pack_fallback_mixed": 0, "pack_fallback_nothought": 0,
              "content_control_tokens": 0, "scope_tool_call": 0}
     ref_checked = ref_ok = 0
@@ -324,6 +330,13 @@ def main():
                         r["labels"][P + s:P + e] = [-100] * (e - s)
                 kept = sum(1 for x in r["labels"][P:] if x != -100)
                 label_tot += kept - len(r["reply_ids"]); n_src["scope_tool_call"] += 1
+            elif a.label_scope == "action":
+                # no loss on the thought (opening tag, body, closing tag); text, tool calls and stop keep theirs
+                P = len(r["prompt_ids"]); k = 0
+                for kind, s, e in sp:
+                    if kind == "thought":
+                        r["labels"][P + s:P + e] = [-100] * (e - s); k += e - s
+                label_tot -= k; scope_action["tokens"] += k; scope_action["calls"] += bool(k); scope_action["no_thought"] += not k
             n_a3_seen += 1                       # reservoir sample of --sample calls (memory: one record at a time)
             if len(a3_pool) < a.sample:
                 a3_pool.append((rec["instance_id"], c, r, sp))
@@ -411,6 +424,7 @@ def main():
           + (f" e.g. {mism[:5]}" if mism else "")
           + f" · text replies with stray channel tags (stripped like the template) {n_src['content_control_tokens']}"
           + f" · label_scope tool_call (thought/text masked) {n_src['scope_tool_call']}"
+          + (f" · label scope action: thought label tokens masked {scope_action['tokens']} in {scope_action['calls']} calls, calls with no thought span {scope_action['no_thought']}" if a.label_scope == "action" else "")
           + f" · A3 sampled {len(a3_pool)}"
           + (f" · A4 label share per call min {min(shares):.3f} median {sorted(shares)[len(shares)//2]:.3f} max {max(shares):.3f}" if shares else ""))
     if a.pack and packed_tot != label_tot:

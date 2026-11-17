@@ -40,7 +40,7 @@ HISTORY="${HISTORY:-$($PY -c "import json; print(json.load(open('$PR/probe_summa
 # T2T: move the text of text + tool-call replies into the thought. On by the user's decision after the 31B probe
 # (2026-11-13: 782 such turns in 31B's own histories — the Gemma template bug HF #67/#115 hits the baseline).
 T2T="${T2T:-on}"
-# LABELS (B-9 part 3 step 12, non-Gemma render only): reply = loss on the whole reply; action = no loss on the thought
+# LABELS (B-9 part 3 steps 12 and 17; both renderers): reply = loss on the whole reply; action = no loss on the thought
 # and its close token (render_tmpl.py --label-scope). Use it with its own ARM so the rendered files have their own name.
 LABELS="${LABELS:-reply}"
 # PACK: one sequence per trajectory only if the server renders earlier thoughts; vLLM 0.19.1 drops mini's
@@ -152,15 +152,17 @@ print(f"== render {os.path.basename(rd)}: {T['records']} records · {T['calls']}
 EOF
     echo "📷 the holdout line and the == render line ($(( $(date +%s) - T0 )) s)"; exit 0
   fi
+  [ "$LABELS" = reply ] || [ "$LABELS" = action ] || { echo "LABELS=$LABELS: reply|action"; exit 1; }
+  echo "  render labels: $LABELS$([ "$LABELS" = action ] && echo " (no loss on thought spans; train and held-out rows alike, so the held-out NLL is over action tokens only)")"
   TOK="$(tokdir)"; pids=()
   for i in $(seq 0 $(( RENDER_PROCS - 1 ))); do
-    $PY train/render.py "$MC/$ARM" --tokenizer "$TOK" --wire "$WIRE" $([ "$PACK" = on ] && echo --pack --split-runs) --sample 4 --shard "$i/$RENDER_PROCS" \
+    $PY train/render.py "$MC/$ARM" --tokenizer "$TOK" --wire "$WIRE" $([ "$PACK" = on ] && echo --pack --split-runs) --sample 4 --shard "$i/$RENDER_PROCS" --label-scope "$LABELS" \
       --out "$MC/$ARM.part$i.jsonl" > "$MC/$ARM.render$i.log" 2>&1 & pids+=($!)
   done
   for p in "${pids[@]}"; do wait "$p"; done
   cat "$MC/$ARM".part*.jsonl > "$MC/$ARM.rendered.jsonl"; rm -f "$MC/$ARM".part*.jsonl
   if [ -d "$MC/${ARM}_holdout" ]; then      # the held-out tasks (mc_prep --holdout-tasks): same rendering, one process
-    $PY train/render.py "$MC/${ARM}_holdout" --tokenizer "$TOK" --wire "$WIRE" $([ "$PACK" = on ] && echo --pack --split-runs) \
+    $PY train/render.py "$MC/${ARM}_holdout" --tokenizer "$TOK" --wire "$WIRE" $([ "$PACK" = on ] && echo --pack --split-runs) --label-scope "$LABELS" \
       --sample 8 --out "$MC/$ARM.holdout.rendered.jsonl" > "$MC/$ARM.holdout.render.log" 2>&1
     echo "  holdout: $(wc -l < "$MC/$ARM.holdout.rendered.jsonl") sequences from $(ls "$MC/${ARM}_holdout" | grep -c json) records · $(grep -E '^RESULT' "$MC/$ARM.holdout.render.log")"
   else
@@ -169,7 +171,7 @@ EOF
   $PY - "$MC" "$ARM" "$RENDER_PROCS" <<'EOF'
 import glob, json, re, sys
 mc, arm, n = sys.argv[1], sys.argv[2], int(sys.argv[3])
-tot = {"calls": 0, "targets": 0, "label": 0, "packed": 0, "seq": 0, "mixed": 0, "nothought": 0, "fail": 0, "malformed": 0}
+tot = {"calls": 0, "targets": 0, "label": 0, "packed": 0, "seq": 0, "mixed": 0, "nothought": 0, "fail": 0, "malformed": 0, "act_tok": 0, "act_calls": 0, "act_none": 0}
 for i in range(n):
     t = open(f"{mc}/{arm}.render{i}.log").read()
     m = re.search(r"calls (\d+) · targets (\d+) · label tokens (\d+)", t)
@@ -182,12 +184,18 @@ for i in range(n):
         for k, v in zip(["packed", "seq", "mixed", "nothought"], map(int, p.groups())):
             tot[k] += v
     tot["fail"] += len(re.findall(r"^FAIL", t, re.M)); tot["malformed"] += len(re.findall(r"^MALFORMED", t, re.M))
+    q = re.search(r"label scope action: thought label tokens masked (\d+) in (\d+) calls, calls with no thought span (\d+)", t)
+    if q:
+        for k, v in zip(["act_tok", "act_calls", "act_none"], map(int, q.groups())):
+            tot[k] += v
+    scope = (re.search(r"^render · label scope (\w+)", t, re.M) or [None, "?"])[1]
 lens = [len(json.loads(l)["input_ids"]) for l in open(f"{mc}/{arm}.rendered.jsonl")]
 tot["seq"] = tot["seq"] or len(lens)
 lens.sort()
 print(f"== render {arm}: {tot['calls']} calls · {tot['targets']} targets · label tokens {tot['label']} (packed {tot['packed']}) "
       f"· {tot['seq']} sequences, {sum(lens):,} tokens (len p50 {lens[len(lens)//2] if lens else 0}, max {lens[-1] if lens else 0}) "
       f"· run breaks: text+call {tot['mixed']}, no-thought {tot['nothought']} · malformed replies {tot['malformed']} "
+      f"· label scope {scope}" + (f" (thought label tokens masked {tot['act_tok']} in {tot['act_calls']} calls, no thought span in {tot['act_none']}) " if scope == "action" else " ") +
       f"· FAIL lines {tot['fail']} → {'PASS' if tot['fail'] == 0 else 'FAIL: grep FAIL ' + mc + '/' + arm + '.render*.log'}")
 EOF
   echo "📷 the == render line ($(( $(date +%s) - T0 )) s)" ;;
