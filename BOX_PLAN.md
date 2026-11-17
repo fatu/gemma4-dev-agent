@@ -1141,6 +1141,32 @@ loop trajectories and 3 thoughts over 12,000 characters where it had none (one r
 The old adapter still writes text beside a tool call in 0.1 % of turns: the check for 9c is whether the new adapter
 does so again. Resolved is not read on 25 tasks. 9a was still training when this was written.
 
+**Step 10 · the 4-card box while 9c runs: a second adapter at the paper's LoRA strength (written 2026-11-16, user:
+"4卡现在空了，给我个plan").** The 4-card box is free after 9a and has everything for training; the 8-card box does the
+evaluations. This step trains only. Question it prepares: is our adapter under-trained? Ours: r32 α32, LR 1e-5, 2
+epochs, held-out NLL still falling at the end. The paper's own LoRA recipe (used for its 27B; its 9B was full
+fine-tuning, 3 epochs): r64 α128, LR 1e-4. Same data as 9a (`r1k_nt`: the rule off; already rendered on this box), so
+9a's adapter and this one differ only in strength. Changed: R, ALPHA, LR, EPOCHS. Not changed (ours, not the paper's):
+warmup 0.05, weight decay 0, β2 0.999, sequences ≤ 30,720, 16 sequences per step.
+```bash
+cd gemma4-dev-agent && git pull && git log --oneline -1
+nvidia-smi --query-gpu=index,memory.used --format=csv,noheader      # 📷 all 4 free? (9a ended)
+export MODEL=Qwen/Qwen3.5-9B
+ls runs/sft/mc/r1k_nt.qwen3.5-9b.rendered.jsonl runs/sft/mc/r1k_nt.qwen3.5-9b.holdout.rendered.jsonl   # 📷 both from 9a
+ARM=r1k_nt R=64 ALPHA=128 LR=1e-4 EPOCHS=3 GPUS=0,1,2,3 nohup bash train/mc_box.sh train > runs/mc_train_q9_nt_r64.log 2>&1 &
+head -3 runs/mc_train_q9_nt_r64.log | cut -c1-700                   # 📷 the train line: --epochs 3 --lr 1e-4 --r 64 --alpha 128 · out adapters/mc_Qwen3.5-9B_r1k_nt_lr1e-4
+grep -E "linear-attention|schedule|eval\[|== epoch|done|Error" runs/mc_train_q9_nt_r64.log | cut -c1-250   # 📷 when it ends
+ls adapters/mc_Qwen3.5-9B_r1k_nt_lr1e-4/                            # 📷 epoch1 epoch2 epoch3
+for e in 1 2 3; do (cd adapters/mc_Qwen3.5-9B_r1k_nt_lr1e-4/epoch$e && sha256sum adapter_model.safetensors adapter_config.json); done   # 📷
+```
+Expected: schedule `3 epochs × 85 optimizer steps`, 4 ranks; time about 1.5× step 9a's (3 epochs instead of 2; the
+rank-64 adapter adds a little). The output directory differs from 9a's (`…_lr1e-4` against `…_lr1e-5`): 9a's adapter
+stays. **Stop and photo** if the train line does not show the four values, if a card runs out of memory (9a's peak was
+for r32), or if the held-out NLL of an `eval[` line is above `eval[start]` (LR 1e-4 with α/r 2 is about 20× the update
+of our first run: it may diverge; do not lower the LR yourself). Photo the `eval[` lines of all three epochs: the
+adapter with the lowest held-out NLL is the one to evaluate, and all three are kept. Nothing is evaluated in this step;
+what runs on the 8-card box after 9c is decided from 9c's result.
+
 **Reading (set before the data).**
 - Qwen + our LoRA does not copy and resolves ≥ its base → our data, rendering idea and recipe are sound on a model the
   paper used; the collapse is specific to E4B (family or size, see the confound).
