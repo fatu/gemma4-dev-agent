@@ -1428,6 +1428,71 @@ Reading, set before the data (25 tasks, one run; reference: base 3 loop trajecto
 - Whatever the result: the candidate for all 125 tasks is chosen after 12b, from the arms with loops at the base's
   level.
 
+**Step 12b and step 13 result (8-card box, 2026-11-16, chunk 0 = 25 tasks, one run per arm, top_k 20, from the box
+session's recap; not recomputed on the laptop).** Columns: base · half strength · full strength (9a) · r64 epoch 1
+(step 13) · action-only (step 12).
+- Trajectories with a prose loop / loop turns / thoughts over 12,000 characters: 3 / 3 / 3 · 3 / 8 / 6 · 6 / 32 / 27 ·
+  **5 / 7 / 7** · **1 / 1 / 1**; thoughts over 3,000 characters 3.6 % · 4.5 % · 7.9 % · 7.3 % · 3.5 %.
+- Text beside a tool call 12.4 % · 5.4 % · 5.9 % · 4.7 % · 1.0 %; several tool calls in a turn 0 % · 0.3 % · 5.8 % ·
+  6.8 % · 5.4 %.
+- Exits submitted / context window 22 / 3 · 24 / 1 · 22 / 3 · 24 / 1 · 24 / 1; resolved 11 · 14 · 14 · 14 · 14
+  (action-only − full: 0, 13 tasks in common; action-only − base: +3 tasks, 95 % CI −0.7 … +24.7 points, p 0.25).
+Step 12 by its reading: 1 loop trajectory and 1 loop turn (low band) → the loops come with the loss on the thoughts.
+The adapter did learn the actions: several tool calls in a turn 5.4 % (base 0 %, full labels 5.8 %). Its text beside a
+tool call is 1.0 %, far below every other arm: not expected, not explained. Step 13 by its reading: 5 trajectories and 7
+turns fall in none of the three bands (trajectories as the full adapter, turns as the half adapter) → not decided; it
+does not support "the loops grow with the size of the update" (about 20× the update, 7 loop turns against 32). So
+across steps 9–13 the one change that removes the loops while keeping the adapter's actions is taking the loss off the
+thoughts. Resolved is not read on 25 tasks. The trajectories of both arms are on the private dataset.
+
+**Step 14 · the 8-card box: all 125 tasks, the action-only adapter against the base, both with top_k 20 (written
+2026-11-16; agreed in advance as the step after 12b).** This is where adapter − base is read. The same 125 Verified
+tasks as step 6, chunks of 25. Both tags are the chunk-0 tags of 9b and 12b, so `full` prints "chunk 0 … graded before —
+skipped" and runs chunks 1–4 (100 new tasks per arm). Settings unchanged: 128K, temperature 1.0, top_p 0.95, top_k 20,
+thinking budget 4,096, 250 steps.
+```bash
+cd gemma4-dev-agent && git pull && git log --oneline -1
+nvidia-smi --query-gpu=index,memory.used --format=csv,noheader      # 📷 all 8 free
+export MODEL=Qwen/Qwen3.5-9B SUBSET=verified WORKERS=8 EVAL_JOBS=8 THINK_HIST=1 MAX_TOK=8192 TOP_P=0.95 THINK_BUDGET=4096
+export NTASK=125 CHUNK=25 KEEP_IMAGES=1 MAX_LEN=131072 TEMP=1.0 TOP_K=20
+A=adapters/mc_Qwen3.5-9B_r1k_nt_act_lr1e-5/epoch2; V=runs/verified
+ls $V/vf_q9_th128_t1k20/c0/*.json $V/vf_q9_act128_t1k20/c0/*.json | grep -v preds   # 📷 both chunk-0 reports still there
+(cd $A && sha256sum adapter_model.safetensors adapter_config.json)          # 📷 = 12b's hashes
+GPUS="0 1 2 3" PORT=8010 bash scripts/verified_box.sh serve                 # 📷 'vLLM up'
+ADAPTER=$A GPUS="4 5 6 7" PORT=8020 bash scripts/verified_box.sh serve      # 📷 + "the adapter acts"
+GPUS="0 1 2 3" PORT=8010 TAG=vf_q9_th128_t1k20 nohup bash scripts/verified_box.sh full > $V/vf_q9_th128_t1k20.full125.log 2>&1 &
+ADAPTER=$A GPUS="4 5 6 7" PORT=8020 TAG=vf_q9_act128_t1k20 nohup bash scripts/verified_box.sh full > $V/vf_q9_act128_t1k20.full125.log 2>&1 &
+head -4 $V/vf_q9_th128_t1k20.full125.log $V/vf_q9_act128_t1k20.full125.log | cut -c1-760   # 📷 125 tasks · top_k 20 · temperature 1.0 · max len 131072 · "chunk 0 … skipped"
+
+# when both print '== full … done'
+grep -h '^== chunk\|graded\|STOP\|== full' $V/vf_q9_th128_t1k20.full125.log $V/vf_q9_act128_t1k20.full125.log   # 📷
+TAG=vf_q9_th128_t1k20 bash scripts/verified_box.sh report                   # 📷
+ADAPTER=$A TAG=vf_q9_act128_t1k20 bash scripts/verified_box.sh report       # 📷
+python3 scripts/paired.py $V/vf_q9_th128_t1k20 $V/vf_q9_act128_t1k20 --out $V/paired_q9_th128_act128_t1k20.json   # 📷 action-only − base, 125 tasks
+python3 scripts/copy_stats.py $V/vf_q9_th128_t1k20 $V/vf_q9_act128_t1k20    # 📷 125 trajectories each
+GPUS="0 1 2 3" PORT=8010 bash scripts/verified_box.sh stop; GPUS="4 5 6 7" PORT=8020 bash scripts/verified_box.sh stop
+docker images --format '{{.Repository}}:{{.Tag}}' | grep -E 'sweb\.eval\.x86_64\.' | xargs -r docker rmi > /dev/null; df -h /var/lib/docker | tail -1
+(cd $V && rm -f q9_verified_traj_t1k20_125.zip && zip -qr q9_verified_traj_t1k20_125.zip vf_q9_th128_t1k20 vf_q9_act128_t1k20 paired_q9_th128_act128_t1k20.json \
+   vf_q9_th128_t1k20.full125.log vf_q9_act128_t1k20.full125.log -x '*test_output.txt')
+ls -lh $V/q9_verified_traj_t1k20_125.zip; unzip -l $V/q9_verified_traj_t1k20_125.zip | grep -c 'traj.json'   # 📷 250 expected
+```
+Then upload the zip to the private dataset of the Qwen runs as a new version (📷). Expected time: four chunks per arm,
+about an hour each at chunk 0's pace (not measured for these chunks). **Stop and photo** if a header does not show 125
+tasks with top_k 20 / temperature 1.0 / max len 131072, if chunk 0 is NOT skipped (then the tag or the directory
+differs from 9b / 12b), if the adapter hashes differ from 12b's, or at a STOP line (disk).
+
+Reading, set before the data (125 tasks, one run per arm; reference without top_k, step 6: base 63, full-label adapter
+68, 31 of its 125 trajectories with a loop):
+- **Is the training useful:** action-only − base on the 125 paired tasks. 95 % CI above 0 → the LoRA training helps
+  on this model. CI includes 0 → not shown at 125 tasks; the number is reported as it is, and the next step is a second
+  run of both arms on the same tasks, not another recipe.
+- **Loops:** action-only at ≤ the base's loop trajectories + 3 → the 25-task result holds. Above 2× the base's → chunk
+  0 was luck; say so.
+- **Where the gain comes from:** count the base's submissions that are not a diff and its empty patches (chunk 0: 2
+  and 3). If the adapter's extra solves are mostly those tasks, say that the gain is in submitting, not in fixing.
+- Limits: one run per arm; chunk 0 was run earlier in the day than chunks 1–4; the first 125 tasks of Verified are
+  astropy and django only.
+
 **Reading (set before the data).**
 - Qwen + our LoRA does not copy and resolves ≥ its base → our data, rendering idea and recipe are sound on a model the
   paper used; the collapse is specific to E4B (family or size, see the confound).
