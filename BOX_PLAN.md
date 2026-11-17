@@ -1141,6 +1141,22 @@ loop trajectories and 3 thoughts over 12,000 characters where it had none (one r
 The old adapter still writes text beside a tool call in 0.1 % of turns: the check for 9c is whether the new adapter
 does so again. Resolved is not read on 25 tasks. 9a was still training when this was written.
 
+**Step 9c result (8-card box, 2026-11-16, chunk 0 = 25 tasks, one run per arm, all with top_k 20, from the box
+session's recap; not recomputed on the laptop).** Columns: base · old adapter (rule on) · new adapter (rule off, 9a).
+- Trajectories with a prose loop: 3 · 5 · **6** of 25; loop turns 3 · 26 · 32.
+- Thoughts over 3,000 characters: 3.6 % · 10.0 % · 7.9 %; over 12,000 characters: 3 · 20 · 27.
+- Text beside a tool call: 12.4 % · 0.1 % · **5.9 %**; several tool calls in a turn: 0 · 7.2 % · 5.8 %.
+- Resolved 11 · 13 · 14; new − old adapter +1 task (95 % CI −9.5 … +17.5 points, p 1.0); new adapter − base +3 tasks
+  (95 % CI −0.7 … +24.7 points, p 0.25).
+By the reading set in advance: the new adapter has 6 loop trajectories against the old one's 5 (needed: ≤ half), and its
+share of long thoughts (7.9 %) lies between the old adapter's and the base's. The text-to-thought rule is not the cause
+of the thought loops. The retraining did act: text beside a tool call is back at 5.9 % (old adapter 0.1 %). So neither
+top_k (9b) nor the rule (9c) removes the loops; both adapters loop about 2× as often as the base by trajectories and
+about 10× by loop turns. What is left of the plan: under-training (step 10 is training) or a dose check with an
+epoch-1 adapter. Resolved is not read on 25 tasks. Not checked on the laptop: the trajectories themselves (the upload
+of the 75 trajectories to the private dataset waits for the user's word); whether the new adapter's loops look like the
+old one's. The box stopped all 8 servers and removed the 22 task images.
+
 **Step 10 · the 4-card box while 9c runs: a second adapter at the paper's LoRA strength (written 2026-11-16, user:
 "4卡现在空了，给我个plan").** The 4-card box is free after 9a and has everything for training; the 8-card box does the
 evaluations. This step trains only. Question it prepares: is our adapter under-trained? Ours: r32 α32, LR 1e-5, 2
