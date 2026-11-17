@@ -1817,6 +1817,61 @@ runs as submitted are a second reference):
 - Limits: one run per arm; the fallback also returns edits the model may not have
   meant to submit (changed test files, half-finished edits), so it is an upper reading of the base's fixing.
 
+**Step 19 · one free card: the held-out NLL split into thought and action (written 2026-11-17, user: "把留出集 loss 拆成
+思考和动作").** Why: what is known is that an adapter trained without the thought loss does not loop; why the thought
+loss produces loops is not. arXiv 2512.12895 ("Why do reasoning models loop?") puts it on errors in learning: what
+the student cannot learn from the teacher shows as loops, and a higher temperature only hides it. The teacher data
+here has no loops (laptop, 223 trajectories: no thought over 12,000 characters, no sentence 5 times), so this can be
+tested directly: is the teacher's thought the part the 9B student does not learn? The training log has one held-out
+number over all label tokens; half of them are thought tokens.
+
+Code (this commit): `train/nll_split.py`, one forward pass per held-out sequence, no training. Each reply is cut at its
+first `</think>`: thought first 16 tokens · thought rest · the close token · action (text, tool calls, end of turn).
+Per bucket: tokens, NLL per token, mean probability of the right token, share where it is the first choice. The
+`all label tokens` line must reproduce the training log's held-out NLL of that model — the check that model, adapter
+and file are the right ones. `--out` writes one line per reply. Tested on the laptop with random logits (`--mock`): on
+12 local sequences thought + close = 33,687 tokens and action = 27,396, the same counts as the action-scope render
+masks and keeps. **Not tested: the real model and the adapter loading** (no GPU, no peft on the laptop).
+
+Run it on the 4-card box when one card is free (between 17a and 17b, or after 17b; not beside a training). The data
+is the held-out file rendered with label scope `reply`, also for the action-only adapter.
+```bash
+cd gemma4-dev-agent && git pull && git log --oneline -1
+D=runs/sft/mc/r1k_nt.qwen3.5-9b.holdout.rendered.jsonl; ls -l $D; wc -l < $D            # 📷 the reply-scope held-out file of step 9a
+grep -h "holdout nll" runs/sft_mc_Qwen3.5-9B_r1k_nt_lr1e-5.log runs/sft_mc_Qwen3.5-9B_r1k_nt_lr1e-4.log runs/sft_mc_Qwen3.5-9B_r1k_nt_act_lr1e-5.log | cut -c1-120   # 📷 the numbers to reproduce (start 0.3978 · 9a end 0.3524 · r64 epoch 1 0.3424)
+N() { CUDA_VISIBLE_DEVICES=${GPU:-0} .venv-train/bin/python train/nll_split.py --base Qwen/Qwen3.5-9B --data $D --name "$1" ${2:+--adapter "$2"} --out runs/nll_split/$1.jsonl 2>&1 | grep -v Warning | tee runs/nll_split/$1.log; }
+mkdir -p runs/nll_split
+N base                                                                  # 📷 header + == block · all label tokens ≈ 0.3978
+N full_e1 adapters/mc_Qwen3.5-9B_r1k_nt_lr1e-5/epoch1                   # 📷 + "adapter loaded … tensors placed"
+N full_e2 adapters/mc_Qwen3.5-9B_r1k_nt_lr1e-5/epoch2                   # 📷 all label tokens ≈ 0.3524
+N r64_e1  adapters/mc_Qwen3.5-9B_r1k_nt_lr1e-4/epoch1                   # 📷 ≈ 0.3424
+N r64_e3  adapters/mc_Qwen3.5-9B_r1k_nt_lr1e-4/epoch3                   # 📷 ≈ 0.3515
+N act_e2  adapters/mc_Qwen3.5-9B_r1k_nt_act_lr1e-5/epoch2               # 📷 its `action` line ≈ its own log's held-out NLL (that log is over action tokens only)
+(cd runs && rm -f nll_split.zip && zip -qr nll_split.zip nll_split) && ls -lh runs/nll_split.zip   # then upload to the private Qwen dataset (📷)
+```
+**Stop and photo** if the held-out file is missing (then: which `r1k_nt*holdout*` files exist), if a run prints no
+"adapter loaded" line or exits on an adapter tensor, or if `all label tokens` differs from the log's number by more
+than 0.002 (then the split is not of the model that was trained; do not go on). Time: not measured; six runs of a 9B
+forward over the held-out sequences on one card, minutes each plus the load.
+
+Reading, set before the data. NLL is high for any free text, so the levels are not read; the change against the base
+and the two parts against each other are.
+- **The paper's explanation fits** if the training lowers the action NLL clearly and the thought NLL little: the
+  relative drop of the thought NLL (base → full_e2) is under half the relative drop of the action NLL. Then the
+  thoughts of the teacher are a target this student learns badly, and the direction is a thought target it can
+  learn (its own thoughts), not more of the same recipe.
+- **It does not fit** if both parts drop by a similar share. Then the loops are not explained by what is unlearned,
+  and the cause is looked for elsewhere.
+- **Under-training:** r64_e1 has the lowest total and fewer loops than the first recipe (39 against 102 long thoughts).
+  If its thought NLL is clearly below full_e2's, part of the loops was under-training; r64_e3 (total up again) shows
+  which part overfits first.
+- **The direction of a thought against the rest:** the paper's first mechanism says the hard step is the choice of
+  what to do next. `thought first 16` above `thought rest` in the base, and still so after training, fits it.
+- **The close token** (the decision to stop thinking) is reported for every model; no prediction is set.
+- **Check of the action-only adapter:** its action NLL should be near full_e2's, its thought NLL near the base's.
+- Limits: 8 held-out trajectories; a difference in NLL is a correlation with the loops, not their cause — the second
+  layer (do the loops of the evaluation start at the kind of step that is hard here?) needs the per-reply file.
+
 **Reading (set before the data).**
 - Qwen + our LoRA does not copy and resolves ≥ its base → our data, rendering idea and recipe are sound on a model the
   paper used; the collapse is specific to E4B (family or size, see the confound).
