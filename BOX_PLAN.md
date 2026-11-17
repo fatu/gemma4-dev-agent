@@ -1445,6 +1445,16 @@ does not support "the loops grow with the size of the update" (about 20× the up
 across steps 9–13 the one change that removes the loops while keeping the adapter's actions is taking the loss off the
 thoughts. Resolved is not read on 25 tasks. The trajectories of both arms are on the private dataset.
 
+**Laptop check of the 12b / 13 trajectories (2026-11-16, 50 trajectories from the private dataset).** `copy_stats.py`
+on the laptop gives the box's numbers for both arms; resolved 14 and 14 from the reports. Headers: r64 arm `r 64 alpha
+128` with the hash of step 10's epoch 1; action-only arm `r 32 alpha 32`, its own hash; both top_k 20, temperature 1.0,
+max len 131072. With the split of the earlier check (base · full · half · r64 · action-only): turns with a sentence
+repeated 5 times 0 · 16 · 3 · **0 · 0**; thoughts over 12,000 characters 3 · 27 · 6 · 7 · 1. So the r64 adapter's 7
+loop turns are all budget-length thoughts without a repeated sentence, spread over 5 tasks (at most 2 per task), and
+the action-only adapter's single one is on the task where every arm runs out of context. Turns in total 1,857 · 1,407 ·
+1,606 · 1,424 · 1,624; thought characters in total 1.16 M · 1.42 M · 1.00 M · 1.17 M · 0.99 M. Not done: reading the
+long thoughts; why the action-only adapter writes text beside a tool call in only 1.0 % of turns.
+
 **Step 14 · the 8-card box: all 125 tasks, the action-only adapter against the base, both with top_k 20 (written
 2026-11-16; agreed in advance as the step after 12b).** This is where adapter − base is read. The same 125 Verified
 tasks as step 6, chunks of 25. Both tags are the chunk-0 tags of 9b and 12b, so `full` prints "chunk 0 … graded before —
