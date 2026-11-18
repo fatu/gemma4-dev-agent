@@ -41,7 +41,120 @@ dropped too.
 
 ---
 
-## B-10 · Our own MetaCurate-style data: teacher trajectories from GLM-5.3 through a gateway (plan 2026-11-13, revised the same day: generation settings as the paper, GLM-5.3 only, the official rule logic, SWE-Gym left out; **scope changed 2026-11-17: B-10 = data generation, the students are chosen afterwards**) — step 1 `setup` ✓ · `check` ✓ for SWE-rebench-V2 · `diag` ✓ (2026-11-13: both SWE-rebench problems explained and fixed in the scripts) · ▶ **now on the box: the commands under "On the box now" below**, 📷 · **B-10b (2026-11-17): three data lines against the thought loops, gated on B-9 part 3 step 19 — see the end of this section**
+## B-11 · MetaCurate's method inside the competition harness: GLM-5.3 trajectories under the V21 setting → an E4B LoRA with loss on the tool calls only (plan 2026-11-18) — ▶ step 1 (laptop) next; nothing on a box yet
+
+**Why.** B-9 part 3 (closed 2026-11-18) trained on MetaCurate's public trajectories, which are in mini-swe-agent's
+one-tool `bash` format and cannot be used in the competition harness; inside mini-swe-agent the action-only LoRA
+stopped E4B's collapse and gave no gain in solved tasks. B-11 generates the data again in the harness's own format and
+budget, by MetaCurate's method, and tests whether an E4B LoRA trained on it (no loss on thoughts) solves more.
+**Expectation, stated before any data:** B-9 found that the teacher data taught the procedure and not more fixes; a
+tie is the likely result here too. It is recorded either way.
+
+**Decisions (user, 2026-11-18).** (1) The harness setting is the public notebook's V21 as a whole: 6 tools
+(`run_command`, `read_file`, `edit_file`, `write_file`, `get_status`, `submit_patch`), its prompt (4,814 bytes),
+temperature 0.2 · top_p 0.95 · output 8,192 · thinking 4,096, 240 s · 36 tool calls · 7.5 min · 80 turns, compaction
+interval 5; the model is E4B. (2) Data strictly by MetaCurate's method on MetaCurate's tasks: every attempt solves
+from scratch; no generation "guided" by an existing trajectory (not in the paper). B-7's tasks stay out of the
+training and may serve as a later evaluation set. (3) About 1,000 trajectories is the aim; exactly 3 attempts per
+task, **whatever resolves is used** (no extra attempts, no wider budget, SWE-Gym stays out). (4) Generation on the
+8-card box (no GPU needed), training on the 4-card box. (5) One small ablation: A = teacher thoughts in the context,
+B = teacher thoughts removed and inference without thinking; loss on the actions in both. (6) The masking of the
+labels has to be audited before any training.
+
+**Checked before writing (laptop, read-only).**
+- MetaCurate (arXiv 2610.23134, App. A): one teacher, "at temperature 0.70", three attempts per task aimed at, each
+  from scratch, mini-swe-agent, resolved runs kept. Not stated there: top_p, top_k, the teacher's thinking setting and
+  step limit. GLM-5.3's own material: its evaluations use temperature 1.0; thinking is always on, `reasoning_effort`
+  low / high / max with max as the default. → teacher at **temperature 0.7**, top_p not sent, `reasoning_effort`
+  high (max may not fit 7.5 minutes; the pilot prints time and thought length per call).
+- Tasks: MetaCurate's 1,415 without SWE-Gym = **1,221** (SWE-rebench 690 + SWE-rebench-V2 531), one Docker image
+  each; the task table and the grader exist from B-10 (`scripts/rebench_mini.sh setup`,
+  `rebench_mini.py grade --preds FILE`).
+- The harness cannot run in a per-task image by flags alone (one global image, `/workspace` fixed, a snapshot file
+  required, no switch to skip its verification). Route: a shim that starts the task's image and moves the repository
+  to `/workspace`; the tasks file carries no test fields, so the harness only runs the agent and keeps the patch; the
+  B-10 grader scores it. Containers have no network, as in MetaCurate.
+- A remote model is reached through `eval_dev.sh` `MODELS_YAML` (ADK LiteLlm), as the earlier ceiling runs. Open:
+  the thinking parameter there is written for one vendor, and that earlier run returned a thought in 1 of 253 calls.
+- `render.py --label-scope action` as it is (read in the code, not yet audited) keeps labels on **text, tool calls
+  and the stop token**; a record-level `tool_call` scope keeps only the tool call and the stop token.
+- Expected size (from one of the four shards, an estimate): about 3,663 attempts; MetaCurate resolves 37 % on these
+  two sources (about 1,370), and 53 % of its resolved runs use at most 36 calls → **about 700 resolved, range 500 to
+  1,400**. The pilot replaces this with a measurement.
+- Docker Hub: 100 anonymous pulls per 6 h, 200 with a login → 1,221 images take about 3 days or 1.5.
+
+**Two training versions — the same trajectories, the same recipe, loss on the tool calls only.**
+
+| | context in training | inference |
+|---|---|---|
+| A (main) | GLM-5.3's thoughts in the history and before the action | V21 as it is (thinking on, budget 4,096) |
+| B (ablation) | all teacher thoughts removed, template rendered without thinking | thinking off, the rest as V21 |
+
+**Steps.** Each ends with photos → a result paragraph here and a row in both logs. Paid steps (2, 3, 4) start only
+after the estimate is given and the user says go. The box commands of a step are written here when its code is ready.
+
+1. **Generation code (laptop).** `scripts/docker_task_shim.py` (per-task image, conda env on PATH, repository moved
+   to `/workspace`, later refs removed, snapshot / install / test-config steps turned off) ·
+   `scripts/teacher_gen.sh` + `.py` (`tasks | check | pilot | gen | report`; chunk loop: pull → gold check → teacher →
+   preds → grade → delete images; resumable) · temperature and thinking for a non-Claude model in
+   `scripts/ceil_sitecustomize.py` · `train/convert_traj.py` (`--source glm`, empty thoughts marked, `resolved` from
+   the grader's report, `--strip-thoughts` for B) · rule filter and de-duplication for harness trajectories in
+   `train/mc_rules.py` · a harness reader in `scripts/copy_stats.py`.
+   **Cost guard, safe under concurrency:** one ledger file with a lock shared by all workers, one line per model call
+   (task, attempt, input / cached / output / reasoning tokens, billed cost or an estimate marked as such) · a
+   reservation per attempt before it starts (the pilot's p95) and **no new attempt once spent + reserved reaches the
+   budget** · a hard gate before every call · a checkpoint per (task, attempt) · three states kept apart: completed,
+   infrastructure failure (retried at most twice), not retryable.
+   **1b · Label audit, before any training.** `train/label_audit.py` classifies every token by the template's control
+   tokens, independently of `render.py`, and asserts: system, user (task prompt, nudges, compaction summaries) 0
+   labelled · tool responses 0 · thoughts 0 · tool call names and arguments all labelled · stop token labelled ·
+   plain assistant text 0 · excluded turns 0. `render.py` gets `--label-scope tool_call`; both versions use it.
+   First on the existing harness-format records, later on both rendered sets: **no pass, no training.**
+2. **Connect on the 8-card box (6 tasks, cents).** Gold patch resolves, empty patch does not; one teacher attempt
+   each. Gate: tools execute and **thoughts come back in ≥ 90 % of the turns**; otherwise stop.
+3. **Pilot (8-card box, paid): 30 tasks × 1 attempt.** Read: usable = resolved ∧ rules ∧ thoughts ≥ 90 %; projected
+   count, cost and days of image pulls go to the user before the scale.
+4. **Scale (8-card box, paid, budget cap; generation ends 11-25 at the latest):** all gold-passing tasks × 3.
+5. **Training sets (8-card box, CPU):** convert → mask failed tool calls → rules, de-duplication → at most 3 per
+   task → validation split → render A and B → label audit → parser check → upload to the private dataset for the
+   4-card box. **Validation, set before the data:** whole repositories drawn (seed 0) until 15 to 20 distinct tasks
+   are held out; no repository on both sides (asserted); the same split for A and B; the 51 evaluation tasks take no
+   part in training or tuning (their repositories are removed from the task table before generation, and nothing in
+   the recipe is changed after their results). With fewer than 150 usable tasks: 8 tasks, named a preliminary
+   diagnostic set, not used to choose a model (epoch 2 is then taken).
+6. **Training (4-card box), one recipe fixed in advance for A and B:** r 32 · α 32 · attention + MLP · LR 1e-5 ·
+   2 epochs · micro-batch 1 sequence · accumulation 16 · max length 30,720. The accumulation is not lowered to reach
+   a step count. Reported every time: micro-batch, accumulation, effective batch, total training tokens, optimizer
+   steps per epoch, train and validation action NLL. If the real data size makes the recipe clearly unfit, what
+   changes is the user's decision, for A and B together.
+7. **Live check (4-card box, 3 tasks each).**
+8. **Evaluation (4-card box): the 51-task split, the same day, 4 passes per arm, V21 setting.**
+
+| arm | adapter | temperature | thinking | role |
+|---|---|---|---|---|
+| base-t02 | none | 0.2 | on | main control |
+| new-t02 | A | 0.2 | on | main experiment |
+| base-t10 | none | 1.0 | on | temperature control |
+| new-t10 | A | 1.0 | on | temperature ablation |
+| ple_fix | the PLE-fix LoRA, in its own latest setting | 0.2 | on | the current best E4B entry |
+| base-nt | none | 0.2 | off | control of ablation B |
+| new-nt | B | 0.2 | off | ablation B |
+
+   **Reading, set before the data.** The adapter is read only inside a pair with the same temperature and thinking
+   setting (new-t02 vs base-t02 is the main result; new-t10 is never compared with base-t02). "Better" in a pair =
+   the 4-pass mean is ≥ 3 tasks higher and the worst pass ≥ the control's best − 1 (noise of a 51-task mean about
+   ± 3.5). A against B: the two differences side by side; under 3 tasks apart = not separated. No collapse = copied
+   turns in ≤ 2 of 51 trajectories and < 2 % of turn pairs, reported for every arm. Also reported: `edit_file`
+   failures, tool mix, calls used, budget and time exhaustion, compactions, long thoughts. Later and optional: B-7's
+   gold-passing tasks as a second evaluation set.
+
+**Limits known now.** The count may stay under 1,000 · the harness has never run in these images · thoughts may not
+come back from the gateway · V21 was never measured with E4B · the label scope (tool calls only) is narrower than
+B-9 step 17's (text and tool calls) · the teacher is far stronger than E4B. Not in the public repository: task text,
+the gateway's address, key and model name, and the V21 prompt file (unpacked on the box from the user's private
+dataset).
+
+## B-10 · Our own MetaCurate-style data: teacher trajectories from GLM-5.3 through a gateway (plan 2026-11-13, revised the same day: generation settings as the paper, GLM-5.3 only, the official rule logic, SWE-Gym left out; **scope changed 2026-11-17: B-10 = data generation, the students are chosen afterwards**; **2026-11-18: generation continues in B-11, in the competition harness; the mini-swe-agent route below is kept as written and not run**) — step 1 `setup` ✓ · `check` ✓ for SWE-rebench-V2 · `diag` ✓ (2026-11-13: both SWE-rebench problems explained and fixed in the scripts) · ▶ **now on the box: the commands under "On the box now" below**, 📷 · **B-10b (2026-11-17): three data lines against the thought loops, gated on B-9 part 3 step 19 — see the end of this section**
 
 **On the box now (2026-11-13, after `diag`; no tokens except a few cents for the probe).**
 ```
