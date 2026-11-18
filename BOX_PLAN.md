@@ -1899,6 +1899,18 @@ What is not at the base's level:
   fallback of step 18 would not catch these. Not read: how these patch files were made.
 - Resolved 3 against 2 on 25 tasks is not a comparison.
 
+**Laptop reading of the 6 failed submissions of the E4B action-only adapter (2026-11-17; every command that edits,
+diffs, writes the patch file or submits, with its output).** They are not good fixes lost in the submission. In 5 of
+the 6 the source file was never changed: the `sed -i` commands fail on quoting (or none is tried), `git diff` prints
+nothing, and the model then writes a diff by hand into the patch file with a heredoc, with invented context lines
+and line numbers (one between two scratch files, one with the path `/path/to/file`; one overwrites the source file
+with a stub on the way). In the sixth the file was changed by `sed`, no patch file was made, and the `sed` expression
+itself was submitted. So the fallback of step 18 could recover at most that one. Same 25 tasks, counted by script:
+edit commands that fail, base 45 of 72, adapter 63 of 101; submissions that are `git diff` output, base 16, adapter
+12; hand-written diffs, base 1, adapter 5; empty, 7 and 7. The limit of E4B in this harness is editing files through
+bash, in both arms; the adapter adds the habit of submitting a diff even when the tree has none. Not read: the
+thoughts of these 6 trajectories; the 7 empty ones.
+
 **Step 18 · the 8-card box after step 16: the base (cards 0–3) and the action-only adapter (cards 4–7) with a
 submission fallback, side by side (written 2026-11-17, user: "兜底写进plan，再跑一次base"; the adapter arm added the same
 day, user: "让只训动作的适配器同时带兜底跑一次").** Why: in step 6 the base loses 20 of 125 tasks before grading — 13
