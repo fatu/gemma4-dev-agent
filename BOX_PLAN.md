@@ -1767,6 +1767,46 @@ Reading, set before the data (run 1: base 63, action-only 73, +8.0 points, CI 0.
 - Limits: run 1's base is from another day than run 1's adapter; astropy and django only; the adapter was chosen on
   the first 25 tasks.
 
+**Step 16 result (2026-11-17, box; recounted on the laptop from the 250 trajectories, same numbers).** Settings
+checked in the files: 20 model.yaml per arm, temperature 1.0, no top_k.
+
+| | base run 1 | base run 2 | action-only run 1 | action-only run 2 |
+|---|---|---|---|---|
+| resolved / 125 | 63 | 57 | 73 | 75 |
+| tasks 25:125 | 51 | 44 | 60 | 62 |
+| empty patches / grading errors | 14 / 14 | 19 / 15 | 10 / 0 | 4 / 0 |
+| submitted; final command not exactly `cat patch.txt` | 118; 40 | 116; 42 | 117; 1 | 123; 0 |
+| prose-loop trajectories / turns | 1 / 1 | 4 / 4 | 4 / 5 | 3 / 4 |
+| thoughts over 12,000 chars; sentence 5 times | 1; 0 | 4; 1 | 5; 0 | 4; 0 |
+| 30-gram 20 times, turns | 2 | 2 | 0 | 1 |
+| thought tokens per turn | 97 | 100 | 121 | 117 |
+| turns | 11,081 | 10,845 | 8,861 | 8,900 |
+
+Against the rules set before the data:
+- **Is the training useful: yes.** Both runs per task (adapter's solves of 2 minus base's solves of 2, bootstrap over
+  125 tasks): base 120 / 250, action-only 148 / 250, **+11.2 points, 95 % CI +5.2 … +17.2**; the adapter is ahead on
+  34 tasks, the base on 11 (sign test p 0.0008). Run 2 alone: +14.4 points (only base 10, only adapter 28; CI +5.6 …
+  +23.2; McNemar p 0.005). No third run.
+- **How much a run moves:** base 63 → 57 (24 tasks lost, 18 gained); action-only 73 → 75 (10 lost, 12 gained). The
+  base flips twice as many tasks.
+- **Where the gain is: mostly in the submission.** The base has a grading error on 28 tasks in at least one run (1
+  task in both). On the 97 other tasks: base 106 / 194, action-only 116 / 194, +5.2 points, CI −1.0 … +11.3. By the
+  rule this reads: a large part of the gain is following the submission steps; a gain in fixing is not shown yet.
+  Step 18 (fallback on, both arms) is the direct test. One more cut, not preset and tilted toward the base because it
+  drops tasks by the base's failures: on the 84 tasks where no arm in any run submitted without a diff hunk, 99 / 168
+  against 101 / 168, +1.2 points (CI −5.4 … +7.7). The fallback rule would have picked 25 base submissions in run 2
+  (20 in run 1) and 2 of the adapter's in each run.
+- **Loops: hold.** 3 prose-loop trajectories (rule ≤ 6), the base has 4. The three turns that meet the 30-gram rule
+  (2 base, 1 adapter) are all on one task about formatting 1e-200: the thought writes out numbers with 200 zeros.
+  They are not loops; the rule counts long digit strings.
+- **The adapter's 4 long thoughts, read:** all circle on one point, none repeats a sentence 5 times. Two are turns 128
+  and 130 of 153 on one task (the base has a grading error there): the same six-line `order_by` method is quoted 5
+  times each, with "I'm going in circles" and "I give up" in the text, and the turn still ends with a `sed` or `grep`.
+  One restates "add_ordering strips the minus sign" 3 times (a false premise). One recounts character positions of a
+  regex about 6 times with different results, then runs Python to count them. Not read: about 6,300 and 2,500
+  characters in the middle of two of them and the middle 10,000 of a third (head, tail and phrase counts only); the
+  base's 4 long thoughts (statistics only: one has a sentence 7 times).
+
 **Step 17 · the 4-card box: an action-only adapter for E4B (written 2026-11-17, user: "多加一步，让E4B也只训action").**
 On Qwen the loops came with the loss on the thoughts (step 12b, step 15). E4B's adapter failed differently (step 8:
 it copies whole turns once the context passes about 16K tokens, 100 of 125 patches empty, 3 resolved against the
