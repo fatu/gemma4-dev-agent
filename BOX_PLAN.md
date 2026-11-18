@@ -154,6 +154,35 @@ B-9 step 17's (text and tool calls) · the teacher is far stronger than E4B. Not
 the gateway's address, key and model name, and the V21 prompt file (unpacked on the box from the user's private
 dataset).
 
+**Step 1b result · the label audit (2026-11-18, laptop, no GPU).** New `train/label_audit.py`; `render.py` has
+`--label-scope tool_call`. The audit reads only `input_ids` and `labels`, classes every token by the template's
+control tokens and shares no code with the renderer. Self-test on a hand-built sequence: the three scopes against the
+three expectations, an excluded turn, and 6 planted faults (one argument token unlabelled, a stop token forgotten, a
+tool response, a nudge, plain text and a thought token labelled) are each reported as they should be. On real data,
+the 98 existing harness-format records of B-3n (1,786 calls), rendered with `--pack --split-runs` under each scope:
+
+| labelled tokens in class | scope reply | scope action | scope tool_call |
+|---|---|---|---|
+| system · tool declarations · user · tool responses · turn headers | 0 | 0 | 0 |
+| thought (554,965 tokens) | 399,348 | 0 | 0 |
+| plain assistant text (8,887 tokens) | 8,569 | **8,569** | 0 |
+| `<turn|>` ending a model turn | 82 | **82** | 0 |
+| tool calls: name, arguments, tags | 108,541 | 108,541 | 108,541 |
+| stop token after the tool calls | 1,550 | 1,550 | 1,550 |
+| all labelled tokens | 518,090 | 118,742 | 110,091 |
+
+- **`action` as it was used in B-9 trains plain text**: 8,569 text tokens and 82 turn ends, 7 % of its labels on
+  this set. Thoughts, tool responses, prompts: no label under `action`, as intended.
+- **`tool_call` passes every line**: no label on thoughts, tool responses, system, user or text; every labelled tool
+  call is labelled completely with its stop token; the 1,550 labelled tool calls equal the 1,550 tool calls in the
+  targets of the records; replies without a tool call (82) are no targets.
+- **Two faults the audit found in the first version of the new scope, both fixed:** 6 sequences were left without any
+  label (a segment whose only reply is text) — the renderer now does not write such a sequence and prints the count;
+  rows named only the task id, which is not unique when a task has several passes — rows now carry the record file.
+- Not covered by this set: compaction summaries and nudges are in it only as far as B-3n's runs had them (not
+  counted); several tool calls in one turn are covered by the self-test only. The audit runs again on both rendered
+  sets of step 5, and no training starts without its PASS line.
+
 ## B-10 · Our own MetaCurate-style data: teacher trajectories from GLM-5.3 through a gateway (plan 2026-11-13, revised the same day: generation settings as the paper, GLM-5.3 only, the official rule logic, SWE-Gym left out; **scope changed 2026-11-17: B-10 = data generation, the students are chosen afterwards**; **2026-11-18: generation continues in B-11, in the competition harness; the mini-swe-agent route below is kept as written and not run**) — step 1 `setup` ✓ · `check` ✓ for SWE-rebench-V2 · `diag` ✓ (2026-11-13: both SWE-rebench problems explained and fixed in the scripts) · ▶ **now on the box: the commands under "On the box now" below**, 📷 · **B-10b (2026-11-17): three data lines against the thought loops, gated on B-9 part 3 step 19 — see the end of this section**
 
 **On the box now (2026-11-13, after `diag`; no tokens except a few cents for the probe).**
