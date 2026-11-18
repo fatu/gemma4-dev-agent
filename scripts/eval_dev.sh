@@ -256,7 +256,7 @@ for f in ('tokenizer.json', 'tokenizer_config.json', 'chat_template.jinja'):
   fi
   MODEL_FLAGS=(--models-yaml "$MODELS_YAML")
   export CEIL_CALL_LOG="${CEIL_CALL_LOG:-$PWD/runs/ceil/calls${TAG:+_$TAG}.jsonl}"; mkdir -p runs/ceil
-  echo "request adapter: scripts/ceil_sitecustomize.py (extra_body dropped; anthropic thinking $([ "${CEIL_NOTHINK:-0}" = 1 ] && echo off || echo adaptive), temperature left to the provider) · call log $CEIL_CALL_LOG"
+  echo "request adapter: scripts/ceil_sitecustomize.py (the harness's vLLM-only fields dropped; temperature CEIL_TEMP=${CEIL_TEMP:-unset} · thinking CEIL_THINK=${CEIL_THINK:-$([ "${CEIL_NOTHINK:-0}" = 1 ] && echo off || echo adaptive)} · ledger ${TEACH_LEDGER_DIR:-off}; the adapter prints the effective values in the run log) · call log $CEIL_CALL_LOG"
 elif [ "${BUILD_ONLY:-0}" = 1 ]; then
   MODEL_FLAGS=(); echo "BUILD_ONLY=1: arm dirs only (runs/subs/<arm>${TAG:+_$TAG}) — no server check, no eval"
 else
