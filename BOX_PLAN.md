@@ -215,6 +215,28 @@ changed: `scripts/ceil_sitecustomize.py` (`CEIL_TEMP`, `CEIL_THINK`, `CEIL_REMOT
 - Not tested, cannot be on the laptop: the real gateway (which thinking form it accepts, whether it returns the
   thought, whether it reports a cost), concurrency inside one harness process, and the per-task Docker images.
 
+**Step 1 result, part 2 · the generation driver and the per-task Docker shim (2026-11-18, laptop).** New:
+`scripts/teacher_gen.py` (`tasks | gen | report | selftest`) and `scripts/docker_task_shim.py` (loaded when
+`DOCKER_TASKS` is set). Rule filter, decided with the user the same day: MetaCurate's signals 1 to 4 reject, 5 to 7
+are counted only (the paper's text; its released file rejects on all seven) — to be written for harness trajectories
+in the next part.
+- **Driver, end to end on the laptop** (the real harness in its subprocess sandbox on 3 competition tasks, the V21
+  files, the stand-in gateway, a stub in place of the grader; chunk 2, 2 attempts, concurrency 2): 6 attempts, each
+  charged to its own `<task>#<attempt>` key at the same cost while two ran in one harness process. With a budget
+  below the total the run stopped at the reservation ("No new attempt was started"), a second run with the same
+  budget started nothing, and after the budget was raised the same command ran only the two attempts that were left.
+- **Infrastructure failure** (the stand-in switched off): the attempt is recorded as `infra` with the gateway's error
+  text and no cost, retried, and after the retry limit recorded as `failed` — neither is counted as a finished
+  attempt. An empty patch, a step or time limit of the harness and a command timeout are the model's result (`done`).
+- **Docker shim** (self-test with a stand-in Docker client, and the prepare script run with real bash and git in a
+  temp directory): the task's own image with the harness's limits and no network; the repository moved to
+  `/workspace` with a link back; later branches and tags gone after the prepare script; a skipped or unknown task
+  and a failed prepare raise with the task named. The harness's snapshot copy, wheel setup, editable install,
+  test-dependency install and its own pytest configuration are switched off; its baseline commit is kept.
+- **Not tested, only possible on the box:** the shim against real images (entrypoint, where conda lives, how long
+  the move takes, whether `python3` resolves), the real grader behind the driver, image pulls and removal, and the
+  real gateway. Step 2 is that test.
+
 ## B-10 · Our own MetaCurate-style data: teacher trajectories from GLM-5.3 through a gateway (plan 2026-11-13, revised the same day: generation settings as the paper, GLM-5.3 only, the official rule logic, SWE-Gym left out; **scope changed 2026-11-17: B-10 = data generation, the students are chosen afterwards**; **2026-11-18: generation continues in B-11, in the competition harness; the mini-swe-agent route below is kept as written and not run**) — step 1 `setup` ✓ · `check` ✓ for SWE-rebench-V2 · `diag` ✓ (2026-11-13: both SWE-rebench problems explained and fixed in the scripts) · ▶ **now on the box: the commands under "On the box now" below**, 📷 · **B-10b (2026-11-17): three data lines against the thought loops, gated on B-9 part 3 step 19 — see the end of this section**
 
 **On the box now (2026-11-13, after `diag`; no tokens except a few cents for the probe).**
