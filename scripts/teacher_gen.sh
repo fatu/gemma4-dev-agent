@@ -38,6 +38,9 @@ need_env() {
 ledger() {   # the budget is set only when BUDGET_USD is given; otherwise the ledger is left as it is
   if [ -n "$BUDGET_USD" ]; then $PY scripts/teach_ledger.py init --dir "$OUT/ledger" --budget "$BUDGET_USD" ${PRICE:+--price "$PRICE"} | sed 's/^/  /'
   else $PY scripts/teach_ledger.py status --dir "$OUT/ledger" | sed 's/^/  /'; fi
+  # the budget counts dollars only if a call can be priced: a gateway that reports no cost needs PRICE, else every call counts $0
+  $PY -c "import json,sys; st=json.load(open('$OUT/ledger/state.json')); sys.exit(0 if st.get('price') and st.get('budget_usd') is not None else 1)" 2>/dev/null \
+    || { echo "STOP: the ledger has no price (or no budget). Give PRICE=\"in,cached,out\" in \$ per 1M tokens (and BUDGET_USD): without a price a call the gateway does not price counts as \$0 and the budget cannot stop anything."; exit 1; }
 }
 gen() {      # $1 name  $2 ids file  $3 attempts  $4 chunk  $5 keep images
   [ -n "$RESERVE_USD" ] || { echo "STOP: RESERVE_USD is not set (what one attempt may cost; check uses 0.50 unless given)"; exit 1; }
