@@ -228,12 +228,14 @@ def main():
                     help="with --pack: where the prefix property breaks (an expected break), start a new packed sequence "
                          "instead of unpacking the whole segment into one sample per call (exact either way)")
     ap.add_argument("--shard", default="0/1", help="i/n: render records i, i+n, i+2n, … (sorted by file name)")
-    ap.add_argument("--label-scope", choices=["reply", "action"], default="reply",
+    ap.add_argument("--label-scope", choices=["reply", "action", "tool_call"], default="reply",
                     help="reply = loss on the whole reply; action = no loss on the thought span (its channel tags "
-                         "included): loss on text, tool calls and the stop token only. A record's own "
-                         "label_scope: tool_call still applies to that call.")
+                         "included): loss on text, tool calls and the stop token only; tool_call (B-11) = loss on "
+                         "the tool calls and the stop token after them only: thought and text get none, and a reply "
+                         "without a tool call is no target at all. A record's own label_scope: tool_call still "
+                         "applies to that call. Check any output with train/label_audit.py.")
     a = ap.parse_args()
-    print(f"render · label scope {a.label_scope}" + (" (thought spans get no loss)" if a.label_scope == "action" else ""))
+    print(f"render · label scope {a.label_scope}" + {"action": " (thought spans get no loss)", "tool_call": " (loss on tool calls + their stop token only; text-only replies are no targets)"}.get(a.label_scope, ""))
     WIRE["mode"] = a.wire
     sh_i, sh_n = (int(x) for x in a.shard.split("/"))
     print(f"render · wire {a.wire} · shard {sh_i}/{sh_n} · pack {a.pack} · split runs {a.split_runs} · check {a.check or 'none'} · sample {a.sample}")
@@ -245,19 +247,26 @@ def main():
     random.seed(a.seed)
     w_out = open(a.out, "w") if a.out else None
 
+    cur_file = {"name": None}
+    n_unlabelled = 0
+
     def emit(row):
-        nonlocal n_rendered
+        nonlocal n_rendered, n_unlabelled
+        if not any(x != -100 for x in row["labels"]):   # nothing to learn from (e.g. only a text reply under scope tool_call)
+            n_unlabelled += 1
+            return
+        row["record"] = cur_file["name"]                # the record file: instance_id alone is not unique (several passes)
         n_rendered += 1
         if w_out:
             w_out.write(json.dumps(row) + "\n")
     scope_action = {"tokens": 0, "calls": 0, "no_thought": 0}
     n_src = {"delta": 0, "synthetic": 0, "mixed": 0, "delta!=synthetic": 0, "pack_fallback_mixed": 0, "pack_fallback_nothought": 0,
-             "content_control_tokens": 0, "scope_tool_call": 0}
+             "content_control_tokens": 0, "scope_tool_call": 0, "scope_text_only_untargeted": 0}
     ref_checked = ref_ok = 0
     for fi, f in enumerate(sorted(glob.glob(os.path.join(a.records, "*.json")))):
         if fi % sh_n != sh_i:
             continue
-        rec = json.load(open(f))
+        rec = json.load(open(f)); cur_file["name"] = os.path.basename(f)
         if not isinstance(rec, dict) or not isinstance(rec.get("calls"), list):   # a summary / verdict json beside the records
             continue
         ref = None
@@ -322,7 +331,11 @@ def main():
                     fails.append(f"A3 {rec['instance_id']} call {c['call']}: tool_call span not closed")
             if sp[-1][0] != "stop":
                 fails.append(f"A3 {rec['instance_id']} call {c['call']}: reply does not end with a stop token")
-            if c.get("label_scope") == "tool_call":
+            if a.label_scope == "tool_call" and not any(k == "tool_call" for k, _, _ in sp):
+                # B-11: a reply without a tool call (text only) is context, never a target: no label, stop token included
+                P = len(r["prompt_ids"]); r["labels"][P:] = [-100] * len(r["reply_ids"])
+                label_tot -= len(r["reply_ids"]); n_src["scope_text_only_untargeted"] += 1; n_targets -= 1
+            elif c.get("label_scope") == "tool_call" or a.label_scope == "tool_call":
                 # loss on the tool call (+ its stop token) only: thought and text stay context (train/edit_drills.py)
                 P = len(r["prompt_ids"])
                 for kind, s, e in sp:
@@ -423,7 +436,9 @@ def main():
           + f" · reply from delta {n_src['delta']} / synthetic {n_src['synthetic']} / mixed text+tool {n_src['mixed']} / delta≠synthetic {n_src['delta!=synthetic']}"
           + (f" e.g. {mism[:5]}" if mism else "")
           + f" · text replies with stray channel tags (stripped like the template) {n_src['content_control_tokens']}"
+          + f" · sequences without any label, not written {n_unlabelled}"
           + f" · label_scope tool_call (thought/text masked) {n_src['scope_tool_call']}"
+          + (f" · text-only replies left without labels {n_src['scope_text_only_untargeted']}" if a.label_scope == "tool_call" else "")
           + (f" · label scope action: thought label tokens masked {scope_action['tokens']} in {scope_action['calls']} calls, calls with no thought span {scope_action['no_thought']}" if a.label_scope == "action" else "")
           + f" · A3 sampled {len(a3_pool)}"
           + (f" · A4 label share per call min {min(shares):.3f} median {sorted(shares)[len(shares)//2]:.3f} max {max(shares):.3f}" if shares else ""))
