@@ -1,0 +1,5 @@
+# repositories of the competition's local evaluation tasks: never in training data (B-11)
+Textualize/rich
+encode/httpx
+fastapi/fastapi
+psf/requests

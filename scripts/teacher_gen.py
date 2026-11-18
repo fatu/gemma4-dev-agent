@@ -4,6 +4,7 @@
     python3 scripts/teacher_gen.py tasks  --table runs/b10/tasks/all.jsonl --out runs/teach [--exclude-repos FILE …]
     python3 scripts/teacher_gen.py gen    --out runs/teach --ids runs/teach/all.ids --name pilot30 [knobs below]
     python3 scripts/teacher_gen.py report --out runs/teach
+    python3 scripts/teacher_gen.py inspect --out runs/teach [--name check6]   # thoughts, tools, seconds per call, shim lines
     python3 scripts/teacher_gen.py selftest                      # the bookkeeping, no harness, no Docker, no network
 
 `tasks` turns the B-10 task table into what the harness reads: a tasks.jsonl with instance_id, repo, base_commit and
@@ -102,6 +103,8 @@ def classify(result, patch, per_key):
     if result is None:
         return "infra", {"why": "no result line from the harness"}
     err = result.get("error") or ""
+    if err.startswith("Missing test specification"):      # expected: the tasks file has no tests, the harness does not verify
+        err = ""
     calls = result.get("total_llm_calls") or 0
     ledger_errs = (per_key or {}).get("errors", 0)
     if calls == 0:
@@ -315,6 +318,45 @@ def cmd_report(a):
     print("   " + teach_ledger.fmt_status(L.status()))
 
 
+def cmd_inspect(a):
+    """what the trajectory logs of the kept runs show (step 2 and the pilot): thoughts, tools, time per call, compaction"""
+    st = State(a.out)
+    runs = sorted({r["run"] for r in st.att.values() if r.get("run") and (not a.name or os.path.basename(r["run"]).startswith(a.name))})
+    calls = thought = 0; tools = collections.Counter(); fin = collections.Counter(); secs = []; per_task = []; resets = collections.Counter()
+    thought_chars = []; multi = 0
+    for run_ in runs:
+        for f in sorted(glob.glob(os.path.join(run_, "traj", "*.jsonl"))):
+            if f.endswith(".tools.jsonl"):
+                continue
+            n = t = 0
+            for line in open(f):
+                c = json.loads(line); r = c.get("resp") or {}
+                n += 1; t += bool(r.get("reasoning")); thought_chars.append(len(r.get("reasoning") or ""))
+                tc = r.get("tool_calls") or []; multi += len(tc) > 1
+                for x in tc:
+                    tools[x.get("name")] += 1
+                fin[r.get("finish_reason")] += 1; secs.append(c.get("s") or 0)
+                if c.get("reset"):
+                    resets[str(c["reset"])[:30]] += 1
+            calls += n; thought += t; per_task.append((os.path.basename(f)[:-6], n, t))
+    q = lambda xs, p: (sorted(xs)[min(len(xs) - 1, int(len(xs) * p))] if xs else 0)
+    print(f"== teacher_gen inspect · {a.out} · runs {len(runs)} ({a.name or 'all'}) · trajectories {len(per_task)} · model calls {calls}")
+    print(f"   thoughts: {thought} of {calls} calls = {100 * thought / max(1, calls):.1f} %  (gate ≥ 90 %) · chars per thought p50 {q(thought_chars, .5)} p90 {q(thought_chars, .9)} max {max(thought_chars or [0])}")
+    print(f"   tools called: {dict(tools.most_common())} · calls with several tool calls {multi} · finish reasons {dict(fin)}")
+    print(f"   seconds per model call: p50 {q(secs, .5):.1f} · p90 {q(secs, .9):.1f} · max {max(secs or [0]):.1f} · history resets / compactions {dict(resets) or 'none'}")
+    for name, n, t in per_task[:40]:
+        r = next((x for x in st.att.values() if x["task"] == name), {})
+        print(f"      {name:44} calls {n:3} · with thought {t:3} · {r.get('state')} · resolved {r.get('resolved')} · tool calls {r.get('tool_calls')} · "
+              f"patch {r.get('patch_chars')} chars · {r.get('seconds') or 0:.0f} s · ${r.get('usd', 0):.4f}{' (estimate)' if r.get('est_calls') else ''}")
+    log = os.path.join(a.out, "gen.log")
+    if os.path.exists(log):
+        L = open(log, errors="replace").read().splitlines()
+        for pat in ("docker_task_shim:", "ceil adapter:", "compaction: on", "context cap:"):
+            hits = [x for x in L if pat in x]
+            for x in (hits[:1] if pat != "docker_task_shim:" else hits[:14]):
+                print("   log · " + x.strip()[:330])
+
+
 def selftest():
     import tempfile
     d = tempfile.mkdtemp(prefix="teacher_gen_")
@@ -356,9 +398,9 @@ def main():
     sub = ap.add_subparsers(dest="cmd", required=True)
     s = sub.add_parser("tasks"); s.add_argument("--table", required=True); s.add_argument("--out", required=True)
     s.add_argument("--exclude-repos", action="append")
-    for name in ("gen", "report"):
+    for name in ("gen", "report", "inspect"):
         s = sub.add_parser(name); s.add_argument("--out", required=True)
-        s.add_argument("--ids"); s.add_argument("--name", default="gen")
+        s.add_argument("--ids"); s.add_argument("--name", default="gen" if name == "gen" else "")
         s.add_argument("--table", default=env_knob("DOCKER_TASKS_TABLE", "runs/b10/tasks/all.jsonl"))
         s.add_argument("--tasks-dir", default=env_knob("TASKS_DIR", "runs/b10/tasks"))
         s.add_argument("--chunk", type=int, default=env_knob("CHUNK", 50, int))
@@ -388,7 +430,7 @@ def main():
         return selftest()
     if a.cmd == "gen" and not a.ids:
         ap.error("gen needs --ids")
-    {"tasks": cmd_tasks, "gen": cmd_gen, "report": cmd_report}[a.cmd](a)
+    {"tasks": cmd_tasks, "gen": cmd_gen, "report": cmd_report, "inspect": cmd_inspect}[a.cmd](a)
 
 
 if __name__ == "__main__":
