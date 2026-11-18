@@ -1971,6 +1971,45 @@ Reading, set before the data (25 tasks: adapter 3, base 2; base on 125 in step 8
 - Limits: base run 1 is from another day; astropy and django only; the adapter was not chosen on these tasks, but
   the action-only recipe was chosen on Qwen's first 25.
 
+**Step 20 result (2026-11-18, box; recounted on the laptop from the 375 trajectories of this step and the 125 of
+step 8's base, same numbers).** Headers checked: 128K, temperature 1.0, top_p 0.95, top_k not sent, fallback off,
+adapter sha256 c8b1b86db63c. Run 1 of the adapter kept its tag and skipped the graded chunk, as planned.
+
+| | base run 1 (step 8) | base run 2 | action-only run 1 | action-only run 2 |
+|---|---|---|---|---|
+| resolved / 125 | 13 | 14 | 14 | 14 |
+| submitted | 124 | 125 | 125 | 125 |
+| empty patches / grading errors | 39 / 8 | 43 / 7 | 36 / 28 | 25 / 29 |
+| turns, total and median | 1,551, 12 | 1,562, 11 | 2,720, 20 | 2,908, 22 |
+| exact copies of the previous turn | 0 | 0 | 0 | 0 |
+| same command back to back | not recounted | 2.3 % | 1.7 % | 1.2 % |
+| prose-loop trajectories; thoughts over 12,000 chars | 3; 3 | 10; 10 | 23; 22 | 20; 21 |
+| 30-gram ≥ 20 times | not recounted | 0 | 0 | 0 |
+| submission is `git diff` output / hand-written diff / not a diff | 76 / 8 / 2 | 73 / 9 / 0 | 61 / 22 / 6 | 66 / 29 / 5 |
+| edit commands failed / all | 135 / 247 | 161 / 281 | 257 / 450 | 333 / 529 |
+
+Against the readings set before the data:
+- **Does it solve more: no.** Pooled 28 of 250 against 27 of 250, +0.4 points, CI −4.0 … +4.8; the adapter is
+  better on 9 tasks and the base on 9. The same-day pair is 14 against 14 (only base 9, only adapter 9, CI −6.4 …
+  +6.4). No third run, as set.
+- **Still no collapse: yes.** 0 exact copies in both runs (rule: ≤ 5 trajectories and < 2 % of pairs), every
+  trajectory submits, no 30-gram loop.
+- **Where the tasks are lost:** the adapter's grading errors are 28 and 29 against 8 and 7. It writes the patch by
+  hand far more often (27 and 28 trajectories write `patch.txt` with a heredoc; base 3 and 5), and a hand-written
+  diff almost never applies (41 grading errors of 51; 3 resolved). Its `git diff` submissions resolve at the base's
+  rate (13 of 61 and 12 of 66; base 13 of 76 and 14 of 73). In 11 and 9 of the grading errors at least one in-place
+  edit had succeeded, so the step-18 fallback rule (no hunk in the submission) would not fire, but a rule on a patch
+  that does not apply could recover part of them. Edit commands fail at the base's rate (57 % and 63 %; base 55 % and
+  57 %): the training did not teach E4B to edit.
+- **Long thoughts:** about twice the base's count at about twice the turns; 35 of the adapter's 43 are at turn 8 or
+  earlier, none repeats a sentence 5 times except one. Not read (43 thoughts); only counted.
+- On the 66 tasks with no grading error in any of the four runs: 22 of 132 against 18 of 132, +3.0 points, CI −3.8
+  … +10.6 (not preset).
+
+Reading: on E4B the action-only training removes the collapse and gives no gain in solved tasks; the limit is the
+edit itself (over half the edit commands fail in both arms), and the adapter adds a habit that costs it: hand-written
+patches. Not checked: whether the teacher data contains hand-written patches; the thoughts before the heredoc.
+
 **Step 18 · the 8-card box after step 16: the base (cards 0–3) and the action-only adapter (cards 4–7) with a
 submission fallback, side by side (written 2026-11-17, user: "兜底写进plan，再跑一次base"; the adapter arm added the same
 day, user: "让只训动作的适配器同时带兜底跑一次").** Why: in step 6 the base loses 20 of 125 tasks before grading — 13
@@ -2038,6 +2077,42 @@ runs as submitted are a second reference):
 - Limits: one run per arm; the fallback also returns edits the model may not have
   meant to submit (changed test files, half-finished edits), so it is an upper reading of the base's fixing.
 
+**Step 18 result (2026-11-18, box; recounted on the laptop from the 250 trajectories, same numbers).** 18a passed (4
+log lines, tree_rc 0). Headers checked: 128K, temperature 1.0, top_p 0.95, top_k not sent, fallback on in both arms.
+
+| | base, fallback | action-only, fallback | base runs 1, 2 (no fallback) | action-only runs 1, 2 |
+|---|---|---|---|---|
+| resolved / 125 | 69 | 68 | 63, 57 | 73, 75 |
+| resolved as submitted (fallback not counted) | 62 | 68 | 63, 57 | 73, 75 |
+| submitted; without a hunk; fallback used; resolved through it | 121; 17; 15; 7 | 117; 2; 0; 0 | 118, 116; 20, 25 | 117, 123; 2, 2 |
+| empty patches / grading errors | 6 / 0 | 10 / 0 | 14 / 14, 19 / 15 | 10 / 0, 4 / 0 |
+| exits at the context limit | 4 | 8 | 6, 9 | 7, 1 |
+| exact copies of the previous turn | 0 | 0 | 0, 0 | 0, 0 |
+| prose-loop trajectories / turns; thoughts over 12,000 | 2 / 6; 6 | 3 / 3; 3 | 1 / 1, 4 / 4 | 4 / 5, 3 / 4 |
+| 30-gram ≥ 20 times: turns, trajectories | 1, 1 | 4, 1 | 2, 2 | 0, 1 |
+
+Against the readings set before the data:
+- **What the submission steps cost the base:** 7 tasks of 125 in this run (15 uses, 7 resolved, 8 not; 2 more
+  submissions had no hunk in the tree either). The base with the fallback against its two earlier runs: +7.2 points
+  pooled, CI +0.8 … +14.0.
+- **Does the adapter fix more: not shown.** Same-day pair with the fallback: 68 against 69, −0.8 points, CI −8.8 …
+  +6.4 (only base 12, only adapter 11). By the rule (CI includes 0, point estimate ≤ +3) → **the gain measured in
+  steps 15 and 16 is the submission steps; the fallback gives it to the base without training.** The earlier adapter
+  runs against this base: +3.2 (CI −4.0 … +10.4) and +4.8 (CI −1.6 … +11.2); all three adapter runs pooled against it
+  +2.4, CI −3.2 … +8.3. As submitted, the third measurement of step 15's comparison is 68 against 62; the three runs
+  pooled 216 of 375 against 182 of 375, +9.1 points, CI +4.0 … +14.1.
+- **Check that the fallback changed no behaviour:** base submissions without a hunk 17 of 121 (step 6: 20 of 118),
+  resolved as submitted 62 (63 and 57) → met. The adapter's 68 is below its 73 and 75; the difference is inside its
+  run-to-run range (it flips 22 tasks between runs) and it has 8 exits at the context limit here.
+- **Loops:** no exact copies; the adapter has 3 long thoughts in 3 trajectories (preset limit ≤ 6 holds). Their text
+  repeats itself by 0 to 1 % of 8-word runs: long deliberation, not a loop. The head and tail of one were read, the
+  other two only counted; the base's 6 (in 2 trajectories, 5 of them with a sentence 5 times or more) were not read.
+- Limits as set: one run per arm; the fallback is an upper reading of the base's fixing.
+
+What this changes: "the LoRA training helps" stays true as measured (the adapter submits correctly, the base does
+not), but what it taught is the submission protocol. On fixing, the 952 teacher trajectories without the thought
+loss give this student nothing measurable at 125 tasks.
+
 **Step 19 · one free card: the held-out NLL split into thought and action (written 2026-11-17, user: "把留出集 loss 拆成
 思考和动作").** Why: what is known is that an adapter trained without the thought loss does not loop; why the thought
 loss produces loops is not. arXiv 2512.12895 ("Why do reasoning models loop?") puts it on errors in learning: what
@@ -2092,6 +2167,40 @@ and the two parts against each other are.
 - **Check of the action-only adapter:** its action NLL should be near full_e2's, its thought NLL near the base's.
 - Limits: 8 held-out trajectories; a difference in NLL is a correlation with the loops, not their cause — the second
   layer (do the loops of the evaluation start at the kind of step that is hard here?) needs the per-reply file.
+
+**Step 19 result (2026-11-18, box; six logs read on the laptop, the per-reply files not yet).** All six runs exit 0;
+`all label tokens` reproduces the training logs (0.3978 · 0.3560 · 0.3524 · 0.3424 · 0.3515). 19 held-out sequences,
+72,565 label tokens: thought 40,607 (first 16: 4,115; rest: 36,492), close 283, action 31,675.
+
+| NLL per token | thought first 16 | thought rest | thought | close | action |
+|---|---|---|---|---|---|
+| base | 0.781 | 0.579 | 0.599 | 0.088 | 0.143 |
+| first recipe, epoch 1 | 0.632 | 0.531 | 0.541 | 0.009 | 0.122 |
+| first recipe, epoch 2 | 0.611 | 0.527 | 0.536 | 0.009 | 0.120 |
+| r64, epoch 1 | 0.576 | 0.517 | 0.523 | 0.010 | 0.114 |
+| r64, epoch 3 | 0.580 | 0.532 | 0.537 | 0.008 | 0.117 |
+| action-only, epoch 2 | 0.715 | 0.554 | 0.571 | 0.096 | 0.119 |
+
+Against the readings set before the data:
+- **The paper's explanation: the rule for "fits" is not met.** Base → first recipe epoch 2: thought −10.5 %, action
+  −15.7 %; the thought drop is 0.67 of the action drop (rule: under half). The two are not equal either. Inside the
+  thought the parts differ: the first 16 tokens drop 21.7 %, the rest 8.8 % — the rest of the thought is the part
+  this student learns least.
+- **Under-training:** r64 epoch 1 has a thought NLL 2.4 % below the first recipe's (0.523 against 0.536) — small.
+  At r64 epoch 3 the thought rest goes back up (0.517 → 0.532) while the first 16 tokens stay: the rest of the
+  thought overfits first.
+- **First 16 against the rest:** above the rest in the base (0.781 against 0.579) and after training (0.611 against
+  0.527) → fits the paper's first mechanism.
+- **The close token:** the thought-trained adapters take it from 0.088 to about 0.009; the action-only adapter
+  leaves it at the base's level (0.096). No prediction was set.
+- **Check of the action-only adapter:** action 0.119, at the first recipe's 0.120 → met. Its thought NLL is 0.571,
+  4.7 % under the base with no loss on the thought tokens — nearly half of what the thought loss itself gives.
+- Limits as set: 19 sequences from 8 trajectories; a correlation. Not done: the second layer (the per-reply files
+  against where the loops start).
+
+Reading: the split does not single out the thoughts as "the part that is not learned" by the preset rule, so the
+unlearned-thought explanation is not confirmed here. What the split does show is where the thought-trained adapters
+differ from the one that does not loop: the close token and the thought tokens, not the action tokens.
 
 **Reading (set before the data).**
 - Qwen + our LoRA does not copy and resolves ≥ its base → our data, rendering idea and recipe are sound on a model the
