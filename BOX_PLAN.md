@@ -41,7 +41,7 @@ dropped too.
 
 ---
 
-## B-11 · MetaCurate's method inside the competition harness: GLM-5.3 trajectories under the V21 setting → an E4B LoRA with loss on the tool calls only (plan 2026-11-18) — ▶ step 1 (laptop) next; nothing on a box yet
+## B-11 · MetaCurate's method inside the competition harness: GLM-5.3 trajectories under the V21 setting → an E4B LoRA with loss on the tool calls only (plan 2026-11-18) — ▶ **step 2 on the 8-card box is ready** (commands at the end of this section); step 1's last laptop part (rules, converter) is being written beside it
 
 **Why.** B-9 part 3 (closed 2026-11-18) trained on MetaCurate's public trajectories, which are in mini-swe-agent's
 one-tool `bash` format and cannot be used in the competition harness; inside mini-swe-agent the action-only LoRA
@@ -236,6 +236,46 @@ in the next part.
 - **Not tested, only possible on the box:** the shim against real images (entrypoint, where conda lives, how long
   the move takes, whether `python3` resolves), the real grader behind the driver, image pulls and removal, and the
   real gateway. Step 2 is that test.
+
+**▶ Step 2 on the 8-card box · connect: the harness in 6 task images with the real teacher (written 2026-11-18; no
+GPU; cost: 6 attempts, expected well under $1, the ledger stops at $3).** What it settles: everything the laptop
+could not test — the per-task images, the real grader behind the driver, and the gateway (which thinking form it
+takes, whether the thought comes back, whether it reports a cost).
+
+Before it, once: the four V21 files have to be at `runs/subs/v21_e4b/` (`agent.yaml`, `configs/sampling.yaml`,
+`eval_config.yaml`, `prompts/system.md`). They are in the user's private dataset of that submission; unpack its
+`submission.zip` there (or copy the four files). They are not in this repository.
+```bash
+cd gemma4-dev-agent && git pull && git log --oneline -1
+ls runs/subs/v21_e4b/agent.yaml runs/subs/v21_e4b/prompts/system.md          # the V21 files (see above)
+bash scripts/rebench_mini.sh setup 2>&1 | tail -6                            # the task table again (B-10; no token) → runs/b10/tasks/all.jsonl
+bash scripts/teacher_gen.sh setup                                            # 📷 every line: docker, versions, V21 prompt 4814 bytes · sha 794e38a822fd18c7, tasks kept, two self-tests
+```
+Then, in a shell that holds the teacher's name, the gateway's address and the key (the same three variables as B-10's
+probe; typed on the box, never into a file under git — the script prints which names it used, not the values):
+```bash
+PRICE=<in,cached,out $ per 1M tokens>  bash scripts/teacher_gen.sh check 2>&1 | tee runs/teach/check6.log     # 📷 from 'teacher_gen check' down
+```
+`check` takes 3 tasks per source (seed 0), sets the ledger to $3 with $0.50 reserved per attempt, runs the gold check
+(it pulls the 6 images), one teacher attempt per task at temperature 0.7 with `THINK=effort:high`, grades the patches
+and the empty patch, keeps the images, and prints the `report` and `inspect` blocks. `PRICE` is only used when the
+gateway reports no cost itself; without either the status line says "NO cost figure".
+
+**Read (the gate, set before the data):**
+- the 6 `docker_task_shim:` lines end with `PREP ok` and name a python; the seconds per line are the cost of moving
+  the repository (if any is over ~60 s, say so with the photo);
+- gold check: 6 of 6 resolve; `empty patch`: 0 resolved;
+- `thoughts: … ≥ 90 %` in the `inspect` block; the tools called are among the 6; `finish reasons` end with a `stop`
+  per trajectory (the text reply that ends the session);
+- the ledger line: spent > 0, and whether the calls are "priced by estimate" (then `PRICE` is what is charged);
+- the `ceil adapter:` and `context cap:` lines (temperature 0.7, the thinking form, Gemma's 32,768 window emulated).
+
+**Stop and photo, do not go on, if:** a shim line shows an exit other than 0 or no `PREP ok` · the harness exits
+before any model call (`infra` for all 6: the photo of `tail -40 runs/teach/gen.log`) · gold does not resolve on a
+task the B-10 check had passed · thoughts are under 90 %. For the thoughts there are three more forms to try, one
+at a time, each a new `check` (the ledger continues; `OUT=runs/teach_b` keeps the runs apart):
+`THINK=budget:4096` · `THINK=harness` · `API=chat` (the OpenAI request format). Nothing after step 2 starts before
+the photo is read.
 
 ## B-10 · Our own MetaCurate-style data: teacher trajectories from GLM-5.3 through a gateway (plan 2026-11-13, revised the same day: generation settings as the paper, GLM-5.3 only, the official rule logic, SWE-Gym left out; **scope changed 2026-11-17: B-10 = data generation, the students are chosen afterwards**; **2026-11-18: generation continues in B-11, in the competition harness; the mini-swe-agent route below is kept as written and not run**) — step 1 `setup` ✓ · `check` ✓ for SWE-rebench-V2 · `diag` ✓ (2026-11-13: both SWE-rebench problems explained and fixed in the scripts) · ▶ **now on the box: the commands under "On the box now" below**, 📷 · **B-10b (2026-11-17): three data lines against the thought loops, gated on B-9 part 3 step 19 — see the end of this section**
 
