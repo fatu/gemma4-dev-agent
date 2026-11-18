@@ -1911,6 +1911,66 @@ edit commands that fail, base 45 of 72, adapter 63 of 101; submissions that are 
 bash, in both arms; the adapter adds the habit of submitting a diff even when the tree has none. Not read: the
 thoughts of these 6 trajectories; the 7 empty ones.
 
+**Step 20 · the 4-card box: the E4B action-only adapter on 125 tasks, two runs (written 2026-11-17, user: "跑125题
+两次，写进plan").** Question: does it solve more tasks than the base. Settings of step 17b (128K, temperature 1.0,
+top_p 0.95, thinking budget 4,096, no top_k). Three runs, one after the other on cards 0–3, about 50 min each (25
+tasks took 10 min):
+- adapter run 1: the tag of step 17b with NTASK=125; chunk 0 is graded and is skipped, chunks 1–4 run;
+- adapter run 2: new tag `vf_e4b_act128_t1_r2`;
+- base run 2: new tag `vf_e4b_th128_t1_r2`. This one is my addition: the only base run (step 8, 13 of 125) is from
+  another day, and with two adapter runs against one base run the pooled comparison has no measure of the base's own
+  run-to-run change. Leave the base block out if only the adapter is wanted.
+```bash
+cd gemma4-dev-agent && git pull && git log --oneline -1
+nvidia-smi --query-gpu=index,memory.used --format=csv,noheader      # 📷 cards 0–3 free
+unset TOP_K ADAPTER
+export MODEL=google/gemma-4-E4B-it-qat-w4a16-ct SUBSET=verified WORKERS=8 EVAL_JOBS=8 THINK_HIST=1 MAX_TOK=8192 TOP_P=0.95 THINK_BUDGET=4096
+export NTASK=125 CHUNK=25 KEEP_IMAGES=1 MAX_LEN=131072 TEMP=1.0
+A=adapters/mc_gemma-4-E4B_r1k_act_lr1e-5/epoch2; V=runs/verified
+(cd $A && sha256sum adapter_model.safetensors adapter_config.json)  # 📷 = step 17b's hashes (adapter c8b1b86db63c…)
+ls -d $V/vf_e4b_act128_t1/c0 && ls -d $V/vf_e4b_act128_t1_r2 $V/vf_e4b_th128_t1_r2 2>/dev/null   # 📷 c0 there, the two new tags not
+
+# adapter, run 1 (chunks 1–4) then run 2
+ADAPTER=$A GPUS="0 1 2 3" PORT=8010 bash scripts/verified_box.sh serve         # 📷 "r 32 alpha 32" + "the adapter acts"
+ADAPTER=$A GPUS="0 1 2 3" PORT=8010 TAG=vf_e4b_act128_t1 bash scripts/verified_box.sh full > $V/vf_e4b_act128_t1.full125.log 2>&1
+ADAPTER=$A GPUS="0 1 2 3" PORT=8010 TAG=vf_e4b_act128_t1_r2 bash scripts/verified_box.sh full > $V/vf_e4b_act128_t1_r2.full.log 2>&1
+head -2 $V/vf_e4b_act128_t1.full125.log $V/vf_e4b_act128_t1_r2.full.log | cut -c1-760   # 📷 125 tasks · temperature 1.0 · top_k not sent · max len 131072 · the adapter
+grep -h '^== chunk\|graded\|STOP\|== full' $V/vf_e4b_act128_t1.full125.log $V/vf_e4b_act128_t1_r2.full.log   # 📷 run 1: chunk 0 "graded before — skipped"
+GPUS="0 1 2 3" PORT=8010 bash scripts/verified_box.sh stop
+
+# base, run 2
+GPUS="0 1 2 3" PORT=8010 bash scripts/verified_box.sh serve                    # 📷 no adapter line
+GPUS="0 1 2 3" PORT=8010 TAG=vf_e4b_th128_t1_r2 bash scripts/verified_box.sh full > $V/vf_e4b_th128_t1_r2.full.log 2>&1
+head -2 $V/vf_e4b_th128_t1_r2.full.log | cut -c1-760; grep -h '^== chunk\|graded\|STOP\|== full' $V/vf_e4b_th128_t1_r2.full.log   # 📷 no adapter in the header
+GPUS="0 1 2 3" PORT=8010 bash scripts/verified_box.sh stop
+
+ADAPTER=$A TAG=vf_e4b_act128_t1 bash scripts/verified_box.sh report; ADAPTER=$A TAG=vf_e4b_act128_t1_r2 bash scripts/verified_box.sh report   # 📷
+TAG=vf_e4b_th128_t1_r2 bash scripts/verified_box.sh report                     # 📷
+python3 scripts/paired.py $V/vf_e4b_th128_t1_r2 $V/vf_e4b_act128_t1_r2 --out $V/paired_e4b_th128_act128_t1_r2.json   # 📷 run 2: adapter − base
+ls -d $V/vf_e4b_th128_t1 2>/dev/null && python3 scripts/paired.py $V/vf_e4b_th128_t1 $V/vf_e4b_act128_t1 --out $V/paired_e4b_th128_act128_t1.json   # 📷 run 1, if step 8's base is on this box
+python3 scripts/paired.py $V/vf_e4b_act128_t1 $V/vf_e4b_act128_t1_r2           # 📷 adapter: run 2 − run 1
+python3 scripts/copy_stats.py $V/vf_e4b_th128_t1_r2 $V/vf_e4b_act128_t1 $V/vf_e4b_act128_t1_r2   # 📷 three == blocks, 125 trajectories each
+docker images --format '{{.Repository}}:{{.Tag}}' | grep -E 'sweb\.eval\.x86_64\.' | xargs -r docker rmi > /dev/null; df -h /var/lib/docker | tail -1
+(cd $V && rm -f e4b_verified_traj_t1_act125.zip && zip -qr e4b_verified_traj_t1_act125.zip vf_e4b_act128_t1 vf_e4b_act128_t1_r2 vf_e4b_th128_t1_r2 \
+   paired_e4b_th128_act128_t1*.json vf_e4b_act128_t1.full125.log vf_e4b_act128_t1_r2.full.log vf_e4b_th128_t1_r2.full.log -x '*test_output.txt')
+ls -lh $V/e4b_verified_traj_t1_act125.zip; unzip -l $V/e4b_verified_traj_t1_act125.zip | grep -c 'traj.json'   # 📷 375 expected; a traj.json over 100 MB → photo before uploading (step 8 had three of 0.7–1.7 GB)
+```
+Then upload the zip to the private E4B trajectory dataset as a new version (📷). **Stop and photo** if a header shows a
+top_k value, max len 32768 or an adapter in the base run, if a new tag already exists, if the hashes differ from step
+17b's, if run 1 does not skip chunk 0, or at a STOP line.
+
+Reading, set before the data (25 tasks: adapter 3, base 2; base on 125 in step 8: 13):
+- **Does it solve more:** per task, the adapter's solves of 2 minus the base's solves of 2 (base run 1 = step 8),
+  bootstrap over the 125 tasks. 95 % CI above 0 → yes. CI includes 0 → not shown; reported as it is, no third run.
+  Run 2 alone (same day, paired) is also reported. With a base near 13 of 125, a difference under about 8 tasks will
+  not clear the interval.
+- **Still no collapse:** exact copies of the previous turn in ≤ 5 of 125 trajectories and under 2 % of pairs in both
+  adapter runs → holds on 125.
+- **What limits it**, counted on the laptop in all runs: submissions that are `git diff` output, hand-written diffs,
+  non-diffs and empty ones; edit commands that fail; thoughts over 12,000 characters (25 tasks: 6, base 0).
+- Limits: base run 1 is from another day; astropy and django only; the adapter was not chosen on these tasks, but
+  the action-only recipe was chosen on Qwen's first 25.
+
 **Step 18 · the 8-card box after step 16: the base (cards 0–3) and the action-only adapter (cards 4–7) with a
 submission fallback, side by side (written 2026-11-17, user: "兜底写进plan，再跑一次base"; the adapter arm added the same
 day, user: "让只训动作的适配器同时带兜底跑一次").** Why: in step 6 the base loses 20 of 125 tasks before grading — 13
