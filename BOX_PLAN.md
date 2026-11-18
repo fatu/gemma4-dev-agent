@@ -1869,6 +1869,36 @@ empty patches, exact copies of the previous turn in 14 trajectories = 13.1 % of 
 - Limits: 25 tasks, one run; step 8's arms ran on another day; the adapter's own thoughts are untrained, so it thinks
   as the base does and acts as the teacher does, which the teacher data never showed together.
 
+**Step 17 result (2026-11-17, box; recounted on the laptop from the 25 trajectories, same numbers).** Header checked:
+128K, temperature 1.0, top_p 0.95, top_k not sent, adapter r 32 alpha 32. Held-out NLL on action tokens 0.3271 →
+0.2178 (box README). The same 25 tasks in all three arms (base and first adapter from step 8):
+
+| | base | first adapter (thoughts trained) | action-only adapter |
+|---|---|---|---|
+| resolved / 25 | 2 | 0 | 3 |
+| exits: submitted / step limit / context limit | 25 / 0 / 0 | 6 / 10 / 9 | 25 / 0 / 0 |
+| empty patches / grading errors | 7 / 2 | 23 / 1 | 7 / 6 |
+| turns, total and median | 350, 12 | 3,932, 169 | 564, 22 |
+| exact copies of the previous turn: pairs, trajectories | 0, 0 | 513 (13.1 %), 14 | 0, 0 |
+| same command back to back | 10 (3.1 %) | 1,426 (36.5 %) | 4 (0.7 %) |
+| a command repeated later with the same output | 27 | 2,476 | 31 |
+| prose-loop trajectories / turns | 0 / 0 | 11 / 230 | 7 / 7 |
+| thoughts over 12,000 chars | 0 | 69 | 6 |
+
+Against the rule set before the data: 0 trajectories with a copy and 0 % of pairs (rule: ≤ 2 and < 2 %) → **the
+collapse of the E4B adapter comes with the loss on the thoughts.** The same data, recipe and model without that loss
+give a model that runs like the base: every trajectory submits, the turn count is near the base's, no copied turn.
+This is the same result as on Qwen3.5-9B, now on the second model. The 125-task condition (most trajectories submit a
+patch) is met: 18 of 25 non-empty, as the base.
+
+What is not at the base's level:
+- **Long thoughts: 7 turns in 7 trajectories** (6 over 12,000 characters; base 0). All are at turns 2 to 7, each a
+  long deliberation about the fix before the first edit; 3 of the 7 have paragraphs repeated word for word (at most
+  4 copies), none meets the 30-gram rule. Read by head, middle and tail plus counts, not in full.
+- **6 grading errors, all "malformed patch"** (base 2): the submission has diff hunks but does not apply, so the
+  fallback of step 18 would not catch these. Not read: how these patch files were made.
+- Resolved 3 against 2 on 25 tasks is not a comparison.
+
 **Step 18 · the 8-card box after step 16: the base (cards 0–3) and the action-only adapter (cards 4–7) with a
 submission fallback, side by side (written 2026-11-17, user: "兜底写进plan，再跑一次base"; the adapter arm added the same
 day, user: "让只训动作的适配器同时带兜底跑一次").** Why: in step 6 the base loses 20 of 125 tasks before grading — 13
