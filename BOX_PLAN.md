@@ -183,6 +183,38 @@ the 98 existing harness-format records of B-3n (1,786 calls), rendered with `--p
   counted); several tool calls in one turn are covered by the self-test only. The audit runs again on both rendered
   sets of step 5, and no training starts without its PASS line.
 
+**Step 1 result, part 1 · the spend ledger, the teacher's sampling knobs, one end-to-end run on the laptop
+(2026-11-18, no GPU, no key, nothing sent out).** New: `scripts/teach_ledger.py` (the shared ledger),
+`scripts/teach_fake.py` (a local stand-in for the gateway in both request formats, which records every request body);
+changed: `scripts/ceil_sitecustomize.py` (`CEIL_TEMP`, `CEIL_THINK`, `CEIL_REMOTE`, the ledger gate and charge).
+- **Ledger under concurrency** (`teach_ledger.py selftest`): 8 processes ask for $24 of attempts against a $3
+  budget → 20 attempts start, 140 are refused at the reservation, spent $3.00, 60 call lines = the state's count (no
+  lost update), every reservation released. A reservation set too low: the gate raises at the first call after the
+  budget is passed, before any request is sent. Cost of a call = the provider's figure when the response has one,
+  else price × tokens and counted as an estimate; with neither, the call is counted as unpriced and the status line
+  says so.
+- **What reaches the gateway** (`teach_fake.py selftest`, through litellm): temperature 0.7 on every request and no
+  top_p beside it; the harness's vLLM-only fields are gone; the thought comes back as `reasoning_content` on 8 of 8
+  calls in both formats; each call is charged with its input, cached, output and reasoning tokens.
+- **Three things about the route that were not known, each found by a failing test:** (1) litellm drops `thinking`
+  and `reasoning_effort` given as keywords when it does not know the model name — on both routes; (2) on the
+  Anthropic route `extra_body` is sent as a literal field, not merged; a body field has to be passed as a top-level
+  keyword named in `allowed_openai_params` (the OpenAI route merges `extra_body`); (3) on the Anthropic route litellm
+  turns `reasoning_effort: high` into `thinking: {enabled, budget_tokens: 4096}` and sends both. The adapter now
+  routes body fields by route.
+- **End to end:** the real harness (`eval_dev.sh`, the V21 files with the model alias changed, 36 calls · 7.5 min ·
+  80 turns · compaction interval 5) on one competition task against the stand-in. 4 model calls
+  (`run_command`, `write_file`, `submit_patch`, a text reply); **the thought is in the trajectory log on 4 of 4 calls
+  and goes back to the server in the history**; the ledger charged 4 calls to `<task>#<attempt>`; the patch file was
+  written. The harness itself sends `thinking: {enabled, budget_tokens: 4096}` from the submission's thinking
+  config; `CEIL_THINK=budget:2000` replaced it (seen in the request bodies); `CEIL_THINK=harness` leaves it.
+- **A `submit_patch` call does not end the session.** With a stand-in that kept calling it the run went on to the
+  80-turn limit; the loop ends when the model answers with text and no tool call. A real trajectory therefore ends
+  with `submit_patch`, its result, and one text reply — under the `tool_call` label scope that last reply is no
+  target.
+- Not tested, cannot be on the laptop: the real gateway (which thinking form it accepts, whether it returns the
+  thought, whether it reports a cost), concurrency inside one harness process, and the per-task Docker images.
+
 ## B-10 · Our own MetaCurate-style data: teacher trajectories from GLM-5.3 through a gateway (plan 2026-11-13, revised the same day: generation settings as the paper, GLM-5.3 only, the official rule logic, SWE-Gym left out; **scope changed 2026-11-17: B-10 = data generation, the students are chosen afterwards**; **2026-11-18: generation continues in B-11, in the competition harness; the mini-swe-agent route below is kept as written and not run**) — step 1 `setup` ✓ · `check` ✓ for SWE-rebench-V2 · `diag` ✓ (2026-11-13: both SWE-rebench problems explained and fixed in the scripts) · ▶ **now on the box: the commands under "On the box now" below**, 📷 · **B-10b (2026-11-17): three data lines against the thought loops, gated on B-9 part 3 step 19 — see the end of this section**
 
 **On the box now (2026-11-13, after `diag`; no tokens except a few cents for the probe).**
