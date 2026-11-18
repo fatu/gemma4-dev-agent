@@ -199,7 +199,7 @@ our own generation becomes the data source for the Kaggle-harness stage (plan 24
 **Optional:** Gemma 31B as the teacher for E4B (free, GPU) on the same tasks, if step 2 shows teacher thoughts far from
 Gemma's style (native thoughts; distillation inside the family).
 
-### B-10b · Three data lines against the thought loops (written 2026-11-17, user: "把2，3，4写进B-10") — ⏸ gated on B-9 part 3 step 19; nothing here runs yet
+### B-10b · Three data lines against the thought loops (written 2026-11-17, user: "把2，3，4写进B-10") — ⏸ gate read 2026-11-18 (step 19): the rule for "the thought is the part that does not learn" is not met → by the gate none of the three lines is started
 
 **Why here.** B-9 part 3 found that a LoRA trained with a loss on the teacher's thoughts loops (125 tasks, no top_k:
 102 thoughts over 12,000 characters, base 1) and that the same data without the thought loss does not (5). The
@@ -609,6 +609,24 @@ If it stopped early (STOP line, crash, reboot): free disk or lower CHUNK, `serve
 - Costs: box time only (free); no token totals (mini's cost tracking is off for local models).
 
 ### B-9 part 3 · Control: the paper's 9B model + our data + our LoRA — is the collapse Gemma's? (plan 2026-11-14, user: "用论文上的9B模型，加上我们的训练数据和LoRA，看看结果是不是提升了，这样可以判断是不是gemma 模型的问题") — steps 0–2 ✓ · ▶ step 3 on the box (check → render → smoke → adapter canary → train)
+
+**B-9 part 3 closed (2026-11-18, user: "B-9告一段落").** Steps 0 to 20 are run and read; nothing of it is running or
+waiting. What it leaves:
+- **The collapse is not Gemma's.** The same data and recipe make Qwen3.5-9B copy at low temperature and write long
+  looping thoughts at temperature 1.0; E4B copies at both.
+- **The loops come with the loss on the teacher's thoughts.** Without it: Qwen 5 long thoughts in place of 102, E4B 0
+  copied turns in 250 runs. Not the cause: the text-to-thought rule, the strength of the training, under-training.
+  Why the thought loss does it is open: the unlearned-thought explanation did not pass its preset rule (step 19), no
+  kind of step stands out, and the one measured difference is the close token.
+- **"The LoRA training helps" holds as measured and is the submission protocol.** Qwen action-only +11.2 points over
+  two runs; with a submission fallback in both arms 68 against 69. The adapter also takes the teacher's procedure
+  (fewer edits, checks after the last edit). No gain in fixing is measurable at 125 tasks.
+- **Where the tasks are lost after that:** a wrong patch in the right file, in both arms; in 10 patches read, none
+  misreads the issue; half the tasks flip between runs.
+- **E4B:** no collapse and no gain without the thought loss (28 of 250 against 27); over half its edit commands fail
+  in both arms.
+- Open, not planned here: why the thought loss gives loops; which training signal raises the number of fixes.
+
 
 **Why.** Part 2's E4B adapter is served exactly as trained (vLLM NLL = training NLL) yet copies its previous turn word for
 word (79 % of turn pairs, 0 / 125 resolved; base 12). The teacher data has no such copying. Open question: is that Gemma 4
