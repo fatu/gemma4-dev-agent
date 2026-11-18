@@ -2,7 +2,8 @@
 `swegemma eval` it starts: always the sandbox shim (scripts/sandbox_shim.py, B-3i) and the scorer's events compaction
 (scripts/compaction_shim.py, COMPACTION=0 turns it off); the literal minutes in the task prompt's time line
 (scripts/prompt_shim.py) when PROMPT_TIME_MIN is set; plus the remote-model request adapter (scripts/ceil_sitecustomize.py)
-when MODELS_YAML is set (B-3f/B-3g ceiling runs); plus the trajectory log
+when MODELS_YAML is set (B-3f/B-3g ceiling runs); plus the per-task Docker images
+(scripts/docker_task_shim.py) when DOCKER_TASKS is set (B-11); plus the trajectory log
 (scripts/traj_log.py) when TRAJ_DIR is set. Each prints what it does into the run log."""
 import os
 import pathlib
@@ -17,6 +18,9 @@ if os.environ.get("PROMPT_TIME_MIN"):
 
 if os.environ.get("MODELS_YAML"):
     import ceil_sitecustomize   # noqa: E402,F401
+
+if os.environ.get("DOCKER_TASKS"):      # B-11: one Docker image per task (scripts/docker_task_shim.py), with --sandbox docker
+    import docker_task_shim   # noqa: E402,F401
 
 if os.environ.get("TRAJ_DIR"):          # last: it wraps whatever litellm.acompletion is by now
     import traj_log   # noqa: E402,F401

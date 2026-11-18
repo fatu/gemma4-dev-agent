@@ -1,0 +1,395 @@
+#!/usr/bin/env python3
+"""B-11: teacher trajectories by MetaCurate's method, generated inside the competition harness. The driver.
+
+    python3 scripts/teacher_gen.py tasks  --table runs/b10/tasks/all.jsonl --out runs/teach [--exclude-repos FILE …]
+    python3 scripts/teacher_gen.py gen    --out runs/teach --ids runs/teach/all.ids --name pilot30 [knobs below]
+    python3 scripts/teacher_gen.py report --out runs/teach
+    python3 scripts/teacher_gen.py selftest                      # the bookkeeping, no harness, no Docker, no network
+
+`tasks` turns the B-10 task table into what the harness reads: a tasks.jsonl with instance_id, repo, base_commit and
+problem_statement ONLY (no test fields: the harness then runs the agent, keeps the patch and does not verify — the
+grader does), and all.ids. Rows the table marks `skip`, and tasks of the repositories in --exclude-repos (one
+`owner/name` per line: the evaluation tasks' repositories), are left out and counted.
+
+`gen` works through the ids in chunks; per chunk:
+  1. gold check    `rebench_mini.py grade --preds gold` (it pulls the chunk's images); only tasks whose gold patch
+                   resolves go on. Done once per task (state `gold`).
+  2. attempts      for attempt 1 … ATTEMPTS: the tasks that have no finished attempt of that number. For each one a
+                   reservation of RESERVE_USD is taken from the shared ledger (scripts/teach_ledger.py); a task whose
+                   reservation is refused is not started (state stays open, the run stops after this batch). The
+                   batch runs through scripts/eval_dev.sh (the V21 files, the model replaced by the teacher through
+                   MODELS_YAML, TEACH_ATTEMPT set, one call log line per model call in the ledger), its patches are
+                   written as a predictions file and graded by `rebench_mini.py grade`.
+  3. states        one line per (task, attempt) in <out>/attempts.jsonl, the last line wins:
+                     done       the agent ran: resolved true / false, calls, patch size, cost from the ledger
+                     infra      nothing usable came back for a reason that is not the model's: no model call at all,
+                                a gateway / rate-limit / connection error, the budget gate, a container or image
+                                error. Retried, at most RETRIES times, then `failed`.
+                     failed     not retried any more (kept apart from `done` in every count)
+  4. images        the chunk's images are removed (`docker rmi`) unless KEEP_IMAGES=1.
+A second `gen` with the same --out continues: finished attempts and gold checks are skipped.
+
+Knobs (flags or environment, every effective value is printed): CHUNK 50 · ATTEMPTS 3 · RETRIES 2 · CONC 4 ·
+RESERVE_USD (per attempt; the pilot's p95) · TEMP 0.7 · THINK (CEIL_THINK form, e.g. effort:high) · SUBMISSION
+runs/subs/v21_e4b · MODEL_ALIAS gemma-4-e4b-it-qat-w4a16-ct · MODELS_YAML runs/teach/models.yaml · MAX_CALLS 36 ·
+TIME_MIN 7.5 · MAX_TURNS 80 · COMPACT_INTERVAL 5 · SANDBOX docker · KEEP_IMAGES 0 · MIN_FREE_GB 50 · TASKS_DIR
+runs/b10/tasks (the grader's task directory). The budget itself lives in the ledger
+(`teach_ledger.py init --dir <out>/ledger --budget … --price …`): this script never raises it.
+Nothing here holds a gateway address, a key or a model name; MODELS_YAML and the key come from the box's environment.
+"""
+import argparse
+import collections
+import glob
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import time
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import teach_ledger  # noqa: E402
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+INFRA_RE = re.compile(r"RateLimit|APIConnection|APIError|InternalServerError|ServiceUnavailable|Timeout(?!Exceeded)|BadGateway|"
+                      r"AuthenticationError|BudgetReached|budget reached|ContainerSetupError|docker_task_shim|ImageNotFound|"
+                      r"NotFound.*image|pull access denied|No such image|Snapshot file not found|Connection (refused|reset)", re.I)
+
+
+def env_knob(name, default, cast=str):
+    v = os.environ.get(name)
+    return cast(v) if v not in (None, "") else default
+
+
+# ---------- state ----------
+class State:
+    """attempts.jsonl (append only; the last line of a key wins) + gold.json"""
+    def __init__(self, out):
+        self.out = out; os.makedirs(out, exist_ok=True)
+        self.path = os.path.join(out, "attempts.jsonl")
+        self.att = {}
+        if os.path.exists(self.path):
+            for line in open(self.path):
+                if line.strip():
+                    r = json.loads(line); self.att[(r["task"], r["attempt"])] = r
+        g = os.path.join(out, "gold.json")
+        self.gold = json.load(open(g)) if os.path.exists(g) else {}
+
+    def put(self, rec):
+        rec = dict(rec, t=round(time.time(), 1))
+        self.att[(rec["task"], rec["attempt"])] = rec
+        with open(self.path, "a") as f:
+            f.write(json.dumps(rec) + "\n")
+
+    def set_gold(self, d):
+        self.gold.update(d)
+        tmp = os.path.join(self.out, "gold.json.tmp")
+        json.dump(self.gold, open(tmp, "w")); os.replace(tmp, os.path.join(self.out, "gold.json"))
+
+    def open_tasks(self, ids, attempt, retries):
+        """tasks of this attempt number that still have to run: no line yet, or `infra` with tries ≤ retries"""
+        out = []
+        for i in ids:
+            r = self.att.get((i, attempt))
+            if r is None or (r["state"] == "infra" and r.get("tries", 1) <= retries):
+                out.append(i)
+        return out
+
+
+def classify(result, patch, per_key):
+    """one harness result → (state, fields). `result` = the task's line of task_results.jsonl or None."""
+    if result is None:
+        return "infra", {"why": "no result line from the harness"}
+    err = result.get("error") or ""
+    calls = result.get("total_llm_calls") or 0
+    ledger_errs = (per_key or {}).get("errors", 0)
+    if calls == 0:
+        return "infra", {"why": ("no model call: " + err)[:200]}
+    if INFRA_RE.search(err) and not patch:
+        return "infra", {"why": err[:200]}
+    return "done", {"llm_calls": calls, "tool_calls": result.get("tool_calls"), "patch_chars": len(patch or ""),
+                    "harness_error": err[:200] or None, "ledger_errors": ledger_errs, "seconds": result.get("duration_seconds")}
+
+
+# ---------- steps ----------
+def cmd_tasks(a):
+    excl = set()
+    for f in a.exclude_repos or []:
+        excl |= {x.strip().lower() for x in open(f) if x.strip() and not x.startswith("#")}
+    n = collections.Counter(); keep = []
+    for line in open(a.table):
+        if not line.strip():
+            continue
+        r = json.loads(line); n["rows"] += 1
+        if r.get("skip"):
+            n["skip: " + str(r["skip"])[:40]] += 1; continue
+        if (r.get("repo") or "").lower() in excl:
+            n["excluded repository"] += 1; continue
+        keep.append(r); n["kept · " + str(r.get("source"))] += 1
+    os.makedirs(a.out, exist_ok=True)
+    with open(os.path.join(a.out, "tasks.jsonl"), "w") as f:
+        for r in keep:
+            f.write(json.dumps({"instance_id": r["instance_id"], "repo": r["repo"], "base_commit": r.get("base_commit") or "",
+                                "problem_statement": r.get("problem_statement") or "", "hints_text": ""}) + "\n")
+    open(os.path.join(a.out, "all.ids"), "w").write("\n".join(r["instance_id"] for r in keep) + "\n")
+    print(f"teacher_gen tasks · table {a.table} · excluded repositories {len(excl)} from {a.exclude_repos or 'none'} → "
+          f"{len(keep)} tasks in {a.out}/tasks.jsonl (4 fields, no tests) and all.ids")
+    for k, v in sorted(n.items()):
+        print(f"   {k:40} {v}")
+    print(f"   distinct repositories kept {len({r['repo'] for r in keep})}")
+
+
+def run(cmd, env=None, log=None):
+    with open(log, "a") if log else open(os.devnull, "w") as f:
+        f.write(f"\n$ {' '.join(cmd)}\n"); f.flush()
+        return subprocess.run(cmd, env=env, stdout=f, stderr=subprocess.STDOUT).returncode
+
+
+def free_gb(path="."):
+    return shutil.disk_usage(path).free / 1e9
+
+
+def grade(a, name, ids, preds, outdir):
+    """→ {id: resolved bool} through the grader (or its stand-in a.grader for tests)"""
+    os.makedirs(a.tasks_dir, exist_ok=True)
+    open(os.path.join(a.tasks_dir, name + ".ids"), "w").write("\n".join(ids) + "\n")
+    os.makedirs(outdir, exist_ok=True)
+    if a.grader:
+        cmd = a.grader.format(tasks=a.tasks_dir, name=name, preds=preds, out=outdir).split()
+    else:
+        cmd = [sys.executable, os.path.join(HERE, "rebench_mini.py"), "grade", "--tasks", a.tasks_dir, "--name", name,
+               "--preds", preds, "--out", outdir, "--workers", str(a.grade_workers), "--install", a.grade_install]
+    rc = run(cmd, log=os.path.join(a.out, "gen.log"))
+    rp = os.path.join(outdir, "report.json")
+    rep = json.load(open(rp)) if os.path.exists(rp) else {}
+    return {i: bool((rep.get(i) or {}).get("resolved")) for i in ids}, rep, rc
+
+
+def harness(a, name, ids, attempt):
+    """one eval_dev.sh batch → (results by id, patches by id, run dir)"""
+    idf = os.path.join(a.out, "batches", name + ".ids"); os.makedirs(os.path.dirname(idf), exist_ok=True)
+    open(idf, "w").write("\n".join(ids) + "\n")
+    rundir = os.path.join("runs", f"dev33_base_{name}")
+    shutil.rmtree(rundir, ignore_errors=True)
+    env = dict(os.environ, LATEST="0", ARMS="base", SUBMISSION=a.submission, MODEL_ALIAS=a.model_alias, MODELS_YAML=a.models_yaml,
+               MAX_CALLS=str(a.max_calls), TIME_MIN=str(a.time_min), MAX_TURNS=str(a.max_turns), COMPACT_INTERVAL=str(a.compact_interval),
+               NO_TESTDEPS="1", SPLIT=idf, TAG=name, CONC=str(a.conc), TRAJ="1", SANDBOX=a.sandbox,
+               CEIL_TEMP=str(a.temp), CEIL_THINK=a.think, TEACH_LEDGER_DIR=os.path.abspath(os.path.join(a.out, "ledger")),
+               TEACH_ATTEMPT=str(attempt), CEIL_CALL_LOG=os.path.abspath(os.path.join(a.out, "calls", name + ".jsonl")))
+    os.makedirs(os.path.join(a.out, "calls"), exist_ok=True)
+    if a.sandbox == "docker":
+        env.update(TASKS_FILE=os.path.join(a.out, "tasks.jsonl"), SNAPSHOTS_DIR=os.path.join(a.out, "no_snapshots"), DOCKER_TASKS=a.table)
+        os.makedirs(os.path.join(a.out, "no_snapshots"), exist_ok=True)
+    else:                                       # tests on the laptop: the harness's own tasks and snapshots
+        for k in ("TASKS_FILE", "SNAPSHOTS_DIR"):
+            if getattr(a, k.lower(), None):
+                env[k] = getattr(a, k.lower())
+    rc = run(["bash", os.path.join(HERE, "eval_dev.sh")], env=env, log=os.path.join(a.out, "gen.log"))
+    res = {}
+    rp = os.path.join(rundir, "task_results.jsonl")
+    if os.path.exists(rp):
+        for line in open(rp):
+            if line.strip():
+                r = json.loads(line); res[r["instance_id"]] = r
+    patches = {}
+    for f in glob.glob(os.path.join(rundir, "patches", "*.patch")):
+        patches[os.path.basename(f)[:-6]] = open(f, errors="replace").read()
+    patches = {i: patches.get(i) or patches.get(i.replace("/", "__")) or "" for i in ids}
+    keep = os.path.join(a.out, "runs", name)          # trajectories and patches stay with the run's own state
+    shutil.rmtree(keep, ignore_errors=True); os.makedirs(os.path.dirname(keep), exist_ok=True)
+    if os.path.isdir(rundir):
+        shutil.move(rundir, keep)
+    return res, patches, keep, rc
+
+
+def cmd_gen(a):
+    st = State(a.out); L = teach_ledger.Ledger(os.path.join(a.out, "ledger"))
+    ids = [x for x in open(a.ids).read().split() if x]
+    knobs = {k: getattr(a, k) for k in ("chunk", "attempts", "retries", "conc", "reserve_usd", "temp", "think", "submission", "model_alias",
+                                        "models_yaml", "max_calls", "time_min", "max_turns", "compact_interval", "sandbox", "keep_images",
+                                        "min_free_gb", "tasks_dir", "table", "grader")}
+    print(f"teacher_gen gen · name {a.name} · {len(ids)} tasks from {a.ids} · out {a.out}")
+    print("   knobs: " + " · ".join(f"{k} {v}" for k, v in knobs.items()))
+    print("   " + teach_ledger.fmt_status(L.status()))
+    if L.status()["budget_usd"] is None:
+        sys.exit("no budget in the ledger: python3 scripts/teach_ledger.py init --dir <out>/ledger --budget <usd> [--price in,cached,out]")
+    if a.reserve_usd <= 0:
+        sys.exit("RESERVE_USD must be > 0 (the cost one attempt may reach; the pilot's p95)")
+    stop = False
+    for c0 in range(0, len(ids), a.chunk):
+        chunk = ids[c0:c0 + a.chunk]; cname = f"{a.name}_c{c0 // a.chunk:03d}"
+        if free_gb() < a.min_free_gb:
+            print(f"STOP: {free_gb():.0f} GB free < MIN_FREE_GB {a.min_free_gb}"); break
+        todo = [i for i in chunk if i not in st.gold]
+        if todo:
+            ok, rep, rc = grade(a, cname + "_gold", todo, "gold", os.path.join(a.out, "grade", cname + "_gold"))
+            st.set_gold(ok)
+            print(f"-- chunk {cname}: gold check on {len(todo)} tasks → {sum(ok.values())} resolve (grader exit {rc})", flush=True)
+        good = [i for i in chunk if st.gold.get(i)]
+        for att in range(1, a.attempts + 1):
+            for round_ in range(a.retries + 1):
+                want = st.open_tasks(good, att, a.retries)
+                if not want:
+                    break
+                batch = []
+                for i in want:
+                    if L.reserve(f"{i}#{att}", a.reserve_usd):
+                        batch.append(i)
+                    else:
+                        stop = True
+                if not batch:
+                    break
+                name = f"{cname}_a{att}" + (f"r{round_}" if round_ else "")
+                t0 = time.time()
+                try:
+                    res, patches, rundir, rc = harness(a, name, batch, att)
+                    preds = os.path.join(a.out, "preds", name + ".json"); os.makedirs(os.path.dirname(preds), exist_ok=True)
+                    json.dump({i: {"model_patch": patches[i]} for i in batch}, open(preds, "w"))
+                    per = L.per_key(); done = []
+                    states = {}
+                    for i in batch:
+                        s, f = classify(res.get(i), patches[i], per.get(f"{i}#{att}"))
+                        states[i] = (s, f); done += [i] if s == "done" else []
+                    resolved = {}
+                    if done:
+                        resolved, rep, _ = grade(a, name, done, preds, os.path.join(a.out, "grade", name))
+                    for i in batch:
+                        s, f = states[i]; k = per.get(f"{i}#{att}", {})
+                        prev = st.att.get((i, att)); tries = (prev.get("tries", 1) + 1) if prev and prev["state"] == "infra" else 1
+                        if s == "infra" and tries > a.retries:
+                            s = "failed"
+                        st.put(dict(f, task=i, attempt=att, state=s, tries=tries, resolved=resolved.get(i) if s == "done" else None,
+                                    usd=round(k.get("usd", 0.0), 6), tok_in=k.get("in", 0), tok_cached=k.get("cached", 0),
+                                    tok_out=k.get("out", 0), tok_reasoning=k.get("reasoning", 0), model_calls=k.get("calls", 0),
+                                    est_calls=k.get("est_calls", 0), run=rundir))
+                finally:
+                    for i in batch:
+                        L.release(f"{i}#{att}")
+                c = collections.Counter(st.att[(i, att)]["state"] for i in batch)
+                print(f"   {name}: {len(batch)} started of {len(want)} wanted · done {c['done']} (resolved {sum(bool(st.att[(i, att)].get('resolved')) for i in batch)}) · "
+                      f"infra {c['infra']} · failed {c['failed']} · {time.time() - t0:.0f} s · harness exit {rc} · {teach_ledger.fmt_status(L.status())}", flush=True)
+                if stop:
+                    break
+            if stop:
+                break
+        if not a.keep_images and a.sandbox == "docker":
+            imgs = [json.loads(l)["image_name"] for l in open(a.table) if l.strip() and json.loads(l)["instance_id"] in set(chunk) and json.loads(l).get("image_name")]
+            if imgs:
+                run(["docker", "rmi", "-f"] + imgs, log=os.path.join(a.out, "gen.log"))
+                print(f"   {cname}: {len(imgs)} images removed (KEEP_IMAGES=1 keeps them) · {free_gb():.0f} GB free")
+        if stop:
+            print("STOP: the ledger refused a reservation — spent + reserved would pass the budget. No new attempt was started. "
+                  "Raise the budget only on the user's word (teach_ledger.py init), then run the same command again: it continues.")
+            break
+    cmd_report(a)
+
+
+def cmd_report(a):
+    st = State(a.out); L = teach_ledger.Ledger(os.path.join(a.out, "ledger"))
+    rows = list(st.att.values())
+    by = collections.Counter(r["state"] for r in rows)
+    done = [r for r in rows if r["state"] == "done"]; res = [r for r in done if r.get("resolved")]
+    q = lambda xs, p: (sorted(xs)[min(len(xs) - 1, int(len(xs) * p))] if xs else None)
+    usd = [r["usd"] for r in done]
+    print(f"== teacher_gen report · {a.out}")
+    print(f"   gold check: {len(st.gold)} tasks checked · {sum(st.gold.values())} resolve")
+    print(f"   attempts: {len(rows)} · done {by['done']} · infra (to retry) {by['infra']} · failed (not retried) {by['failed']}")
+    print(f"   done: resolved {len(res)} = {100 * len(res) / max(1, len(done)):.1f} % · tasks with ≥ 1 resolved {len({r['task'] for r in res})} of {len({r['task'] for r in done})}")
+    for att in sorted({r["attempt"] for r in rows}):
+        d = [r for r in done if r["attempt"] == att]
+        print(f"      attempt {att}: done {len(d)} · resolved {sum(bool(r.get('resolved')) for r in d)}")
+    if done:
+        print(f"   per done attempt: model calls p50 {q([r.get('llm_calls') or 0 for r in done], .5)} p90 {q([r.get('llm_calls') or 0 for r in done], .9)} · "
+              f"tool calls p50 {q([r.get('tool_calls') or 0 for r in done], .5)} p90 {q([r.get('tool_calls') or 0 for r in done], .9)} · "
+              f"seconds p50 {q([r.get('seconds') or 0 for r in done], .5):.0f} p90 {q([r.get('seconds') or 0 for r in done], .9):.0f} · "
+              f"empty patch {sum(not r.get('patch_chars') for r in done)} · ended by a harness limit {sum(bool(r.get('harness_error')) for r in done)}")
+        print(f"   cost per done attempt: mean ${sum(usd) / len(usd):.4f} · p50 ${q(usd, .5):.4f} · p95 ${q(usd, .95):.4f} · max ${max(usd):.4f} "
+              f"(→ RESERVE_USD for the scale) · per resolved trajectory ${sum(r['usd'] for r in rows) / max(1, len(res)):.4f}")
+        tot = {k: sum(r.get(k, 0) for r in rows) for k in ("tok_in", "tok_cached", "tok_out", "tok_reasoning", "model_calls", "est_calls")}
+        print(f"   tokens (all attempts): input {tot['tok_in']:,} of which cached {tot['tok_cached']:,} · output {tot['tok_out']:,} of which reasoning {tot['tok_reasoning']:,} · "
+              f"model calls {tot['model_calls']:,} · priced by estimate {tot['est_calls']:,}")
+    why = collections.Counter((r.get("why") or "")[:60] for r in rows if r["state"] in ("infra", "failed"))
+    if why:
+        print("   infra / failed reasons: " + " · ".join(f"{v}× {k!r}" for k, v in why.most_common(6)))
+    print("   " + teach_ledger.fmt_status(L.status()))
+
+
+def selftest():
+    import tempfile
+    d = tempfile.mkdtemp(prefix="teacher_gen_")
+    try:
+        # tasks: skip rows and excluded repositories
+        tab = os.path.join(d, "all.jsonl")
+        rows = [{"instance_id": "a__b-1", "repo": "a/b", "source": "rebench", "base_commit": "c1", "problem_statement": "p", "FAIL_TO_PASS": ["t"], "image_name": "i1"},
+                {"instance_id": "a__b-2", "repo": "a/b", "source": "rebench", "skip": "no test_cmd"},
+                {"instance_id": "x__y-3", "repo": "X/Y", "source": "v2", "base_commit": "c3", "problem_statement": "q", "image_name": "i3"}]
+        open(tab, "w").write("\n".join(json.dumps(r) for r in rows) + "\n")
+        ex = os.path.join(d, "ex.txt"); open(ex, "w").write("x/y\n")
+        cmd_tasks(argparse.Namespace(table=tab, out=os.path.join(d, "o"), exclude_repos=[ex]))
+        T = [json.loads(l) for l in open(os.path.join(d, "o", "tasks.jsonl"))]
+        assert [t["instance_id"] for t in T] == ["a__b-1"] and set(T[0]) == {"instance_id", "repo", "base_commit", "problem_statement", "hints_text"}, T
+        # classify
+        assert classify(None, "", None)[0] == "infra"
+        assert classify({"total_llm_calls": 0, "error": "x"}, "", None)[0] == "infra"
+        assert classify({"total_llm_calls": 3, "error": "litellm.RateLimitError: slow down"}, "", None)[0] == "infra"
+        assert classify({"total_llm_calls": 3, "error": "teach_ledger: budget reached (spent …)"}, "", None)[0] == "infra"
+        assert classify({"total_llm_calls": 9, "error": "Agent exceeded turns budget (80 turns)", "tool_calls": 36}, "diff", None)[0] == "done"
+        assert classify({"total_llm_calls": 9, "error": None, "tool_calls": 7}, "", None)[0] == "done"       # an empty patch is the model's result
+        assert classify({"total_llm_calls": 9, "error": "TimeoutExceeded: Command timed out"}, "", None)[0] == "done"
+        # state: last line wins, retries, resume
+        S = State(os.path.join(d, "s"))
+        S.put({"task": "t1", "attempt": 1, "state": "infra", "tries": 1}); S.put({"task": "t2", "attempt": 1, "state": "done", "resolved": True})
+        assert S.open_tasks(["t1", "t2", "t3"], 1, 2) == ["t1", "t3"]
+        S.put({"task": "t1", "attempt": 1, "state": "infra", "tries": 3})
+        assert S.open_tasks(["t1", "t2", "t3"], 1, 2) == ["t3"]                                               # tries > retries: left alone
+        S2 = State(os.path.join(d, "s"))
+        assert S2.att[("t1", 1)]["tries"] == 3 and S2.open_tasks(["t2"], 1, 2) == [] and S2.open_tasks(["t2"], 2, 2) == ["t2"]
+        print("teacher_gen selftest: task conversion (skip rows, excluded repositories, no test fields), 7 result classes, "
+              "state file (last line wins, retry limit, resume) → all as expected")
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    sub = ap.add_subparsers(dest="cmd", required=True)
+    s = sub.add_parser("tasks"); s.add_argument("--table", required=True); s.add_argument("--out", required=True)
+    s.add_argument("--exclude-repos", action="append")
+    for name in ("gen", "report"):
+        s = sub.add_parser(name); s.add_argument("--out", required=True)
+        s.add_argument("--ids"); s.add_argument("--name", default="gen")
+        s.add_argument("--table", default=env_knob("DOCKER_TASKS_TABLE", "runs/b10/tasks/all.jsonl"))
+        s.add_argument("--tasks-dir", default=env_knob("TASKS_DIR", "runs/b10/tasks"))
+        s.add_argument("--chunk", type=int, default=env_knob("CHUNK", 50, int))
+        s.add_argument("--attempts", type=int, default=env_knob("ATTEMPTS", 3, int))
+        s.add_argument("--retries", type=int, default=env_knob("RETRIES", 2, int))
+        s.add_argument("--conc", type=int, default=env_knob("CONC", 4, int))
+        s.add_argument("--reserve-usd", type=float, default=env_knob("RESERVE_USD", 0.0, float))
+        s.add_argument("--temp", type=float, default=env_knob("TEMP", 0.7, float))
+        s.add_argument("--think", default=env_knob("THINK", "effort:high"))
+        s.add_argument("--submission", default=env_knob("SUBMISSION", "runs/subs/v21_e4b"))
+        s.add_argument("--model-alias", default=env_knob("MODEL_ALIAS", "gemma-4-e4b-it-qat-w4a16-ct"))
+        s.add_argument("--models-yaml", default=env_knob("MODELS_YAML", "runs/teach/models.yaml"))
+        s.add_argument("--max-calls", type=int, default=env_knob("MAX_CALLS", 36, int))
+        s.add_argument("--time-min", type=float, default=env_knob("TIME_MIN", 7.5, float))
+        s.add_argument("--max-turns", type=int, default=env_knob("MAX_TURNS", 80, int))
+        s.add_argument("--compact-interval", type=int, default=env_knob("COMPACT_INTERVAL", 5, int))
+        s.add_argument("--sandbox", default=env_knob("SANDBOX", "docker"), choices=["docker", "subprocess"])
+        s.add_argument("--keep-images", type=int, default=env_knob("KEEP_IMAGES", 0, int))
+        s.add_argument("--min-free-gb", type=float, default=env_knob("MIN_FREE_GB", 50.0, float))
+        s.add_argument("--grade-workers", type=int, default=env_knob("GRADE_WORKERS", 4, int))
+        s.add_argument("--grade-install", default=env_knob("GRADE_INSTALL", "auto"))
+        s.add_argument("--grader", default=env_knob("GRADER", ""), help="tests only: a stand-in command with {tasks} {name} {preds} {out}")
+        s.add_argument("--tasks-file", default=env_knob("TASKS_FILE", "")); s.add_argument("--snapshots-dir", default=env_knob("SNAPSHOTS_DIR", ""))
+    sub.add_parser("selftest")
+    a = ap.parse_args()
+    if a.cmd == "selftest":
+        return selftest()
+    if a.cmd == "gen" and not a.ids:
+        ap.error("gen needs --ids")
+    {"tasks": cmd_tasks, "gen": cmd_gen, "report": cmd_report}[a.cmd](a)
+
+
+if __name__ == "__main__":
+    main()
