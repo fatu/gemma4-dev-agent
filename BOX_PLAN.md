@@ -2261,6 +2261,28 @@ Reading: the training moved the procedure (submission, fewer edits, checking) an
 right change is. Not read: any of the wrong patches against the issue text; whether the 32 never-resolved tasks share
 a kind. The limit is not located further than "the change itself is wrong, in the right file".
 
+**Laptop reading of 10 wrong patches of the fallback pair (2026-11-18, no GPU).** 5 of the action-only adapter and
+5 of the base, drawn at random (seed 0) inside each failure kind (3 "target tests all fail", 1 "other tests broken",
+1 "pass in part" per arm) among tasks that some run of the six resolved, so that a resolving patch exists to compare.
+Read for each: the issue text (the first 1,500 to 3,000 characters), the names of the failed tests, the source part
+of the wrong patch and of a resolving patch (each cut at 2,600 to 3,500 characters). Not done: no test was run, the
+trajectories were not read, and the 32 never-resolved tasks are outside this sample by construction.
+
+- **None of the 10 misreads what the issue is about.** Every wrong patch goes at the reported symptom.
+- **6 of 10: the right idea in the right place, the code wrong or incomplete** (adapter 3, base 3). One line that
+  does not set the attribute the test reads; a loop that handles the reported case and misses its neighbour; a
+  rewrite of a permission check that fixes the report and breaks three existing tests; a 40-line rewrite where the
+  resolving patch is 9 lines in a setter.
+- **4 of 10: the fix is put at another layer or class than the one that has to change** (adapter 2, base 2): only
+  the MySQL backend where the generic compiler is tested; the form field where the issue names the model field; the
+  callers where the issue itself proposes changing the function; the view where the resolving patch adapts the value
+  at the database layer.
+- In 9 of the 10 the same arm resolves the task in another of its runs.
+
+Reading: on these tasks the model is able to produce the right change and does not do so reliably; the miss is in
+choosing and finishing the implementation, not in understanding the report, and it looks the same in both arms.
+My classification is a reading of two patches side by side, not a test.
+
 **Reading (set before the data).**
 - Qwen + our LoRA does not copy and resolves ≥ its base → our data, rendering idea and recipe are sound on a model the
   paper used; the collapse is specific to E4B (family or size, see the confound).
