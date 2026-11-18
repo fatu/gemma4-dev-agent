@@ -2231,6 +2231,36 @@ What this leaves: the unlearned-thought explanation is neither confirmed by the 
 step. The one measured difference between the adapters that loop and the one that does not, besides the thought
 tokens themselves, is the close token.
 
+**Laptop reading: where the Qwen runs fail once the submission is out of the way (2026-11-18, no GPU).** Six runs
+of 125 tasks (base 1, 2 and with fallback; action-only 1, 2 and with fallback), each task's grading report and
+trajectory. Kinds of command are regex counts; "exit 0" is the return code of the command line, which a pipe hides.
+
+| per run | base 1 | base 2 | base, fallback | action-only 1 | action-only 2 | action-only, fallback |
+|---|---|---|---|---|---|---|
+| resolved | 63 | 57 | 69 | 73 | 75 | 68 |
+| patch graded, target tests all fail | 20 | 22 | 32 | 27 | 31 | 31 |
+| target tests pass in part | 8 | 6 | 10 | 6 | 6 | 6 |
+| target tests pass, other tests broken | 6 | 6 | 8 | 9 | 9 | 10 |
+| no patch (context limit / submitted empty / step limit) | 14 | 19 | 6 | 10 | 4 | 10 |
+| patch not graded | 14 | 15 | 0 | 0 | 0 | 0 |
+
+- **With the fallback the two arms fail in the same way and at the same rate:** a wrong patch that applies (50 and
+  47 of 125). Where a resolving patch from any of the six runs exists to compare, the wrong patch is in the same
+  source files in 15 of 22 and 16 of 23 cases, in other files in 4 and 3. Finding the place is not what fails.
+- **The discordant tasks of the same-day pair are mostly run-to-run variation:** of the 12 tasks only the base
+  resolved, the adapter resolved 9 in another of its runs; of the 11 only the adapter resolved, the base resolved 8
+  in another run. Over all six runs 32 tasks are never resolved, 31 always, 62 sometimes.
+- **The adapter did take the teacher's way of working:** 4 to 6 edit turns per run against 13 to 19 for the base;
+  it runs something after its last edit in 91 to 96 % of the graded runs (base 62 to 76 %), the repository's tests in
+  64 to 80 % (base 49 to 68 %); resolved runs take about 60 turns against 75.
+- **And that does not turn into more fixes.** Its wrong patches were tested as often as its right ones (64 to 72 %
+  ran the tests after the last edit, the last run exiting 0 in 50 to 66 %): the model checked its patch against what
+  it understood of the issue, and the hidden target tests ask for something else.
+
+Reading: the training moved the procedure (submission, fewer edits, checking) and not the judgement of what the
+right change is. Not read: any of the wrong patches against the issue text; whether the 32 never-resolved tasks share
+a kind. The limit is not located further than "the change itself is wrong, in the right file".
+
 **Reading (set before the data).**
 - Qwen + our LoRA does not copy and resolves ≥ its base → our data, rendering idea and recipe are sound on a model the
   paper used; the collapse is specific to E4B (family or size, see the confound).
