@@ -2202,6 +2202,35 @@ Reading: the split does not single out the thoughts as "the part that is not lea
 unlearned-thought explanation is not confirmed here. What the split does show is where the thought-trained adapters
 differ from the one that does not loop: the close token and the thought tokens, not the action tokens.
 
+**Laptop reading after steps 18 to 20: the teacher's patches, and step 19's second layer (2026-11-18, no GPU).**
+Data on the laptop: one of the four teacher shards (1,072 rows; 417 resolved; 248 resolved with a peak prompt of at most
+30,720 teacher tokens, a stand-in for the training filter — the exact 952 are not on the laptop), the six per-reply
+files of step 19, and the evaluation trajectories. Step kinds and failures are regex and return-code counts.
+
+*Does E4B's hand-written patch come from the teacher? No.* In the 248 rows every trajectory writes `patch.txt` with
+`git diff` and ends with exactly `… && cat patch.txt`; 2 also write it by heredoc once. The teacher's edits fail in 8 %
+of the edit turns (43 of 542); E4B's fail in over half. In the adapter's two runs, 38 of the 55 hand-written patches
+come after a `git diff` that showed no diff, and in 32 no in-place edit had succeeded before (base run 2: 5
+hand-written, 3 after an empty diff). Reading: the adapter learned from the teacher that a run ends with a patch in
+`patch.txt`; when its own edits have failed and the diff is empty, it writes the patch from memory. The cause is the
+failed edit, not the submission.
+
+*Second layer of step 19: is there a kind of step that is hard in the held-out data and where the loops start? Not
+found.* Held-out side (283 replies, 8 trajectories): the thought NLL of the first recipe is 8 to 11 % under the base
+in every length class from 17 tokens up and in every position class; no class stands out. The one class that moves
+a lot is thoughts of 16 tokens or fewer (72 replies, 1.8 % of the thought tokens): 1.09 → 0.60 for the first recipe,
+0.99 for the action-only adapter. With it goes the close token: in 9 replies the base gives the teacher's immediate
+close a low probability (NLL over 1); the thought-trained adapters none, the action-only adapter 10. So what the
+thought loss changes most is when to stop thinking, in the direction of the teacher's short thoughts. Evaluation
+side: the first recipe's 102 long thoughts are spread over the run (quartiles of relative position 0.31, 0.58, 0.76),
+on read and run turns in about the share of all turns (41 % and 51 % against 47 % and 40 %), and after a failed
+command less often than average (6 % against 18 %). They do not gather on one kind of step. Only 1 of the 8 held-out
+trajectories has its text on the laptop (49 replies), so a split of the held-out NLL by step kind was not possible.
+
+What this leaves: the unlearned-thought explanation is neither confirmed by the preset rule nor located at a kind of
+step. The one measured difference between the adapters that loop and the one that does not, besides the thought
+tokens themselves, is the close token.
+
 **Reading (set before the data).**
 - Qwen + our LoRA does not copy and resolves ≥ its base → our data, rendering idea and recipe are sound on a model the
   paper used; the collapse is specific to E4B (family or size, see the confound).
