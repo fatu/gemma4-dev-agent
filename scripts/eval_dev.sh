@@ -158,9 +158,14 @@ if sed --version >/dev/null 2>&1; then sedi() { sed -i "$@"; }; else sedi() { se
 export OPENAI_API_KEY="${OPENAI_API_KEY:-EMPTY}"
 BASE="${SUBMISSION:-harness/sample_submission}"
 ARMS="${ARMS:-sample out8k}"
-if [ "${BUDGET:-scorer}" = none ]; then BUDGET_FLAGS=(); else
+# --verification-timeout-seconds is passed only when this swegemma has it (a box build of 0.2.11 did not, 2026-11-18:
+# the whole run then left with "unrecognized arguments" and BUDGET=none was used as a way round — which removes EVERY
+# cap, because the CLI does not read eval_config.yaml). The other budget flags stay.
+if swegemma eval --help 2>&1 | grep -q -- --verification-timeout-seconds; then VT_FLAGS=(--verification-timeout-seconds "${VERIFY_TIMEOUT:-300}")
+else VT_FLAGS=(); echo "budget: this swegemma ($(command -v swegemma || echo not found)) has no --verification-timeout-seconds → not passed (its own default applies); the other budget flags are passed"; fi
+if [ "${BUDGET:-scorer}" = none ]; then BUDGET_FLAGS=(); echo "budget: BUDGET=none → NO flags: no cap on tool calls or turns, 60 min per task (the CLI does not read eval_config.yaml)"; else
   BUDGET_FLAGS=(--max-tool-calls "${MAX_CALLS:-28}" --max-time-minutes "${TIME_MIN:-4}"
-                --timeout-seconds "${CMD_TIMEOUT:-240}" --verification-timeout-seconds "${VERIFY_TIMEOUT:-300}"
+                --timeout-seconds "${CMD_TIMEOUT:-240}" ${VT_FLAGS[@]+"${VT_FLAGS[@]}"}
                 ${MAX_TURNS:+--max-turns $MAX_TURNS}); fi
 # Two latest settings since 2026-10-30 (user: "我们维护两个最新配置，31B和小模型LoRA"), chosen with LATEST:
 #   LATEST=31b (default; 1 = the same) → scripts/arms/latest      the 31B entry, no adapter
@@ -202,7 +207,7 @@ if [ "$LATEST" = 1 ]; then
   if [ ${#BUDGET_FLAGS[@]} -gt 0 ]; then
     L_FLAG_MIN=$(python3 -c "print(round(${TIME_MIN:-4} * $L_MIN / 8, 3))")
     BUDGET_FLAGS=(--max-tool-calls "${MAX_CALLS:-$L_CALLS}" --max-time-minutes "$L_FLAG_MIN"
-                  --timeout-seconds "${CMD_TIMEOUT:-$L_TO}" --verification-timeout-seconds "${VERIFY_TIMEOUT:-300}"
+                  --timeout-seconds "${CMD_TIMEOUT:-$L_TO}" ${VT_FLAGS[@]+"${VT_FLAGS[@]}"}
                   ${MAX_TURNS:+--max-turns $MAX_TURNS})
   fi
   # PROMPT_TIME_MIN (scripts/prompt_shim.py): the task prompt's time line shows this many minutes instead of the scaled
@@ -341,7 +346,7 @@ top_k: 64' "$Y"; fi; fi
     if [ ${#ARM_BUDGET[@]} -gt 0 ]; then
       T7=$(python3 -c "print(round(${TIME_MIN:-4} * 7 / 8, 3))")
       ARM_BUDGET=(--max-tool-calls "${MAX_CALLS:-28}" --max-time-minutes "$T7"
-                  --timeout-seconds "${CMD_TIMEOUT:-240}" --verification-timeout-seconds "${VERIFY_TIMEOUT:-300}"
+                  --timeout-seconds "${CMD_TIMEOUT:-240}" ${VT_FLAGS[@]+"${VT_FLAGS[@]}"}
                   ${MAX_TURNS:+--max-turns $MAX_TURNS})
     fi
     P7="$SUB/prompts/system.md"; if has coursefull; then echo "time7: prompt = the course's own (already says 7 minutes)"; else sedi 's/28 tool calls and 8 minutes in total/28 tool calls and 7 minutes in total/' "$P7"

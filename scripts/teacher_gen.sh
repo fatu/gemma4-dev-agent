@@ -35,6 +35,7 @@ need_env() {
   ( umask 077; printf 'models:\n  %s:\n    path: %s/%s\n    api_base: %s\n' "$ALIAS" "$ROUTE" "$TEACHER" "$BASE" > "$OUT/models.yaml" )
   echo "  models.yaml written ($OUT/models.yaml, mode 600, gitignored): alias $ALIAS → route $ROUTE/<TEACHER>"
 }
+if [ "${BUDGET:-}" = none ]; then echo "STOP: BUDGET=none removes every cap (no limit on tool calls or turns, 60 min per task): the harness CLI does not read eval_config.yaml. Teacher runs need the V21 budget as flags; unset BUDGET."; exit 1; fi
 ledger() {   # the budget is set only when BUDGET_USD is given; otherwise the ledger is left as it is
   if [ -n "$BUDGET_USD" ]; then $PY scripts/teach_ledger.py init --dir "$OUT/ledger" --budget "$BUDGET_USD" ${PRICE:+--price "$PRICE"} | sed 's/^/  /'
   else $PY scripts/teach_ledger.py status --dir "$OUT/ledger" | sed 's/^/  /'; fi

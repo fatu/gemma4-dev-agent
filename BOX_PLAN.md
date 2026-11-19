@@ -298,9 +298,9 @@ the earlier try that is 2 of the 9 V2 tasks seen so far whose tests need the net
    python3 -c "import swegemma, importlib.metadata as m; print(m.version('swegemma'), swegemma.__file__)"
    ```
    Another environment's swegemma → run `check` from the environment the dev33 runs used; no script change.
-   The same package without the flag → `BUDGET=none bash scripts/teacher_gen.sh check` (the harness then reads the
-   budgets from `runs/subs/v21_e4b/eval_config.yaml`; print that file first: 36 calls, 7.5 minutes, 240 s, 80 turns)
-   and 📷 the three lines above. Do not edit `eval_dev.sh` on the box.
+   The same package without the flag → ~~`BUDGET=none`~~ — **wrong, corrected the same day:** the CLI does not read
+   `eval_config.yaml` (`eval_dev.sh` says so in its own header), so `BUDGET=none` means no cap at all. See the
+   third try's second note below. Do not edit `eval_dev.sh` on the box.
 
 **Step 2, third try on the 8-card box (2026-11-18, photo; $0.64 by price estimate, 115 model calls) · the gate is
 not met, two causes, one fixed here.** Passed: `BUDGET=none` starts the harness (it reads V21's own 36 calls ·
@@ -333,6 +333,45 @@ the solve rate.
 
 Nothing paid runs before the photo of the `inspect` block is read. The next paid try (one `check` in a new `OUT`
 with the fixed shim, so the 3 SWE-rebench tasks run) waits for it, because it decides which `THINK` form to use.
+
+**Step 2, the `inspect` photo of the third try (2026-11-18, free) · two readings, one script fix, ▶ the fourth try.**
+
+| calls | n | output tokens p50 / p90 | gateway reports reasoning tokens > 0 |
+|---|---|---|---|
+| with thought text | 52 | 656 / 2070 | 52 (p50 343) |
+| without thought text | 63 | 46 / 298 | 0 |
+
+Every call matched its ledger line. Reading by the rule written before the photo: nothing is lost on the way — where
+the teacher reasoned (52 calls) the text is in the log on all 52; on the other 63 it wrote a median of 46 output
+tokens and no reasoning. So at `effort:high` the teacher thinks on 45 % of its calls, and another request form is
+not expected to change that (not tried).
+
+*The 90 % gate.* It was written to catch thoughts lost in transit, and counted the wrong thing. Proposed instead
+(the user decides): **thought text on every call for which the gateway reports reasoning tokens** — 52 of 52 here.
+What follows for training, to be said with the result: in version A about half of the target tool calls come with
+no thought before them, while the student at inference thinks before every call under V21's setting.
+
+*The 87-call attempt: the third try ran without any cap.* `BUDGET=none` passes no flags, and the CLI does not read
+the submission's `eval_config.yaml` (checked in the 0.2.11 code on the laptop: no reader of that file; the default
+budget is 60 minutes, no limit on tool calls or turns). The note above that sent the box this way said the
+opposite and was wrong. So the two trajectories of the third try are not V21-budget data (the resolved one, 28
+calls, happens to fit; the other used 89 tool calls) and its $0.50 is not what a capped attempt costs.
+Fixed: `eval_dev.sh` now asks `swegemma eval --help` and leaves out only `--verification-timeout-seconds` when this
+build lacks it (it prints that line), the other budget flags are passed; `teacher_gen.sh` stops when `BUDGET=none`
+is set. Tested on the laptop: both branches of the probe with a stand-in binary and the real one; not tested: the
+box's build.
+
+**▶ Fourth try (paid; 5 attempts with the cap, expected $1–2 from the third try's two; the ledger of the new
+directory stops at $3):**
+```bash
+git pull && git log --oneline -1
+unset BUDGET
+OUT=runs/teach_d PRICE=<the same three numbers>  bash scripts/teacher_gen.sh check 2>&1 | tee runs/check6_d.log     # 📷 from 'teacher_gen check' down
+```
+Read: a `budget:` line (either nothing about the flag, or "has no --verification-timeout-seconds → not passed");
+`--max-tool-calls 36` in the harness command; the 3 SWE-rebench shim lines end with `PREP ok`; no attempt over
+36 tool calls; the two new `inspect` lines (calls with / without thought text); cost per attempt. Stop and photo if
+a SWE-rebench shim line fails again or an attempt shows more than 36 tool calls.
 
 ## B-10 · Our own MetaCurate-style data: teacher trajectories from GLM-5.3 through a gateway (plan 2026-11-13, revised the same day: generation settings as the paper, GLM-5.3 only, the official rule logic, SWE-Gym left out; **scope changed 2026-11-17: B-10 = data generation, the students are chosen afterwards**; **2026-11-18: generation continues in B-11, in the competition harness; the mini-swe-agent route below is kept as written and not run**) — step 1 `setup` ✓ · `check` ✓ for SWE-rebench-V2 · `diag` ✓ (2026-11-13: both SWE-rebench problems explained and fixed in the scripts) · ▶ **now on the box: the commands under "On the box now" below**, 📷 · **B-10b (2026-11-17): three data lines against the thought loops, gated on B-9 part 3 step 19 — see the end of this section**
 
