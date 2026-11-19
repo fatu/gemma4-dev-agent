@@ -65,7 +65,8 @@ git config --global --add safe.directory '*'
 git config --global user.email harness@localhost
 git config --global user.name harness
 if [ "{strip}" = 1 ] && git rev-parse HEAD >/dev/null 2>&1; then
-  git for-each-ref --no-merged HEAD --format='delete %(refname)' | git update-ref --stdin
+  git for-each-ref --no-merged HEAD --format='%(symref)|%(refname)' | while IFS='|' read -r s r; do [ -z "$s" ] || git symbolic-ref --delete "$r"; done
+  git for-each-ref --no-merged HEAD --format='delete %(refname)' | git update-ref --no-deref --stdin
   rm -f "$(git rev-parse --git-dir)/FETCH_HEAD" "$(git rev-parse --git-dir)/ORIG_HEAD"
   git reflog expire --expire=now --all >/dev/null 2>&1 || true
   timeout 40 git gc -q --prune=now >/dev/null 2>&1 || true
@@ -213,7 +214,9 @@ def selftest():
     d = tempfile.mkdtemp(prefix="dts_")
     sh = lambda s: subprocess.run(["bash", "-c", s], cwd=d, capture_output=True, text=True)
     r = sh("mkdir repo && cd repo && git init -q . && git config user.email t@t && git config user.name t && echo 1 > f && git add f && git commit -qm base "
-           "&& git checkout -q -b later && echo 2 > f && git commit -qam later && git tag v-later && git checkout -q -")
+           "&& git checkout -q -b later && echo 2 > f && git commit -qam later && git tag v-later && git checkout -q - "
+           # a remote branch later than HEAD with origin/HEAD pointing at it: the SWE-rebench images (box, 2026-11-18)
+           "&& git update-ref refs/remotes/origin/master later && git symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/master")
     assert r.returncode == 0, r.stderr
     script = prepare_script(d + "/repo").replace("/workspace", d + "/workspace").replace("/etc/swegemma_env.sh", d + "/env.sh").replace("--global", "--file " + d + "/gitconfig")
     r = subprocess.run(["bash", "-c", script], capture_output=True, text=True, env=dict(os.environ, GIT_CONFIG_GLOBAL=d + "/gitconfig"))

@@ -323,14 +323,14 @@ def cmd_inspect(a):
     st = State(a.out)
     runs = sorted({r["run"] for r in st.att.values() if r.get("run") and (not a.name or os.path.basename(r["run"]).startswith(a.name))})
     calls = thought = 0; tools = collections.Counter(); fin = collections.Counter(); secs = []; per_task = []; resets = collections.Counter()
-    thought_chars = []; multi = 0
+    thought_chars = []; multi = 0; flags = {}
     for run_ in runs:
         for f in sorted(glob.glob(os.path.join(run_, "traj", "*.jsonl"))):
             if f.endswith(".tools.jsonl"):
                 continue
-            n = t = 0
+            n = t = 0; seq = []
             for line in open(f):
-                c = json.loads(line); r = c.get("resp") or {}
+                c = json.loads(line); r = c.get("resp") or {}; seq.append(bool(r.get("reasoning")))
                 n += 1; t += bool(r.get("reasoning")); thought_chars.append(len(r.get("reasoning") or ""))
                 tc = r.get("tool_calls") or []; multi += len(tc) > 1
                 for x in tc:
@@ -339,11 +339,31 @@ def cmd_inspect(a):
                 if c.get("reset"):
                     resets[str(c["reset"])[:30]] += 1
             calls += n; thought += t; per_task.append((os.path.basename(f)[:-6], n, t))
+            flags[os.path.basename(f)[:-6]] = seq
     q = lambda xs, p: (sorted(xs)[min(len(xs) - 1, int(len(xs) * p))] if xs else 0)
     print(f"== teacher_gen inspect · {a.out} · runs {len(runs)} ({a.name or 'all'}) · trajectories {len(per_task)} · model calls {calls}")
     print(f"   thoughts: {thought} of {calls} calls = {100 * thought / max(1, calls):.1f} %  (gate ≥ 90 %) · chars per thought p50 {q(thought_chars, .5)} p90 {q(thought_chars, .9)} max {max(thought_chars or [0])}")
     print(f"   tools called: {dict(tools.most_common())} · calls with several tool calls {multi} · finish reasons {dict(fin)}")
     print(f"   seconds per model call: p50 {q(secs, .5):.1f} · p90 {q(secs, .9):.1f} · max {max(secs or [0]):.1f} · history resets / compactions {dict(resets) or 'none'}")
+    # where the missing thoughts are lost: the ledger's line of the same call (its order within the task) has the output
+    # and reasoning token counts. No thought text but many output / reasoning tokens = produced and dropped on the way;
+    # few output tokens = the teacher did not think on that call.
+    led = collections.defaultdict(list); lf = os.path.join(a.out, "ledger", "calls.jsonl")
+    for line in (open(lf) if os.path.exists(lf) else []):
+        c = json.loads(line)
+        if not c.get("err"):
+            led[c["key"].split("#")[0]].append(c)
+    cell = {True: [], False: []}; unmatched = []
+    for name, seq in flags.items():
+        if len(led.get(name, [])) != len(seq):
+            unmatched.append(f"{name} {len(seq)} vs {len(led.get(name, []))}"); continue
+        for has, c in zip(seq, led[name]):
+            cell[has].append(c)
+    for has in (True, False):
+        cs = cell[has]; outs = [c.get("out") or 0 for c in cs]; rs = [c.get("reasoning") or 0 for c in cs]
+        print(f"   calls {'with   ' if has else 'without'} thought text: {len(cs):4} · output tokens p50 {q(outs, .5)} p90 {q(outs, .9)} · "
+              f"reasoning tokens reported > 0 on {sum(x > 0 for x in rs)} (p50 {q(rs, .5)})")
+    print(f"   (matched to the ledger by call order; trajectories whose call count differs from the ledger's, left out: {unmatched or 'none'})")
     for name, n, t in per_task[:40]:
         r = next((x for x in st.att.values() if x["task"] == name), {})
         print(f"      {name:44} calls {n:3} · with thought {t:3} · {r.get('state')} · resolved {r.get('resolved')} · tool calls {r.get('tool_calls')} · "

@@ -302,6 +302,38 @@ the earlier try that is 2 of the 9 V2 tasks seen so far whose tests need the net
    budgets from `runs/subs/v21_e4b/eval_config.yaml`; print that file first: 36 calls, 7.5 minutes, 240 s, 80 turns)
    and 📷 the three lines above. Do not edit `eval_dev.sh` on the box.
 
+**Step 2, third try on the 8-card box (2026-11-18, photo; $0.64 by price estimate, 115 model calls) · the gate is
+not met, two causes, one fixed here.** Passed: `BUDGET=none` starts the harness (it reads V21's own 36 calls ·
+7.5 min · 80 turns); gold 5 of 6; the empty patch 0 of 6; the two V2 tasks' shim lines end with `PREP ok` (1.8 s and
+3.8 s); the teacher was called, priced by estimate (the gateway reports no cost). Two attempts ran: one resolved
+(28 model calls, $0.14), one not (87 model calls, $0.50, a 5,121-character patch). Two attempts say nothing about
+the solve rate.
+
+1. *The 3 SWE-rebench tasks never reached the teacher: the shim's prepare step left with 128.* `fatal: multiple
+   updates for 'refs/remotes/origin/master' (including one via symref 'refs/remotes/origin/HEAD') are not allowed`.
+   Cause: `origin/HEAD` is a symbolic ref to a branch later than HEAD, and the delete list named both. Reproduced on
+   the laptop with git 2.47 (same message, exit 128) and fixed in `docker_task_shim.py` and `b10_startup.sh`:
+   symbolic refs among the later ones are removed first with `git symbolic-ref --delete`, the rest with
+   `update-ref --no-deref`. The self-test now builds this case. Not tested: a real SWE-rebench image.
+2. *Thoughts on 52 of 115 calls = 45.2 % (gate ≥ 90 %), median 0 characters.* Not explained yet. Before paying for
+   another thinking form, `inspect` now splits the calls by whether the trajectory has thought text and prints, from
+   the ledger's line of the same call, the output tokens and the reasoning tokens the gateway reported. Free:
+   ```bash
+   git pull && OUT=runs/teach_c bash scripts/teacher_gen.sh inspect     # OUT = the third try's directory; 📷 the block
+   ```
+   Read: calls without thought text that still have many output or reasoning tokens → the thought was produced and
+   lost between the gateway and the log (ours to fix; another form may help). Few output tokens on those calls → the
+   teacher did not think on them (a property of the model at this effort; then the 90 % gate is the user's to keep
+   or change, and trying forms is unlikely to help). Also on that photo: the `tool calls` of the 87-call attempt
+   (the cap is 36 tool calls; 87 model calls with an 80-turn limit needs an explanation — compaction calls are the
+   guess, not checked).
+3. *Cost, two notes.* The $0.50 attempt equals the reservation, so `RESERVE_USD` has to rise before the pilot
+   (number from the pilot's own p95). And each new `OUT` directory has its own ledger, so the $3 cap holds per
+   directory, not over all tries of step 2; spent so far over the three tries: $0.64.
+
+Nothing paid runs before the photo of the `inspect` block is read. The next paid try (one `check` in a new `OUT`
+with the fixed shim, so the 3 SWE-rebench tasks run) waits for it, because it decides which `THINK` form to use.
+
 ## B-10 · Our own MetaCurate-style data: teacher trajectories from GLM-5.3 through a gateway (plan 2026-11-13, revised the same day: generation settings as the paper, GLM-5.3 only, the official rule logic, SWE-Gym left out; **scope changed 2026-11-17: B-10 = data generation, the students are chosen afterwards**; **2026-11-18: generation continues in B-11, in the competition harness; the mini-swe-agent route below is kept as written and not run**) — step 1 `setup` ✓ · `check` ✓ for SWE-rebench-V2 · `diag` ✓ (2026-11-13: both SWE-rebench problems explained and fixed in the scripts) · ▶ **now on the box: the commands under "On the box now" below**, 📷 · **B-10b (2026-11-17): three data lines against the thought loops, gated on B-9 part 3 step 19 — see the end of this section**
 
 **On the box now (2026-11-13, after `diag`; no tokens except a few cents for the probe).**
