@@ -80,13 +80,14 @@ PYEOF
   cp "$OUT/check6.ids" "$TASKS_DIR/check6_empty.ids"
   $PY scripts/rebench_mini.py grade --tasks "$TASKS_DIR" --name check6_empty --preds empty --out "$OUT/grade/check6_empty" 2>&1 | tail -4 | sed 's/^/  empty patch · /'
   $PY scripts/teacher_gen.py inspect --out "$OUT" --name check6
-  echo "  📷 from 'teacher_gen check' down. Gate: gold-failing tasks are dropped and counted (at least 4 of 6 go on), the empty patch resolves on none, the 6 shim lines end with 'PREP ok', thoughts ≥ 90 %." ;;
+  echo "  📷 from 'teacher_gen check' down. Gate: gold-failing tasks are dropped and counted (at least 4 of 6 go on), the empty patch resolves on none, the 6 shim lines end with 'PREP ok', no attempt over the tool-call cap, and the inspect line 'calls without thought text … GATE' says ok." ;;
 pilot)
   need_env; ledger
   [ -f "$TASKS_DIR/pilot30.ids" ] || { echo "STOP: no $TASKS_DIR/pilot30.ids (B-10: NAME=pilot30 N=30 bash scripts/rebench_mini.sh subset)"; exit 1; }
   grep -Fxf "$OUT/all.ids" "$TASKS_DIR/pilot30.ids" > "$OUT/pilot30.ids"; echo "  pilot30: $(wc -l < "$OUT/pilot30.ids") of $(wc -l < "$TASKS_DIR/pilot30.ids") tasks are in all.ids"
   gen pilot30 "$OUT/pilot30.ids" 1 30 "${KEEP_IMAGES}"
-  $PY scripts/teacher_gen.py inspect --out "$OUT" --name pilot30 | head -12
+  $PY scripts/teacher_gen.py report --out "$OUT"
+  $PY scripts/teacher_gen.py inspect --out "$OUT" --name pilot30 | head -48
   echo "  📷 the report and inspect blocks" ;;
 gen)
   need_env; ledger

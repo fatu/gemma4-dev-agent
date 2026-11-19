@@ -342,7 +342,7 @@ def cmd_inspect(a):
             flags[os.path.basename(f)[:-6]] = seq
     q = lambda xs, p: (sorted(xs)[min(len(xs) - 1, int(len(xs) * p))] if xs else 0)
     print(f"== teacher_gen inspect · {a.out} · runs {len(runs)} ({a.name or 'all'}) · trajectories {len(per_task)} · model calls {calls}")
-    print(f"   thoughts: {thought} of {calls} calls = {100 * thought / max(1, calls):.1f} %  (gate ≥ 90 %) · chars per thought p50 {q(thought_chars, .5)} p90 {q(thought_chars, .9)} max {max(thought_chars or [0])}")
+    print(f"   thoughts: {thought} of {calls} calls = {100 * thought / max(1, calls):.1f} %  (no gate on this share since 2026-11-18; the gate is the 'reasoning tokens reported' line below) · chars per thought p50 {q(thought_chars, .5)} p90 {q(thought_chars, .9)} max {max(thought_chars or [0])}")
     print(f"   tools called: {dict(tools.most_common())} · calls with several tool calls {multi} · finish reasons {dict(fin)}")
     print(f"   seconds per model call: p50 {q(secs, .5):.1f} · p90 {q(secs, .9):.1f} · max {max(secs or [0]):.1f} · history resets / compactions {dict(resets) or 'none'}")
     # where the missing thoughts are lost: the ledger's line of the same call (its order within the task) has the output
@@ -362,7 +362,8 @@ def cmd_inspect(a):
     for has in (True, False):
         cs = cell[has]; outs = [c.get("out") or 0 for c in cs]; rs = [c.get("reasoning") or 0 for c in cs]
         print(f"   calls {'with   ' if has else 'without'} thought text: {len(cs):4} · output tokens p50 {q(outs, .5)} p90 {q(outs, .9)} · "
-              f"reasoning tokens reported > 0 on {sum(x > 0 for x in rs)} (p50 {q(rs, .5)})")
+              f"reasoning tokens reported > 0 on {sum(x > 0 for x in rs)} (p50 {q(rs, .5)})"
+              + (f"  ← GATE: must be 0 (a thought that was produced and is not in the log) → {'ok' if not sum(x > 0 for x in rs) else 'NOT MET'}" if not has else ""))
     print(f"   (matched to the ledger by call order; trajectories whose call count differs from the ledger's, left out: {unmatched or 'none'})")
     for name, n, t in per_task[:40]:
         r = next((x for x in st.att.values() if x["task"] == name), {})

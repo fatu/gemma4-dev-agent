@@ -41,7 +41,7 @@ dropped too.
 
 ---
 
-## B-11 · MetaCurate's method inside the competition harness: GLM-5.3 trajectories under the V21 setting → an E4B LoRA with loss on the tool calls only (plan 2026-11-18) — ▶ **step 2 on the 8-card box is ready** (commands at the end of this section); step 1's last laptop part (rules, converter) is being written beside it
+## B-11 · MetaCurate's method inside the competition harness: GLM-5.3 trajectories under the V21 setting → an E4B LoRA with loss on the tool calls only (plan 2026-11-18) — ▶ **step 2 done 2026-11-18, step 3 (pilot) written** (commands at the end of this section); step 1's last laptop part (rules, converter) is being written beside it
 
 **Why.** B-9 part 3 (closed 2026-11-18) trained on MetaCurate's public trajectories, which are in mini-swe-agent's
 one-tool `bash` format and cannot be used in the competition harness; inside mini-swe-agent the action-only LoRA
@@ -372,6 +372,47 @@ Read: a `budget:` line (either nothing about the flag, or "has no --verification
 `--max-tool-calls 36` in the harness command; the 3 SWE-rebench shim lines end with `PREP ok`; no attempt over
 36 tool calls; the two new `inspect` lines (calls with / without thought text); cost per attempt. Stop and photo if
 a SWE-rebench shim line fails again or an attempt shows more than 36 tool calls.
+
+**Step 2 result · fourth try (2026-11-18, photo; $1.16 by price estimate, 165 model calls, 5 attempts) · the
+gate is met; step 2 is done.** Total paid over the four tries: $1.80.
+
+| gate | result |
+|---|---|
+| budget flags | only `--verification-timeout-seconds` left out; `--max-tool-calls 36` and the rest passed |
+| 6 shim lines end with `PREP ok` | 6 of 6 · SWE-rebench 0.4–0.8 s · V2 1.1–3.5 s |
+| gold (at least 4 go on) | 5 of 6; the one dropped needs the network in its tests |
+| empty patch | 0 of 6 resolved |
+| tool calls ≤ 36 | highest 36, none over |
+| thought text on every call with reported reasoning tokens | 73 of 73 |
+| ledger | spent > 0; all 165 calls priced by estimate (the gateway reports no cost) |
+
+Also on the photo: resolved 1 of 5, the other 4 submitted a patch of 1.3–2 k characters (5 attempts: no reading of
+the solve rate); cost per attempt mean $0.23 · p95 $0.32 · max $0.32; one call ended on the 8,192 output-token
+limit; the 92 calls without thought have a median of 49 output tokens and 0 reported reasoning tokens (share with
+thought 44.2 %, as in the third try). The thought gate used is the one proposed after the third try; the old
+"≥ 90 %" text is now out of the scripts.
+
+**▶ Step 3 on the 8-card box · pilot: `pilot30`, one attempt per task, temperature 0.7 (paid: about $6, the
+ledger stops at $12; waits for the user's go).** Estimate: about 25 of the 30 tasks pass the gold check (5 of 6 in
+step 2) × $0.23 = about $6; at the highest attempt seen, $0.32, $8. `RESERVE_USD` stays 0.50 (above the $0.32 max).
+The pilot runs in the main directory `runs/teach`, so its attempts count as attempt 1 of the three when the full
+run starts there (no task is paid twice).
+```bash
+git pull && git log --oneline -1
+ls runs/b10/tasks/pilot30.ids || NAME=pilot30 N=30 bash scripts/rebench_mini.sh subset      # B-10's 30 tasks, seed 0
+ls runs/teach/all.ids         || bash scripts/teacher_gen.sh setup
+# a · the budget stop, on purpose: $1 lets about two attempts start, then "budget reached" and the run ends
+BUDGET_USD=1  RESERVE_USD=0.50 PRICE=<the same three numbers>  bash scripts/teacher_gen.sh pilot 2>&1 | tee runs/pilot_a.log    # 📷 the last 15 lines
+# b · the pilot itself: the same command with the real budget continues where a stopped
+BUDGET_USD=12 RESERVE_USD=0.50 PRICE=<the same three numbers>  bash scripts/teacher_gen.sh pilot 2>&1 | tee runs/pilot_b.log    # 📷 the report and inspect blocks
+```
+Read a: fewer attempts done than tasks, a budget line, spent ≤ about $1 (an attempt in flight may finish; the gate
+before each call stops it at $1). If all 30 run under a $1 budget, stop: the guard does not work.
+Read b (set before the data): gold pass count and the reasons of the dropped; resolved; state counts (done / infra /
+failed); attempts that used all 36 calls or the 7.5 minutes; compactions; `GATE … ok` on the inspect line; cost per
+attempt mean / p95 / max; seconds per attempt; image pulls (count and time). From these three numbers go to the
+user before anything larger starts: trajectories expected from 3 attempts on all tasks, the total cost, the days of
+pulling images. Rough figure today from 5 attempts, not a reading: about 3,000 attempts × $0.23 = about $700.
 
 ## B-10 · Our own MetaCurate-style data: teacher trajectories from GLM-5.3 through a gateway (plan 2026-11-13, revised the same day: generation settings as the paper, GLM-5.3 only, the official rule logic, SWE-Gym left out; **scope changed 2026-11-17: B-10 = data generation, the students are chosen afterwards**; **2026-11-18: generation continues in B-11, in the competition harness; the mini-swe-agent route below is kept as written and not run**) — step 1 `setup` ✓ · `check` ✓ for SWE-rebench-V2 · `diag` ✓ (2026-11-13: both SWE-rebench problems explained and fixed in the scripts) · ▶ **now on the box: the commands under "On the box now" below**, 📷 · **B-10b (2026-11-17): three data lines against the thought loops, gated on B-9 part 3 step 19 — see the end of this section**
 
