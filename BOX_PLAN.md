@@ -264,7 +264,8 @@ gateway reports no cost itself; without either the status line says "NO cost fig
 **Read (the gate, set before the data):**
 - the 6 `docker_task_shim:` lines end with `PREP ok` and name a python; the seconds per line are the cost of moving
   the repository (if any is over ~60 s, say so with the photo);
-- gold check: 6 of 6 resolve; `empty patch`: 0 resolved;
+- gold check: tasks whose gold patch does not resolve are dropped and counted, each with its reason (changed
+  2026-11-18 from "6 of 6", see the note below); at least 4 of the 6 go on; `empty patch`: 0 resolved;
 - `thoughts: … ≥ 90 %` in the `inspect` block; the tools called are among the 6; `finish reasons` end with a `stop`
   per trajectory (the text reply that ends the session);
 - the ledger line: spent > 0, and whether the calls are "priced by estimate" (then `PRICE` is what is charged);
@@ -276,6 +277,30 @@ task the B-10 check had passed · thoughts are under 90 %. For the thoughts ther
 at a time, each a new `check` (the ledger continues; `OUT=runs/teach_b` keeps the runs apart):
 `THINK=budget:4096` · `THINK=harness` · `API=chat` (the OpenAI request format). Nothing after step 2 starts before
 the photo is read.
+
+**Step 2, first two tries on the 8-card box (2026-11-18, photo; $0, no model call) · two notes before the third.**
+What the photo shows: the harness left after 7 s with `swegemma: error: unrecognized arguments:
+--verification-timeout-seconds 300`, and the gold check gave 5 of 6 — the one that failed has its target test passing
+(1 of 1) and 89 of 91 of the other tests; the 2 that fail install a package from the network inside the test. With
+the earlier try that is 2 of the 9 V2 tasks seen so far whose tests need the network. Not known: the share over all
+1,221 tasks, and whether SWE-rebench tasks show it (no number on the photo).
+
+1. *Gold gate.* The gold check is already the filter for such tasks: a task whose gold patch does not resolve under
+   our grader never goes to the teacher (`teacher_gen.py`, state `gold`). So no separate list of network tasks; the
+   gate line above now says "dropped and counted, with the reason" instead of "6 of 6". The code had no 6-of-6 stop,
+   only the text did.
+2. *The flag.* On the laptop the same version, swegemma 0.2.11, has the flag (`swegemma eval --help`; `cli.py` line
+   174), and the box's earlier `runs/dev33_*` runs passed it. So the likely cause is that this shell finds another
+   swegemma than the evaluation environment's — inferred, not seen. Check before choosing a way around:
+   ```bash
+   which -a swegemma
+   swegemma eval --help | grep -c verification-timeout          # 1 = the flag exists
+   python3 -c "import swegemma, importlib.metadata as m; print(m.version('swegemma'), swegemma.__file__)"
+   ```
+   Another environment's swegemma → run `check` from the environment the dev33 runs used; no script change.
+   The same package without the flag → `BUDGET=none bash scripts/teacher_gen.sh check` (the harness then reads the
+   budgets from `runs/subs/v21_e4b/eval_config.yaml`; print that file first: 36 calls, 7.5 minutes, 240 s, 80 turns)
+   and 📷 the three lines above. Do not edit `eval_dev.sh` on the box.
 
 ## B-10 · Our own MetaCurate-style data: teacher trajectories from GLM-5.3 through a gateway (plan 2026-11-13, revised the same day: generation settings as the paper, GLM-5.3 only, the official rule logic, SWE-Gym left out; **scope changed 2026-11-17: B-10 = data generation, the students are chosen afterwards**; **2026-11-18: generation continues in B-11, in the competition harness; the mini-swe-agent route below is kept as written and not run**) — step 1 `setup` ✓ · `check` ✓ for SWE-rebench-V2 · `diag` ✓ (2026-11-13: both SWE-rebench problems explained and fixed in the scripts) · ▶ **now on the box: the commands under "On the box now" below**, 📷 · **B-10b (2026-11-17): three data lines against the thought loops, gated on B-9 part 3 step 19 — see the end of this section**
 

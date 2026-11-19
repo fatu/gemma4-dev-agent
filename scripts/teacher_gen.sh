@@ -79,7 +79,7 @@ PYEOF
   cp "$OUT/check6.ids" "$TASKS_DIR/check6_empty.ids"
   $PY scripts/rebench_mini.py grade --tasks "$TASKS_DIR" --name check6_empty --preds empty --out "$OUT/grade/check6_empty" 2>&1 | tail -4 | sed 's/^/  empty patch · /'
   $PY scripts/teacher_gen.py inspect --out "$OUT" --name check6
-  echo "  📷 from 'teacher_gen check' down. Gate: gold resolves on the 6, the empty patch on none, the 6 shim lines end with 'PREP ok', thoughts ≥ 90 %." ;;
+  echo "  📷 from 'teacher_gen check' down. Gate: gold-failing tasks are dropped and counted (at least 4 of 6 go on), the empty patch resolves on none, the 6 shim lines end with 'PREP ok', thoughts ≥ 90 %." ;;
 pilot)
   need_env; ledger
   [ -f "$TASKS_DIR/pilot30.ids" ] || { echo "STOP: no $TASKS_DIR/pilot30.ids (B-10: NAME=pilot30 N=30 bash scripts/rebench_mini.sh subset)"; exit 1; }
