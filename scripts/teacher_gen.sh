@@ -10,7 +10,7 @@
 # Knobs (each printed): API messages|chat (the request format) · TEMP 0.7 · THINK effort:high (CEIL_THINK form) · CONC 4 ·
 # ATTEMPTS 3 · CHUNK 50 · BUDGET_USD (the ledger's budget; set by setup/check/pilot/gen ONLY when given) · PRICE "in,cached,out"
 # $ per 1M tokens (used when the gateway reports no cost) · RESERVE_USD (per attempt) · KEEP_IMAGES 0 · MIN_FREE_GB 50 ·
-# OUT runs/teach · TABLE runs/b10/tasks/all.jsonl · SUBMISSION runs/subs/v21_e4b · EXCLUDE_REPOS (files, one owner/name per line;
+# SOURCES rebench,v2 (task sources kept by setup; SWE-Gym is left out, `all` keeps every source) · OUT runs/teach · TABLE runs/b10/tasks/all.jsonl · SUBMISSION runs/subs/v21_e4b · EXCLUDE_REPOS (files, one owner/name per line;
 # default: the 4 repositories of the evaluation tasks. splits/b7_repos.txt lists the repositories of the B-7 task sets: adding
 # it would remove about 31 % of the tasks, so a later evaluation on B-7 tasks takes only tasks of repositories not trained on).
 set -uo pipefail
@@ -59,7 +59,7 @@ setup)
   echo "  V21 files: prompt $(wc -c < "$SUBMISSION/prompts/system.md") bytes sha256 $(sha256sum "$SUBMISSION/prompts/system.md" | cut -c1-16) (expected 4814 · 794e38a822fd18c7) · tools $(grep -c '^  - ' "$SUBMISSION/agent.yaml") · $(tr '\n' ' ' < "$SUBMISSION/eval_config.yaml" | tr -s ' ') · $(grep -E 'temperature|max_output|thinking_budget' "$SUBMISSION/configs/sampling.yaml" | tr '\n' ' ' | tr -s ' ')"
   [ -f "$TABLE" ] || { echo "  no task table $TABLE: bash scripts/rebench_mini.sh setup → stop"; exit 1; }
   EX=(); for f in $EXCLUDE_REPOS; do [ -f "$f" ] || { echo "  no $f (repositories to keep out of the training data) → stop"; exit 1; }; EX+=(--exclude-repos "$f"); done
-  $PY scripts/teacher_gen.py tasks --table "$TABLE" --out "$OUT" "${EX[@]}" | sed 's/^/  /'
+  $PY scripts/teacher_gen.py tasks --table "$TABLE" --out "$OUT" --sources "${SOURCES:-rebench,v2}" "${EX[@]}" | sed 's/^/  /'
   $PY scripts/teach_ledger.py selftest | sed 's/^/  /'; $PY scripts/docker_task_shim.py selftest | sed 's/^/  /'
   echo "  📷 every line from 'teacher_gen setup' down" ;;
 check)

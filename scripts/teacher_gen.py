@@ -127,6 +127,7 @@ def cmd_tasks(a):
     for f in a.exclude_repos or []:
         excl |= {x.strip().lower() for x in open(f) if x.strip() and not x.startswith("#")}
     n = collections.Counter(); keep = []
+    src = {x for x in (getattr(a, "sources", None) or "").replace(",", " ").split() if x and x != "all"}
     for line in open(a.table):
         if not line.strip():
             continue
@@ -135,6 +136,8 @@ def cmd_tasks(a):
             n["skip: " + str(r["skip"])[:40]] += 1; continue
         if (r.get("repo") or "").lower() in excl:
             n["excluded repository"] += 1; continue
+        if src and str(r.get("source")) not in src:
+            n["left out · source " + str(r.get("source"))] += 1; continue
         keep.append(r); n["kept · " + str(r.get("source"))] += 1
     os.makedirs(a.out, exist_ok=True)
     with open(os.path.join(a.out, "tasks.jsonl"), "w") as f:
@@ -142,7 +145,7 @@ def cmd_tasks(a):
             f.write(json.dumps({"instance_id": r["instance_id"], "repo": r["repo"], "base_commit": r.get("base_commit") or "",
                                 "problem_statement": r.get("problem_statement") or "", "hints_text": ""}) + "\n")
     open(os.path.join(a.out, "all.ids"), "w").write("\n".join(r["instance_id"] for r in keep) + "\n")
-    print(f"teacher_gen tasks · table {a.table} · excluded repositories {len(excl)} from {a.exclude_repos or 'none'} → "
+    print(f"teacher_gen tasks · sources {' '.join(sorted(src)) if src else 'all'} · table {a.table} · excluded repositories {len(excl)} from {a.exclude_repos or 'none'} → "
           f"{len(keep)} tasks in {a.out}/tasks.jsonl (4 fields, no tests) and all.ids")
     for k, v in sorted(n.items()):
         print(f"   {k:40} {v}")
@@ -442,10 +445,13 @@ def selftest():
         tab = os.path.join(d, "all.jsonl")
         rows = [{"instance_id": "a__b-1", "repo": "a/b", "source": "rebench", "base_commit": "c1", "problem_statement": "p", "FAIL_TO_PASS": ["t"], "image_name": "i1"},
                 {"instance_id": "a__b-2", "repo": "a/b", "source": "rebench", "skip": "no test_cmd"},
-                {"instance_id": "x__y-3", "repo": "X/Y", "source": "v2", "base_commit": "c3", "problem_statement": "q", "image_name": "i3"}]
+                {"instance_id": "x__y-3", "repo": "X/Y", "source": "v2", "base_commit": "c3", "problem_statement": "q", "image_name": "i3"},
+                {"instance_id": "g__h-4", "repo": "g/h", "source": "gym", "base_commit": "c4", "problem_statement": "r", "image_name": "i4"}]
         open(tab, "w").write("\n".join(json.dumps(r) for r in rows) + "\n")
         ex = os.path.join(d, "ex.txt"); open(ex, "w").write("x/y\n")
-        cmd_tasks(argparse.Namespace(table=tab, out=os.path.join(d, "o"), exclude_repos=[ex]))
+        cmd_tasks(argparse.Namespace(table=tab, out=os.path.join(d, "o"), exclude_repos=[ex], sources="all"))
+        assert open(os.path.join(d, "o", "all.ids")).read().split() == ["a__b-1", "g__h-4"]
+        cmd_tasks(argparse.Namespace(table=tab, out=os.path.join(d, "o"), exclude_repos=[ex], sources="rebench,v2"))
         T = [json.loads(l) for l in open(os.path.join(d, "o", "tasks.jsonl"))]
         assert [t["instance_id"] for t in T] == ["a__b-1"] and set(T[0]) == {"instance_id", "repo", "base_commit", "problem_statement", "hints_text"}, T
         # classify
@@ -464,7 +470,7 @@ def selftest():
         assert S.open_tasks(["t1", "t2", "t3"], 1, 2) == ["t3"]                                               # tries > retries: left alone
         S2 = State(os.path.join(d, "s"))
         assert S2.att[("t1", 1)]["tries"] == 3 and S2.open_tasks(["t2"], 1, 2) == [] and S2.open_tasks(["t2"], 2, 2) == ["t2"]
-        print("teacher_gen selftest: task conversion (skip rows, excluded repositories, no test fields), 7 result classes, "
+        print("teacher_gen selftest: task conversion (skip rows, excluded repositories, sources kept, no test fields), 7 result classes, "
               "state file (last line wins, retry limit, resume) → all as expected")
     finally:
         shutil.rmtree(d, ignore_errors=True)
@@ -475,6 +481,7 @@ def main():
     sub = ap.add_subparsers(dest="cmd", required=True)
     s = sub.add_parser("tasks"); s.add_argument("--table", required=True); s.add_argument("--out", required=True)
     s.add_argument("--exclude-repos", action="append")
+    s.add_argument("--sources", default="rebench,v2", help="task sources kept (the table's `source` field); `all` keeps every source")
     for name in ("gen", "report", "inspect"):
         s = sub.add_parser(name); s.add_argument("--out", required=True)
         s.add_argument("--ids"); s.add_argument("--name", default="gen" if name == "gen" else "")

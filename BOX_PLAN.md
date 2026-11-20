@@ -536,6 +536,53 @@ of its tasks · a gold line drops more than a quarter of a chunk · "waiting …
 disk nears `MIN_FREE_GB`. The trajectories of the first pilot (`runs/teach`, no reminder) are not training data;
 they stay as the comparison.
 
+**Reminder pilot, read on the laptop from the uploaded run (2026-11-20; 27 tasks, 621 model calls, $3.35 by the
+box's ledger).** Three of the four readings hold; the thought reading does not.
+
+| reading | no reminder | with the reminder | |
+|---|---|---|---|
+| trajectory-log lines carrying the reminder | – | 0 | holds |
+| calls with a thought | 40.5 % | 68.0 % (422 of 621) | **below the 90 % set in advance** |
+| resolved | 16 of 27 | 15 of 27 (15 the same tasks) | holds |
+| cost per attempt | mean $0.105 · p95 $0.207 | mean $0.124 · max $0.354 | recorded |
+
+Where the thoughts are missing (my recount; every call of the 28 trajectory files read by script, thoughts not read one by one):
+- **It falls with depth:** calls 1–3 94 %, 4–8 73 %, 9–25 64 %, 26 and later 48 %. No assistant message in any request
+  history carries a thought (0 of all messages): the harness sends earlier turns back as bare tool calls.
+  Whether that is the cause of the fall was not tested.
+- **Of the 573 turns that call a tool:** thought 70.2 % (402), no thought but a sentence of visible text before the call
+  13.4 % (77, median 90 characters), neither 16.4 % (94; 79 of them `run_command`, mostly reading files).
+- No call lost a thought in transit (0 calls with reasoning tokens and no text). Thought length: median 442 characters,
+  29 % are 150 or shorter. 48 replies carry no tool call; 26 of them are a summary after `submit_patch`.
+
+**Two defects of mine found in the same data, both fixed here:**
+- *Commands started in `/`, not `/workspace`* (the shim created the container with working directory `/`; in the
+  competition's own container it is `/workspace`). In 24 of 28 trajectories the second call's thought is about the
+  wrong directory: one of 36 calls lost per task, and commands prefixed with `cd /workspace`, which the student would
+  copy. Fix: the container's working directory is `/workspace`; after the prepare the shim runs `pwd -P` the way the
+  harness runs a command and stops the task when it is not `/workspace`. Tested with the stub only — no Docker on the
+  laptop; the first tasks on the box are the test (log line `commands start in /workspace`).
+- *SWE-Gym was in the task list* (setup log: `kept · gym 194`; the decision was SWE-rebench and V2 only). New knob
+  `SOURCES` (default `rebench,v2`, printed by setup; `all` keeps every source). Expected after it: 686 + 529 = 1,215 tasks.
+  Both pilots ran `pilot30`, which has no SWE-Gym task, so their numbers stand.
+
+**Proposal for the thoughts (waits for the user):** generate with the reminder as it is, and settle the matter where
+it does harm — in the labels: in version A, a turn whose call has no teacher thought stays in the context but gets no
+loss (counted). Then no label teaches "call without thinking", whatever the teacher's rate. Cost: about 30 % of the
+tool calls give no label; the reminder already raised the labelled share from about 40 % to 70 % for 18 % more money.
+Version B (no thoughts at all) is not affected. Not chosen: sending earlier thoughts back to the teacher — its only
+evidence is a replay of one trajectory, the same kind of test that said 96 % for the reminder and gave 68 % live.
+
+**▶ Step 4 on the 8-card box, after the user's go (replaces the scale line above):**
+```bash
+git pull && git log --oneline -1
+export OUT=runs/teach_r REMINDER=1
+bash scripts/teacher_gen.sh setup | tail -12        # 📷 `sources rebench v2`, `left out · source gym 194`, 1,215 tasks
+BUDGET_USD=800 RESERVE_USD=0.40 PRICE=<same three numbers>  nohup bash scripts/teacher_gen.sh gen > runs/gen_r.log 2>&1 &
+grep -m3 "commands start in" runs/gen_r.log         # 📷 after the first batch; a task stopping here = the fix failed
+```
+`RESERVE_USD` 0.40 because one attempt cost $0.354. Estimate: about 3,400 attempts × $0.124 ≈ $420 (roughly $350–$550).
+
 ## B-10 · Our own MetaCurate-style data: teacher trajectories from GLM-5.3 through a gateway (plan 2026-11-13, revised the same day: generation settings as the paper, GLM-5.3 only, the official rule logic, SWE-Gym left out; **scope changed 2026-11-17: B-10 = data generation, the students are chosen afterwards**; **2026-11-18: generation continues in B-11, in the competition harness; the mini-swe-agent route below is kept as written and not run**) — step 1 `setup` ✓ · `check` ✓ for SWE-rebench-V2 · `diag` ✓ (2026-11-13: both SWE-rebench problems explained and fixed in the scripts) · ▶ **now on the box: the commands under "On the box now" below**, 📷 · **B-10b (2026-11-17): three data lines against the thought loops, gated on B-9 part 3 step 19 — see the end of this section**
 
 **On the box now (2026-11-13, after `diag`; no tokens except a few cents for the probe).**

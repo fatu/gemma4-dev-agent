@@ -98,19 +98,24 @@ def start_task_container(manager, iid, out=print):
     c = manager.client.containers.run(
         r["image_name"], entrypoint=["sleep"], command=["infinity"], detach=True,
         network_mode=cfg.network_mode, mem_limit=cfg.mem_limit, cpu_period=cfg.cpu_period, cpu_quota=cfg.cpu_quota,
-        working_dir="/", environment=env)
+        working_dir="/workspace", environment=env)   # the harness's commands run in the container's working directory
     cid = str(c.id or "")
     with manager._lock:
         manager._active_containers.add(cid)
         if manager._default_container_id is None:
             manager._default_container_id = cid
-    res = c.exec_run(cmd=["/bin/bash", "-c", prepare_script(r["workdir"])], stdout=True, stderr=True)
+    res = c.exec_run(cmd=["/bin/bash", "-c", prepare_script(r["workdir"])], stdout=True, stderr=True, workdir="/")
     text = (res.output or b"").decode("utf-8", "replace").strip()
     last = text.splitlines()[-1] if text else ""
-    out(f"docker_task_shim: {iid} · image {r['image_name']} · workdir {r['workdir']} → /workspace · {time.time() - t0:.1f} s · "
+    out(f"docker_task_shim: {iid} · image {r['image_name']} · workdir {r['workdir']} → /workspace · commands start in /workspace · {time.time() - t0:.1f} s · "
         f"exit {res.exit_code} · {last[:200]}", flush=True)
     if res.exit_code != 0:
         raise RuntimeError(f"docker_task_shim: preparing {iid} failed (exit {res.exit_code}): {text[-400:]}")
+    # the harness runs the model's commands without a working directory of its own: check where such a command lands
+    here = c.exec_run(cmd=["/bin/bash", "-c", "pwd -P"], stdout=True, stderr=True)
+    where = (here.output or b"").decode("utf-8", "replace").strip().splitlines()[-1:]
+    if where != ["/workspace"]:
+        raise RuntimeError(f"docker_task_shim: {iid}: commands start in {where!r}, not /workspace")
     return cid
 
 
@@ -163,12 +168,15 @@ def selftest():
 
     class C:
         id = "cid123"
+        pwd = b"/workspace\n"
 
         def __init__(self, code=0):
-            self.code, self.cmds = code, []
+            self.code, self.cmds, self.kws = code, [], []
 
         def exec_run(self, cmd, **kw):
-            self.cmds.append(cmd)
+            self.cmds.append(cmd); self.kws.append(kw)
+            if cmd[-1] == "pwd -P":
+                return Exec(0, self.pwd)
             return Exec(self.code, b"line 1\nPREP ok \xc2\xb7 conda none" if not self.code else b"no repository at /testbed")
 
     class Containers:
@@ -195,12 +203,17 @@ def selftest():
     assert start_task_container(m, "a__b-1", out=lambda *a, **k: log.append(a[0])) == "cid123"
     image, kw = m.client.containers.calls[0]
     assert image.startswith("swerebench/") and kw["entrypoint"] == ["sleep"] and kw["command"] == ["infinity"] and kw["network_mode"] == "none"
-    assert kw["environment"] == {"TEST_TMPDIR": "/tmp", "BASH_ENV": "/etc/swegemma_env.sh"} and kw["working_dir"] == "/" and kw["mem_limit"] == "4g"
+    assert kw["environment"] == {"TEST_TMPDIR": "/tmp", "BASH_ENV": "/etc/swegemma_env.sh"} and kw["working_dir"] == "/workspace" and c.kws[0].get("workdir") == "/" and kw["mem_limit"] == "4g"
     assert m._active_containers == {"cid123"} and m._default_container_id == "cid123"
     assert "mv /testbed /workspace" in c.cmds[0][2] and "PREP ok" in log[0] and "exit 0" in log[0]
     m, c = manager()
     start_task_container(m, "c__d-2", out=lambda *a, **k: None)
     assert "mv /d /workspace" in c.cmds[0][2] and "ln -s /workspace /d" in c.cmds[0][2]
+    m, c = manager(); c.pwd = b"/\n"
+    try:
+        start_task_container(m, "a__b-1", out=lambda *a, **k: None); raise AssertionError("no error")
+    except RuntimeError as e:
+        assert "commands start in" in str(e), e
     for iid, word in (("e__f-3", "cannot run"), ("zz", "not in")):
         try:
             start_task_container(manager()[0], iid, out=lambda *a, **k: None); raise AssertionError("no error")
@@ -229,7 +242,7 @@ def selftest():
     import shutil
     shutil.rmtree(d)
     print("docker_task_shim selftest: per-task image and limits, /workspace move with the reverse link, BASH_ENV file, "
-          "a skipped / unknown task and a failed prepare raise with the task named, later refs removed by the real script → all as expected")
+          "commands start in /workspace (checked after the prepare; elsewhere raises), a skipped / unknown task and a failed prepare raise with the task named, later refs removed by the real script → all as expected")
 
 
 install()
