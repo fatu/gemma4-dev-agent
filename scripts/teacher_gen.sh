@@ -20,11 +20,11 @@ PY=.venv-eval/bin/python
 OUT="${OUT:-runs/teach}"; TABLE="${TABLE:-runs/b10/tasks/all.jsonl}"; TASKS_DIR="${TASKS_DIR:-runs/b10/tasks}"
 SUBMISSION="${SUBMISSION:-runs/subs/v21_e4b}"; API="${API:-messages}"; TEMP="${TEMP:-0.7}"; THINK="${THINK:-effort:high}"
 CONC="${CONC:-4}"; ATTEMPTS="${ATTEMPTS:-3}"; CHUNK="${CHUNK:-50}"; KEEP_IMAGES="${KEEP_IMAGES:-0}"; MIN_FREE_GB="${MIN_FREE_GB:-50}"
-RESERVE_USD="${RESERVE_USD:-}"; BUDGET_USD="${BUDGET_USD:-}"; PRICE="${PRICE:-}"; EXCLUDE_REPOS="${EXCLUDE_REPOS:-splits/eval_repos.txt}"
+export REMINDER="${REMINDER:-0}"; RESERVE_USD="${RESERVE_USD:-}"; BUDGET_USD="${BUDGET_USD:-}"; PRICE="${PRICE:-}"; EXCLUDE_REPOS="${EXCLUDE_REPOS:-splits/eval_repos.txt}"
 ALIAS=gemma-4-e4b-it-qat-w4a16-ct
 BASE_NAME=$([ -n "${GATEWAY_BASE_URL:-}" ] && echo GATEWAY_BASE_URL || { [ -n "${ANTHROPIC_BASE_URL:-}" ] && echo ANTHROPIC_BASE_URL || echo ""; })
 KEY_NAME=$(for k in GATEWAY_API_KEY ANTHROPIC_AUTH_TOKEN ANTHROPIC_API_KEY; do [ -n "${!k:-}" ] && { echo $k; break; }; done)
-echo "teacher_gen $STEP · out $OUT · table $TABLE · submission $SUBMISSION · api $API · temperature $TEMP · thinking $THINK · conc $CONC · attempts $ATTEMPTS · chunk $CHUNK · keep images $KEEP_IMAGES · min free $MIN_FREE_GB GB · reserve ${RESERVE_USD:-unset} · budget ${BUDGET_USD:-unchanged} · price ${PRICE:-unset} · teacher $([ -n "${TEACHER:-}" ] && echo set || echo MISSING) · address from ${BASE_NAME:-MISSING} · key from ${KEY_NAME:-MISSING} · code $(git log --oneline -1 | cut -c1-60)"
+echo "teacher_gen $STEP · out $OUT · table $TABLE · submission $SUBMISSION · api $API · temperature $TEMP · thinking $THINK · reminder $REMINDER (1 = think-before-every-call line in the teacher's request only) · conc $CONC · attempts $ATTEMPTS · chunk $CHUNK · keep images $KEEP_IMAGES · min free $MIN_FREE_GB GB · reserve ${RESERVE_USD:-unset} · budget ${BUDGET_USD:-unchanged} · price ${PRICE:-unset} · teacher $([ -n "${TEACHER:-}" ] && echo set || echo MISSING) · address from ${BASE_NAME:-MISSING} · key from ${KEY_NAME:-MISSING} · code $(git log --oneline -1 | cut -c1-60)"
 
 need_env() {
   [ -n "${TEACHER:-}" ] && [ -n "$BASE_NAME" ] && [ -n "$KEY_NAME" ] || { echo "STOP: TEACHER, an address and a key are needed in this shell (names above; type them here, never into a file under git)"; exit 1; }

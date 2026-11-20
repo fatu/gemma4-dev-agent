@@ -100,7 +100,7 @@ TOOLS = [{"type": "function", "function": {"name": "run_command", "description":
     {"type": "function", "function": {"name": "submit_patch", "description": "submit", "parameters": {"type": "object", "properties": {}}}}]
 
 
-def _one(think, fmt, tmp):
+def _one(think, fmt, tmp, extra_env=None):
     """a fresh interpreter per CEIL_THINK form (the adapter reads its knobs at import)"""
     import subprocess
     code = r'''
@@ -112,6 +112,10 @@ import ceil_sitecustomize, litellm
 model = ("anthropic/" if os.environ["FAKE_FMT"] == "anthropic" else "openai/") + "stand-in-teacher"
 base = f"http://127.0.0.1:{port}" + ("" if os.environ["FAKE_FMT"] == "anthropic" else "/v1")
 msgs = [{"role": "system", "content": "sys"}, {"role": "user", "content": "task"}]
+if os.environ.get("FAKE_TOOLMSG"):     # an agent request as the harness sends it after a tool ran: the last message is the tool's
+    msgs += [{"role": "assistant", "content": None, "tool_calls": [{"id": "c1", "type": "function", "function": {"name": "run_command", "arguments": "{\"command\": \"ls\"}"}}]},
+             {"role": "tool", "tool_call_id": "c1", "content": "{\"stdout\": \"a.py\"}"}]
+before = json.dumps(msgs)
 out = {"calls": 0, "reasoning": 0, "gated": False}
 try:
     for i in range(8):
@@ -123,10 +127,12 @@ try:
         out["tool"] = m.tool_calls[0].function.name
 except teach_ledger.BudgetReached:
     out["gated"] = True
+out["caller_messages_unchanged"] = json.dumps(msgs) == before
 print("RESULT " + json.dumps(out))
 '''
     env = dict(os.environ, FAKE_DIR=tmp, FAKE_FMT=fmt, CEIL_TEMP="0.7", CEIL_THINK=think, CEIL_GEMMA_CTX="0",
                TEACH_LEDGER_DIR=os.path.join(tmp, "ledger"), TEACH_ATTEMPT="2", CEIL_CALL_LOG=os.path.join(tmp, "calls.jsonl"))
+    env.update(extra_env or {})
     if fmt == "openai":
         env["CEIL_REMOTE"] = "1"
     p = subprocess.run([sys.executable, "-c", code], env=env, capture_output=True, text=True, timeout=180)
@@ -168,6 +174,33 @@ def selftest():
             rows.append(f"{think} [{fmt}]: {len(B)} calls · temperature 0.7 · thought returned {res['reasoning']}/{res['calls']} · charged ${st['spent_usd']:.5f}")
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
+    # the reminder: at the end of the last message of the request the server receives, on both routes, after a user and
+    # after a tool message; the caller's own message list (what the harness keeps and the trajectory log sees) unchanged
+    for fmt in ("anthropic", "openai"):
+        for toolmsg in ("", "1"):
+            tmp = tempfile.mkdtemp(prefix="teach_fake_")
+            try:
+                teach_ledger.Ledger(os.path.join(tmp, "ledger")).init(1.0, [1.0, 0.1, 4.0])
+                res, banner_r = _one("effort:high", fmt, tmp, {"CEIL_REMINDER": "1", "FAKE_TOOLMSG": toolmsg})
+                B = [x["body"] for x in bodies(tmp)]
+                assert len(B) == 8 and res["caller_messages_unchanged"], res
+                for b in B:
+                    last = json.dumps(b["messages"][-1]); rest = json.dumps(b["messages"][:-1]) + json.dumps(b.get("system", ""))
+                    assert "<reminder>Before EVERY tool call" in last and last.count("<reminder>") == 1 and "<reminder>" not in rest, last[:300]
+                assert "reminder on" in banner_r, banner_r
+                logged = [json.loads(l) for l in open(os.path.join(tmp, "calls.jsonl"))]
+                assert all(x.get("reminder") is True for x in logged), logged[:1]
+                rows.append(f"reminder [{fmt}, last message {'tool' if toolmsg else 'user'}]: in the last message of 8/8 requests, once; the caller's messages unchanged")
+            finally:
+                shutil.rmtree(tmp, ignore_errors=True)
+    tmp = tempfile.mkdtemp(prefix="teach_fake_")       # off by default: no request carries it
+    try:
+        teach_ledger.Ledger(os.path.join(tmp, "ledger")).init(1.0, [1.0, 0.1, 4.0])
+        res, b0 = _one("effort:high", "anthropic", tmp, {"FAKE_TOOLMSG": "1"})
+        assert "<reminder>" not in json.dumps([x["body"] for x in bodies(tmp)]) and "reminder off" in b0
+        rows.append("reminder unset: in 0 requests")
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
     # the gate: a budget of 3 calls stops the 4th
     tmp = tempfile.mkdtemp(prefix="teach_fake_")
     try:

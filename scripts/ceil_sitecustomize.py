@@ -76,9 +76,35 @@ if litellm is not None:
         raise ValueError(f"CEIL_THINK={_THINK!r}: adaptive | off | harness | budget:<n> | effort:<level> | extra:<json>")
 
     _TK, _TB = _think_kwargs()
+    # CEIL_REMINDER (B-11, the user's decision of 2026-11-20): a line added to the END of the last message of every
+    # agent request (one that carries tools), so the teacher reasons before every tool call. It exists only in the
+    # request that leaves this adapter: the harness's history is not touched (a copy is changed), the trajectory log
+    # (traj_log.py wraps this adapter and sees the request before it) and the Gemma token count do not contain it,
+    # and so no training prompt does. unset / 0 = off · 1 = the default text · anything else = that text.
+    _REM_DEFAULT = ("<reminder>Before EVERY tool call, including simple ones like reading a file or running a command, first reason briefly "
+                    "in your thinking about why this step is needed and what you expect to see.</reminder>")
+    _REM = os.environ.get("CEIL_REMINDER", "")
+    _REM = "" if _REM in ("", "0") else _REM_DEFAULT if _REM == "1" else _REM
+    _REM_N = [0, 0]                   # requests with the reminder · agent requests without (last message not user / tool)
+
+    def _remind(kwargs):
+        msgs = kwargs.get("messages")
+        if not _REM or not kwargs.get("tools") or not isinstance(msgs, list) or not msgs:
+            return
+        last = msgs[-1]
+        if not isinstance(last, dict) or last.get("role") not in ("user", "tool"):
+            _REM_N[1] += 1; return
+        last = dict(last); c = last.get("content")
+        if isinstance(c, list):
+            last["content"] = list(c) + [{"type": "text", "text": _REM}]
+        else:
+            last["content"] = (c or "") + "\n\n" + _REM
+        kwargs["messages"] = msgs[:-1] + [last]; _REM_N[0] += 1
     print(f"ceil adapter: temperature {'as sent by the harness / dropped by the provider rule' if _TEMP is None else _TEMP} (CEIL_TEMP) · "
           f"thinking {_THINK} (CEIL_THINK) · every model remote {_REMOTE_ALL} (CEIL_REMOTE) · "
-          f"ledger {os.environ.get('TEACH_LEDGER_DIR') or 'off'} · attempt {_ATTEMPT} (TEACH_ATTEMPT)", flush=True)
+          f"ledger {os.environ.get('TEACH_LEDGER_DIR') or 'off'} · attempt {_ATTEMPT} (TEACH_ATTEMPT) · "
+          f"reminder {('on, ' + str(len(_REM)) + ' chars, sha ' + __import__('hashlib').sha256(_REM.encode()).hexdigest()[:8] + ': ' + _REM[:60] + '…') if _REM else 'off'} (CEIL_REMINDER; "
+          f"in the outgoing request only, never in the trajectory log)", flush=True)
 
     def _is_remote(model):
         return _REMOTE_ALL or "anthropic/" in model or model.startswith("claude")
@@ -142,6 +168,7 @@ if litellm is not None:
                 kwargs["temperature"] = _TEMP; kwargs.pop("top_p", None)     # one of the two, as the provider advises
             for k in ("top_k",):
                 kwargs.pop(k, None)
+            _remind(kwargs)
             if isinstance(kwargs.get("messages"), list):
                 kwargs["messages"] = _cache(kwargs["messages"])
         elif extra is not None:
@@ -227,7 +254,7 @@ if litellm is not None:
         rec = {"t": round(time.time(), 1), "s": round(time.time() - t0, 2), "model": kwargs.get("model"),
                "in": own if own is not None else d.get("prompt_tokens"), "gemma_in": gemma, "out": d.get("completion_tokens"),
                "reasoning": (d.get("completion_tokens_details") or {}).get("reasoning_tokens") if isinstance(d.get("completion_tokens_details"), dict) else None,
-               "temp": kwargs.get("temperature"),
+               "temp": kwargs.get("temperature"), "reminder": bool(_REM) and _REM in json.dumps(kwargs.get("messages")[-1:] if isinstance(kwargs.get("messages"), list) else "", default=str),
                "cache_read": (d.get("prompt_tokens_details") or {}).get("cached_tokens") if isinstance(d.get("prompt_tokens_details"), dict) else d.get("cache_read_input_tokens"),
                "cache_write": d.get("cache_creation_input_tokens"), "err": (str(err)[:160] if err else None)}
         try:

@@ -41,7 +41,7 @@ dropped too.
 
 ---
 
-## B-11 · MetaCurate's method inside the competition harness: GLM-5.3 trajectories under the V21 setting → an E4B LoRA with loss on the tool calls only (plan 2026-11-18) — ▶ **steps 2–3 done, step 4 (scale) written 2026-11-20, waits for the go** (commands at the end of this section); step 1's last laptop part (rules, converter) is being written beside it
+## B-11 · MetaCurate's method inside the competition harness: GLM-5.3 trajectories under the V21 setting → an E4B LoRA with loss on the tool calls only (plan 2026-11-18) — ▶ **steps 2–3 done, step 4 (scale, with the reminder) written 2026-11-20** (commands at the end of this section); step 1's last laptop part (rules, converter) is being written beside it
 
 **Why.** B-9 part 3 (closed 2026-11-18) trained on MetaCurate's public trajectories, which are in mini-swe-agent's
 one-tool `bash` format and cannot be used in the competition harness; inside mini-swe-agent the action-only LoRA
@@ -474,7 +474,7 @@ rate is not known. What the 40 % does to training is a rendering question for st
 thought the first labelled token is the tool call's opening, which teaches "call without thinking"; on turns with a
 thought no token says "think first") — to be settled there with the label audit, not by changing the generation.
 
-**▶ Step 4 on the 8-card box · scale (paid; waits for the user's go and budget).**
+**Step 4 as first written (superseded the same day by "Step 4, with the reminder" below — do not run this block):**
 ```bash
 git pull && git log --oneline -1
 wc -l runs/teach/all.ids                                   # 📷 N
@@ -488,6 +488,52 @@ tail -f runs/gen_all.log                                   # one line per batch;
 `runs/teach`, which already holds the pilot's $2.85 and the first check. The same command continues after any stop.
 Stop and photo if: a batch line shows `infra` on most of its tasks · the gold line shows more than a quarter
 dropped in a chunk · "waiting … min" repeats past 4 tries on the same chunk · free disk nears `MIN_FREE_GB`.
+
+**Decision (user, 2026-11-20): the teacher gets the reminder; no training prompt contains it.** Why the mixed
+thoughts could not simply be used: with the loss on tool calls only, a turn without a teacher thought puts its first
+label on the tool call's opening, which teaches "call without thinking", and a turn with a thought has no token that
+teaches "think first" — the push goes one way only (reasoned from the rendering, not measured). Two corrections to
+the laptop's earlier note: MetaCurate's own data has a rationale on every turn, because mini-swe-agent's format asks
+for one — so a thought per step is closer to its data, not further; and "the student thinks before every call under
+V21" was never measured.
+
+How it is built: `REMINDER=1` → `CEIL_REMINDER` → the request adapter adds one line to the end of the last message
+(user or tool) of every request that carries tools, on a copy. The harness's history, the Gemma token count for the
+32K window and the trajectory log (it wraps the adapter and sees the request before it) do not contain it; training
+data is made from the trajectory log. The line is the box's from its replay test:
+`<reminder>Before EVERY tool call, including simple ones like reading a file or running a command, first reason
+briefly in your thinking about why this step is needed and what you expect to see.</reminder>`
+Checked on the laptop with the stand-in gateway, both request formats, last message user and tool: the line is in the
+last message of 8 of 8 requests, once, and the caller's messages are unchanged; unset → in none. `inspect` has a new
+gate line: trajectory log lines that contain `<reminder>` must be 0. An output directory holds one setting only
+(`gen` stops if it finds done attempts made with the other). Not tested: the real gateway with the line, the
+teacher's solve rate with it (the box's replay was 26 prefixes of one trajectory: thoughts on 25).
+
+**▶ Step 4, with the reminder · 8-card box (paid). First the same 27 pilot tasks in a new directory — they are
+attempt 1 of the full run there, so the comparison costs nothing extra (about $3–4) — then the rest.**
+```bash
+git pull && git log --oneline -1
+docker login                                                       # the user types it: 200 pulls / 6 h instead of 100
+export OUT=runs/teach_r REMINDER=1
+bash scripts/teacher_gen.sh setup | tail -8                        # 📷 "tasks kept" = N, and the two self-tests
+cp runs/teach/gold.json runs/teach_r/gold.json                     # the pilot's 29 gold results (no second gold check of them)
+BUDGET_USD=12 RESERVE_USD=0.25 PRICE=<the same three numbers>  bash scripts/teacher_gen.sh pilot 2>&1 | tee runs/pilot_r.log    # 📷 report + inspect
+```
+Read (set before the data; the pilot without the reminder: 16 of 27 resolved, thoughts on 40.5 % of calls,
+$0.105 per attempt, tool calls median 16 resolved / 35 not):
+- `ceil adapter:` line says `reminder on`; the `reminder:` gate line says 0 lines and `ok`;
+- thoughts on ≥ 90 % of calls, and `GATE … ok` on the line of calls without thought text;
+- resolved ≥ 12 of 27 (27 tasks cannot show a small change; this only excludes a clear loss);
+- cost per attempt and the attempts that used all 36 calls or 7.5 minutes, beside the first pilot's.
+All four hold → the full run, same directory, same shell (`OUT`, `REMINDER` still exported):
+```bash
+BUDGET_USD=<the user's number> RESERVE_USD=0.25 PRICE=<the same three numbers>  nohup bash scripts/teacher_gen.sh gen > runs/gen_r.log 2>&1 &
+tail -f runs/gen_r.log                                             # one line per batch; 📷 `bash scripts/teacher_gen.sh report` twice a day
+```
+One fails → stop, photo, nothing larger starts. Stop and photo during the run if: a batch line shows `infra` on most
+of its tasks · a gold line drops more than a quarter of a chunk · "waiting … min" passes 4 tries on one chunk · free
+disk nears `MIN_FREE_GB`. The trajectories of the first pilot (`runs/teach`, no reminder) are not training data;
+they stay as the comparison.
 
 ## B-10 · Our own MetaCurate-style data: teacher trajectories from GLM-5.3 through a gateway (plan 2026-11-13, revised the same day: generation settings as the paper, GLM-5.3 only, the official rule logic, SWE-Gym left out; **scope changed 2026-11-17: B-10 = data generation, the students are chosen afterwards**; **2026-11-18: generation continues in B-11, in the competition harness; the mini-swe-agent route below is kept as written and not run**) — step 1 `setup` ✓ · `check` ✓ for SWE-rebench-V2 · `diag` ✓ (2026-11-13: both SWE-rebench problems explained and fixed in the scripts) · ▶ **now on the box: the commands under "On the box now" below**, 📷 · **B-10b (2026-11-17): three data lines against the thought loops, gated on B-9 part 3 step 19 — see the end of this section**
 

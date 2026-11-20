@@ -184,7 +184,7 @@ def harness(a, name, ids, attempt):
     env = dict(os.environ, LATEST="0", ARMS="base", SUBMISSION=a.submission, MODEL_ALIAS=a.model_alias, MODELS_YAML=a.models_yaml,
                MAX_CALLS=str(a.max_calls), TIME_MIN=str(a.time_min), MAX_TURNS=str(a.max_turns), COMPACT_INTERVAL=str(a.compact_interval),
                NO_TESTDEPS="1", SPLIT=idf, TAG=name, CONC=str(a.conc), TRAJ="1", SANDBOX=a.sandbox,
-               CEIL_TEMP=str(a.temp), CEIL_THINK=a.think, TEACH_LEDGER_DIR=os.path.abspath(os.path.join(a.out, "ledger")),
+               CEIL_TEMP=str(a.temp), CEIL_THINK=a.think, CEIL_REMINDER=str(a.reminder), TEACH_LEDGER_DIR=os.path.abspath(os.path.join(a.out, "ledger")),
                TEACH_ATTEMPT=str(attempt), CEIL_CALL_LOG=os.path.abspath(os.path.join(a.out, "calls", name + ".jsonl")))
     os.makedirs(os.path.join(a.out, "calls"), exist_ok=True)
     if a.sandbox == "docker":
@@ -230,7 +230,7 @@ def cmd_gen(a):
     ids = [x for x in open(a.ids).read().split() if x]
     knobs = {k: getattr(a, k) for k in ("chunk", "attempts", "retries", "conc", "reserve_usd", "temp", "think", "submission", "model_alias",
                                         "models_yaml", "max_calls", "time_min", "max_turns", "compact_interval", "sandbox", "keep_images",
-                                        "min_free_gb", "tasks_dir", "table", "grader", "reopen_lost", "reopen_failed", "pull_waits", "pull_wait_min")}
+                                        "min_free_gb", "tasks_dir", "table", "grader", "reopen_lost", "reopen_failed", "pull_waits", "pull_wait_min", "reminder")}
     print(f"teacher_gen gen · name {a.name} · {len(ids)} tasks from {a.ids} · out {a.out}")
     print("   knobs: " + " · ".join(f"{k} {v}" for k, v in knobs.items()))
     print("   " + teach_ledger.fmt_status(L.status()))
@@ -238,6 +238,12 @@ def cmd_gen(a):
         sys.exit("no budget in the ledger: python3 scripts/teach_ledger.py init --dir <out>/ledger --budget <usd> [--price in,cached,out]")
     if a.reserve_usd <= 0:
         sys.exit("RESERVE_USD must be > 0 (the cost one attempt may reach; the pilot's p95)")
+    # one output directory = one way of generating: attempts made with and without the reminder are never mixed
+    rem = "on" if str(a.reminder) not in ("", "0") else "off"
+    other = [r for r in st.att.values() if r["state"] == "done" and r.get("reminder", "off") != rem]
+    if other:
+        sys.exit(f"STOP: {len(other)} done attempts in {a.out} were made with the reminder {other[0].get('reminder', 'off')}, this run has it {rem}. "
+                 f"Use another OUT for the other setting.")
     lost = st.missing_traj()
     print(f"   done rows whose trajectory file is missing: {len(lost)}" + (f" → reopened (--reopen-lost): they run again and are paid again" if lost and a.reopen_lost
           else " (they stay 'done' and have no data; --reopen-lost / REOPEN_LOST=1 runs them again)" if lost else ""))
@@ -311,7 +317,7 @@ def cmd_gen(a):
                         st.put(dict(f, task=i, attempt=att, state=s, tries=tries, resolved=resolved.get(i) if s == "done" else None,
                                     usd=round(k.get("usd", 0.0), 6), tok_in=k.get("in", 0), tok_cached=k.get("cached", 0),
                                     tok_out=k.get("out", 0), tok_reasoning=k.get("reasoning", 0), model_calls=k.get("calls", 0),
-                                    est_calls=k.get("est_calls", 0), run=rundir))
+                                    est_calls=k.get("est_calls", 0), run=rundir, reminder=rem))
                 finally:
                     for i in batch:
                         L.release(f"{i}#{att}")
@@ -369,13 +375,14 @@ def cmd_inspect(a):
     st = State(a.out)
     runs = sorted({r["run"] for r in st.att.values() if r.get("run") and (not a.name or os.path.basename(r["run"]).startswith(a.name))})
     calls = thought = 0; tools = collections.Counter(); fin = collections.Counter(); secs = []; per_task = []; resets = collections.Counter()
-    thought_chars = []; multi = 0; flags = {}
+    thought_chars = []; multi = 0; flags = {}; rem_lines = 0
     for run_ in runs:
         for f in sorted(glob.glob(os.path.join(run_, "traj", "*.jsonl"))):
             if f.endswith(".tools.jsonl"):
                 continue
             n = t = 0; seq = []
             for line in open(f):
+                rem_lines += "<reminder>" in line
                 c = json.loads(line); r = c.get("resp") or {}; seq.append(bool(r.get("reasoning")))
                 n += 1; t += bool(r.get("reasoning")); thought_chars.append(len(r.get("reasoning") or ""))
                 tc = r.get("tool_calls") or []; multi += len(tc) > 1
@@ -410,6 +417,9 @@ def cmd_inspect(a):
         print(f"   calls {'with   ' if has else 'without'} thought text: {len(cs):4} · output tokens p50 {q(outs, .5)} p90 {q(outs, .9)} · "
               f"reasoning tokens reported > 0 on {sum(x > 0 for x in rs)} (p50 {q(rs, .5)})"
               + (f"  ← GATE: must be 0 (a thought that was produced and is not in the log) → {'ok' if not sum(x > 0 for x in rs) else 'NOT MET'}" if not has else ""))
+    made = collections.Counter(r.get("reminder", "off") for r in st.att.values() if r["state"] == "done")
+    print(f"   reminder: done attempts made with it {dict(made)} · trajectory log lines that contain '<reminder>': {rem_lines}  ← GATE: must be 0 "
+          f"(the line is for the teacher's request only; no training prompt may hold it) → {'ok' if not rem_lines else 'NOT MET'}")
     print(f"   (matched to the ledger by call order; trajectories whose call count differs from the ledger's, left out: {unmatched or 'none'})")
     for name, n, t in per_task[:40]:
         r = next((x for x in st.att.values() if x["task"] == name), {})
@@ -486,6 +496,7 @@ def main():
         s.add_argument("--compact-interval", type=int, default=env_knob("COMPACT_INTERVAL", 5, int))
         s.add_argument("--sandbox", default=env_knob("SANDBOX", "docker"), choices=["docker", "subprocess"])
         s.add_argument("--keep-images", type=int, default=env_knob("KEEP_IMAGES", 0, int))
+        s.add_argument("--reminder", default=env_knob("REMINDER", "0", str), help="CEIL_REMINDER: 0 off · 1 the default think-before-every-call line · other = that text")
         s.add_argument("--reopen-failed", type=int, default=env_knob("REOPEN_FAILED", 0, int), help="1 = failed rows run again")
         s.add_argument("--pull-waits", type=int, default=env_knob("PULL_WAITS", 16, int)); s.add_argument("--pull-wait-min", type=float, default=env_knob("PULL_WAIT_MIN", 30, float))
         s.add_argument("--reopen-lost", type=int, default=env_knob("REOPEN_LOST", 0, int), help="1 = done rows without a trajectory file run again")
