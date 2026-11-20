@@ -88,12 +88,18 @@ class State:
         tmp = os.path.join(self.out, "gold.json.tmp")
         json.dump(self.gold, open(tmp, "w")); os.replace(tmp, os.path.join(self.out, "gold.json"))
 
+    def missing_traj(self):
+        """done rows whose trajectory file is not on disk (2026-11-19: a second batch with the same name replaced the
+        first one's directory — the rows stayed, the trajectories did not)"""
+        return [r for r in self.att.values() if r["state"] == "done" and r.get("run")
+                and not os.path.exists(os.path.join(r["run"], "traj", r["task"] + ".jsonl"))]
+
     def open_tasks(self, ids, attempt, retries):
         """tasks of this attempt number that still have to run: no line yet, or `infra` with tries ≤ retries"""
         out = []
         for i in ids:
             r = self.att.get((i, attempt))
-            if r is None or (r["state"] == "infra" and r.get("tries", 1) <= retries):
+            if r is None or r["state"] in ("lost", "reopened") or (r["state"] == "infra" and r.get("tries", 1) <= retries):
                 out.append(i)
         return out
 
@@ -200,10 +206,23 @@ def harness(a, name, ids, attempt):
         patches[os.path.basename(f)[:-6]] = open(f, errors="replace").read()
     patches = {i: patches.get(i) or patches.get(i.replace("/", "__")) or "" for i in ids}
     keep = os.path.join(a.out, "runs", name)          # trajectories and patches stay with the run's own state
-    shutil.rmtree(keep, ignore_errors=True); os.makedirs(os.path.dirname(keep), exist_ok=True)
+    if os.path.exists(keep):                          # batch_name() makes this impossible; never delete a kept run
+        raise RuntimeError(f"{keep} exists — a kept run is never replaced")
+    os.makedirs(os.path.dirname(keep), exist_ok=True)
     if os.path.isdir(rundir):
         shutil.move(rundir, keep)
     return res, patches, keep, rc
+
+
+def batch_name(out, base):
+    """a name no earlier batch of this output directory has used: base, base_n2, base_n3, …"""
+    n = 1
+    while True:
+        name = base if n == 1 else f"{base}_n{n}"
+        if not any(os.path.exists(p) for p in (os.path.join(out, "runs", name), os.path.join(out, "batches", name + ".ids"),
+                                               os.path.join(out, "preds", name + ".json"))):
+            return name
+        n += 1
 
 
 def cmd_gen(a):
@@ -211,7 +230,7 @@ def cmd_gen(a):
     ids = [x for x in open(a.ids).read().split() if x]
     knobs = {k: getattr(a, k) for k in ("chunk", "attempts", "retries", "conc", "reserve_usd", "temp", "think", "submission", "model_alias",
                                         "models_yaml", "max_calls", "time_min", "max_turns", "compact_interval", "sandbox", "keep_images",
-                                        "min_free_gb", "tasks_dir", "table", "grader")}
+                                        "min_free_gb", "tasks_dir", "table", "grader", "reopen_lost", "reopen_failed", "pull_waits", "pull_wait_min")}
     print(f"teacher_gen gen · name {a.name} · {len(ids)} tasks from {a.ids} · out {a.out}")
     print("   knobs: " + " · ".join(f"{k} {v}" for k, v in knobs.items()))
     print("   " + teach_ledger.fmt_status(L.status()))
@@ -219,6 +238,18 @@ def cmd_gen(a):
         sys.exit("no budget in the ledger: python3 scripts/teach_ledger.py init --dir <out>/ledger --budget <usd> [--price in,cached,out]")
     if a.reserve_usd <= 0:
         sys.exit("RESERVE_USD must be > 0 (the cost one attempt may reach; the pilot's p95)")
+    lost = st.missing_traj()
+    print(f"   done rows whose trajectory file is missing: {len(lost)}" + (f" → reopened (--reopen-lost): they run again and are paid again" if lost and a.reopen_lost
+          else " (they stay 'done' and have no data; --reopen-lost / REOPEN_LOST=1 runs them again)" if lost else ""))
+    if a.reopen_lost:
+        for r in lost:
+            st.put(dict(r, state="lost", resolved=None, why="trajectory file missing"))
+    failed = [r for r in st.att.values() if r["state"] == "failed" and r["task"] in set(ids)]
+    print(f"   failed rows among these tasks (not retried): {len(failed)}" + (" → reopened (--reopen-failed)" if failed and a.reopen_failed
+          else " (REOPEN_FAILED=1 runs them again, e.g. rows left by a run whose environment was broken)" if failed else ""))
+    if a.reopen_failed:
+        for r in failed:
+            st.put(dict(r, state="reopened", tries=0, resolved=None))
     stop = False
     for c0 in range(0, len(ids), a.chunk):
         chunk = ids[c0:c0 + a.chunk]; cname = f"{a.name}_c{c0 // a.chunk:03d}"
@@ -226,24 +257,39 @@ def cmd_gen(a):
             print(f"STOP: {free_gb():.0f} GB free < MIN_FREE_GB {a.min_free_gb}"); break
         todo = [i for i in chunk if i not in st.gold]
         if todo:
-            ok, rep, rc = grade(a, cname + "_gold", todo, "gold", os.path.join(a.out, "grade", cname + "_gold"))
-            st.set_gold(ok)
-            print(f"-- chunk {cname}: gold check on {len(todo)} tasks → {sum(ok.values())} resolve (grader exit {rc})", flush=True)
+            gname = batch_name(a.out, cname + "_gold")
+            open(os.path.join(a.out, "batches", gname + ".ids"), "w").write("\n".join(todo) + "\n")
+            ok, rep, rc = grade(a, gname, todo, "gold", os.path.join(a.out, "grade", gname))
+            # an image that could not be pulled (Docker Hub's pull limit, a network error) says nothing about the task:
+            # such a task gets no gold result; wait and try again, and what is still missing is tried by the next run
+            noimg = lambda rep_, ids_: [i for i in ids_ if str((rep_.get(i) or {}).get("note", "no result")).startswith(("image", "no result"))]
+            bad = noimg(rep, todo); waits = 0
+            while bad and waits < a.pull_waits:
+                waits += 1
+                print(f"-- chunk {cname}: {len(bad)} images not pulled ({str((rep.get(bad[0]) or {}).get('note'))[:110]}) → waiting {a.pull_wait_min} min, "
+                      f"try {waits} of {a.pull_waits} (PULL_WAIT_MIN, PULL_WAITS)", flush=True)
+                time.sleep(a.pull_wait_min * 60)
+                gname = batch_name(a.out, cname + "_gold")
+                open(os.path.join(a.out, "batches", gname + ".ids"), "w").write("\n".join(bad) + "\n")
+                ok2, rep2, rc = grade(a, gname, bad, "gold", os.path.join(a.out, "grade", gname))
+                ok.update(ok2); rep.update(rep2); bad = noimg(rep2, bad)
+            st.set_gold({i: v for i, v in ok.items() if i not in set(bad)})
+            why = collections.Counter(str((rep.get(i) or {}).get("note") or "tests fail")[:50] for i in todo if not ok.get(i) and i not in set(bad))
+            print(f"-- chunk {cname}: gold check on {len(todo)} tasks → {sum(ok.values())} resolve (grader exit {rc}) · no image, no result recorded {len(bad)} · "
+                  f"dropped: {dict(why.most_common(5)) or 'none'}", flush=True)
         good = [i for i in chunk if st.gold.get(i)]
         for att in range(1, a.attempts + 1):
-            for round_ in range(a.retries + 1):
+            while True:                      # ends: nothing open (infra rows close after `retries`), or nothing can be reserved
                 want = st.open_tasks(good, att, a.retries)
                 if not want:
                     break
-                batch = []
-                for i in want:
-                    if L.reserve(f"{i}#{att}", a.reserve_usd):
-                        batch.append(i)
-                    else:
-                        stop = True
+                batch = [i for i in want if L.reserve(f"{i}#{att}", a.reserve_usd)]
                 if not batch:
-                    break
-                name = f"{cname}_a{att}" + (f"r{round_}" if round_ else "")
+                    stop = True; break
+                if len(batch) < len(want):
+                    print(f"   {cname} attempt {att}: {len(want) - len(batch)} of {len(want)} wait — their reservation does not fit beside this batch's; "
+                          f"they start when it ends and its unspent reservations are back", flush=True)
+                name = batch_name(a.out, f"{cname}_a{att}")
                 t0 = time.time()
                 try:
                     res, patches, rundir, rc = harness(a, name, batch, att)
@@ -272,8 +318,6 @@ def cmd_gen(a):
                 c = collections.Counter(st.att[(i, att)]["state"] for i in batch)
                 print(f"   {name}: {len(batch)} started of {len(want)} wanted · done {c['done']} (resolved {sum(bool(st.att[(i, att)].get('resolved')) for i in batch)}) · "
                       f"infra {c['infra']} · failed {c['failed']} · {time.time() - t0:.0f} s · harness exit {rc} · {teach_ledger.fmt_status(L.status())}", flush=True)
-                if stop:
-                    break
             if stop:
                 break
         if not a.keep_images and a.sandbox == "docker":
@@ -296,8 +340,10 @@ def cmd_report(a):
     q = lambda xs, p: (sorted(xs)[min(len(xs) - 1, int(len(xs) * p))] if xs else None)
     usd = [r["usd"] for r in done]
     print(f"== teacher_gen report · {a.out}")
-    print(f"   gold check: {len(st.gold)} tasks checked · {sum(st.gold.values())} resolve")
-    print(f"   attempts: {len(rows)} · done {by['done']} · infra (to retry) {by['infra']} · failed (not retried) {by['failed']}")
+    print(f"   gold check: {len(st.gold)} tasks checked · {sum(st.gold.values())} resolve · resolved trajectories on disk "
+          f"{sum(1 for r in rows if r['state'] == 'done' and r.get('resolved')) - sum(1 for r in st.missing_traj() if r.get('resolved'))}")
+    print(f"   attempts: {len(rows)} · done {by['done']} · infra (to retry) {by['infra']} · failed (not retried) {by['failed']} · lost (to run again) {by['lost']} · "
+          f"done rows whose trajectory file is missing {len(st.missing_traj())}")
     print(f"   done: resolved {len(res)} = {100 * len(res) / max(1, len(done)):.1f} % · tasks with ≥ 1 resolved {len({r['task'] for r in res})} of {len({r['task'] for r in done})}")
     for att in sorted({r["attempt"] for r in rows}):
         d = [r for r in done if r["attempt"] == att]
@@ -440,6 +486,9 @@ def main():
         s.add_argument("--compact-interval", type=int, default=env_knob("COMPACT_INTERVAL", 5, int))
         s.add_argument("--sandbox", default=env_knob("SANDBOX", "docker"), choices=["docker", "subprocess"])
         s.add_argument("--keep-images", type=int, default=env_knob("KEEP_IMAGES", 0, int))
+        s.add_argument("--reopen-failed", type=int, default=env_knob("REOPEN_FAILED", 0, int), help="1 = failed rows run again")
+        s.add_argument("--pull-waits", type=int, default=env_knob("PULL_WAITS", 16, int)); s.add_argument("--pull-wait-min", type=float, default=env_knob("PULL_WAIT_MIN", 30, float))
+        s.add_argument("--reopen-lost", type=int, default=env_knob("REOPEN_LOST", 0, int), help="1 = done rows without a trajectory file run again")
         s.add_argument("--min-free-gb", type=float, default=env_knob("MIN_FREE_GB", 50.0, float))
         s.add_argument("--grade-workers", type=int, default=env_knob("GRADE_WORKERS", 4, int))
         s.add_argument("--grade-install", default=env_knob("GRADE_INSTALL", "auto"))

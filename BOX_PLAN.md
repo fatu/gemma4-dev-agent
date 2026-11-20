@@ -41,7 +41,7 @@ dropped too.
 
 ---
 
-## B-11 · MetaCurate's method inside the competition harness: GLM-5.3 trajectories under the V21 setting → an E4B LoRA with loss on the tool calls only (plan 2026-11-18) — ▶ **step 2 done 2026-11-18, step 3 (pilot) written** (commands at the end of this section); step 1's last laptop part (rules, converter) is being written beside it
+## B-11 · MetaCurate's method inside the competition harness: GLM-5.3 trajectories under the V21 setting → an E4B LoRA with loss on the tool calls only (plan 2026-11-18) — ▶ **steps 2–3 done, step 4 (scale) written 2026-11-20, waits for the go** (commands at the end of this section); step 1's last laptop part (rules, converter) is being written beside it
 
 **Why.** B-9 part 3 (closed 2026-11-18) trained on MetaCurate's public trajectories, which are in mini-swe-agent's
 one-tool `bash` format and cannot be used in the competition harness; inside mini-swe-agent the action-only LoRA
@@ -413,6 +413,81 @@ failed); attempts that used all 36 calls or the 7.5 minutes; compactions; `GATE 
 attempt mean / p95 / max; seconds per attempt; image pulls (count and time). From these three numbers go to the
 user before anything larger starts: trajectories expected from 3 attempts on all tasks, the total cost, the days of
 pulling images. Rough figure today from 5 attempts, not a reading: about 3,000 attempts × $0.23 = about $700.
+
+**Step 3 result · pilot (2026-11-19, photos; $2.85 by price estimate, the ledger's cap $12).** 30 tasks → 29 in
+the task list (1 in an excluded repository) → gold 27 of 29 (2 dropped, reason not looked up) → 27 attempts, one per
+task.
+
+| | |
+|---|---|
+| states | done 27 · infra 0 · failed 0 |
+| resolved | **16 of 27 = 59 %** (one attempt per task; 27 tasks: roughly 40–75 %) |
+| tool calls | resolved: median 16 · not resolved: median 35 · 9 attempts used ≥ 34, of them 2 resolved · 3 used all 36 |
+| time | none reached 7.5 min; longest 219 s; per attempt p50 90 s, p90 167 s; 23 attempts in 683 s at 4 in parallel |
+| compaction | 16 attempts |
+| cost per attempt | mean $0.105 · p95 $0.207 · max $0.214 (resolved $0.079, not resolved $0.144) |
+| thoughts | on 40.5 % of calls; `GATE … ok` |
+| patches | 1 empty; one unresolved attempt has a 424,363-character patch |
+| budget stop (run a, $1) | stopped as meant, $0.10 spent |
+
+Not on the photos: image pull counts and times.
+
+Three faults of the driver, all found by the pilot, fixed here (tested on the laptop with stand-ins for the harness
+and the grader; not on the box):
+1. *Trajectories replaced.* A batch was named by chunk and attempt only, and the kept run directory of that name was
+   deleted first. Run a, run b and the 2-task rerun shared one name, so the state file still says "done" for
+   attempts whose trajectories are gone. Now every batch gets a name no earlier one used (`…_n2`, `…_n3`), a kept
+   run is never deleted, and `report` / `gen` print "done rows whose trajectory file is missing"; `REOPEN_LOST=1`
+   runs those again (paid again).
+2. *Tasks left out when a reservation was refused.* Reservations were taken for a whole batch at once, so
+   23 × $0.50 filled a $12 budget and 2 tasks were refused although $2.67 was spent. Now the tasks that do not fit
+   wait for the batch to end (its unspent reservations come back) and start then; the run stops only when not one
+   attempt can be reserved.
+3. *A pull error would have counted as "gold fails".* Not seen in the pilot, found while reading for the pull limit:
+   the gold check recorded False for an image that could not be pulled. Now such a task gets no gold result, the
+   driver waits `PULL_WAIT_MIN` 30 and tries again (`PULL_WAITS` 16 times = 8 h), and what is still missing is tried
+   by the next run. The gold line prints the reasons of the dropped tasks.
+Also: the 5 `failed` rows left in `runs/teach` by the first check (the environment was broken then) block attempt 1
+of those tasks; `REOPEN_FAILED=1` runs them again.
+
+**The three numbers for the scale-up (from the pilot; extrapolations, not readings).** N = the "tasks kept" of
+`teacher_gen.sh setup` (1,221 by the laptop's count of the two sources; the box wrote 1,408 — 📷 `wc -l
+runs/teach/all.ids` settles it). With 93 % passing gold and 3 attempts:
+
+| | N = 1,221 | N = 1,408 |
+|---|---|---|
+| attempts | about 3,400 | about 3,900 |
+| cost at the mean $0.105 (at the p95 $0.207) | $360 ($700) | $410 ($810) |
+| resolved trajectories at 59 % (at 40–75 %) | 2,000 (1,360–2,550) | 2,300 (1,560–2,900) |
+| image pulls: anonymous 100 / 6 h · logged in 200 / 6 h | 2.8 days · 1.4 days | 3.3 days · 1.6 days |
+
+So 1,000 resolved trajectories are likely reached before the rule filter (the plan then draws 1,000 at random,
+seed 0). The model part is about 29 h at 4 in parallel and overlaps with the pulling; the pull limit sets the pace.
+Generation has to stop on 2026-11-25, so `docker login` on the box is needed.
+
+**Open, the user's (asked 2026-11-20): a reminder that makes the teacher think on every call.** The box replayed one
+resolved trajectory's 26 prefixes: a `<reminder>` appended to the last message raised the calls with a thought from
+11 to 25 of 26 (median thought 209 characters); the same text in the system prompt 14 of 26; one task, a replay, no
+solve rate. The laptop's recommendation is not to use it: it is not MetaCurate's method (the decision of
+2026-11-18), the teacher would work from a context the student never sees, and its effect on the teacher's solve
+rate is not known. What the 40 % does to training is a rendering question for step 5 (on turns without a teacher
+thought the first labelled token is the tool call's opening, which teaches "call without thinking"; on turns with a
+thought no token says "think first") — to be settled there with the label audit, not by changing the generation.
+
+**▶ Step 4 on the 8-card box · scale (paid; waits for the user's go and budget).**
+```bash
+git pull && git log --oneline -1
+wc -l runs/teach/all.ids                                   # 📷 N
+bash scripts/teacher_gen.sh report | head -6               # 📷 "done rows whose trajectory file is missing" and "resolved trajectories on disk"
+docker login                                               # the user types it; 200 pulls / 6 h instead of 100
+BUDGET_USD=<the user's number> RESERVE_USD=0.25 REOPEN_LOST=1 REOPEN_FAILED=1 PRICE=<the same three numbers> \
+  nohup bash scripts/teacher_gen.sh gen > runs/gen_all.log 2>&1 &
+tail -f runs/gen_all.log                                   # one line per batch; 📷 `bash scripts/teacher_gen.sh report` twice a day
+```
+`RESERVE_USD=0.25` is above the pilot's highest attempt ($0.214). `BUDGET_USD` sets the ledger's total for
+`runs/teach`, which already holds the pilot's $2.85 and the first check. The same command continues after any stop.
+Stop and photo if: a batch line shows `infra` on most of its tasks · the gold line shows more than a quarter
+dropped in a chunk · "waiting … min" repeats past 4 tries on the same chunk · free disk nears `MIN_FREE_GB`.
 
 ## B-10 · Our own MetaCurate-style data: teacher trajectories from GLM-5.3 through a gateway (plan 2026-11-13, revised the same day: generation settings as the paper, GLM-5.3 only, the official rule logic, SWE-Gym left out; **scope changed 2026-11-17: B-10 = data generation, the students are chosen afterwards**; **2026-11-18: generation continues in B-11, in the competition harness; the mini-swe-agent route below is kept as written and not run**) — step 1 `setup` ✓ · `check` ✓ for SWE-rebench-V2 · `diag` ✓ (2026-11-13: both SWE-rebench problems explained and fixed in the scripts) · ▶ **now on the box: the commands under "On the box now" below**, 📷 · **B-10b (2026-11-17): three data lines against the thought loops, gated on B-9 part 3 step 19 — see the end of this section**
 
