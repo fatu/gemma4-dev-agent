@@ -89,7 +89,7 @@ probe)
   grep -Fxf "$OUT/all.ids" "$TASKS_DIR/pilot30.ids" | head -"${PROBE_N:-2}" > "$OUT/probe.ids"; echo "  probe: $(tr '\n' ' ' < "$OUT/probe.ids")(PROBE_N ${PROBE_N:-2})"
   gen probe "$OUT/probe.ids" 1 "${PROBE_N:-2}" 1
   echo "  -- probe lines (the eval's own log):"; grep -h "ceil hist probe\|ceil history:\|commands start in" "$OUT/gen.log" | tail -8 | sed 's/^/  /'
-  $PY scripts/teacher_gen.py inspect --out "$OUT" --name probe | head -14
+  $PY scripts/teacher_gen.py inspect --out "$OUT" --name probe | head -30
   echo "  📷 from '-- probe lines' down. Read: the probe line ends with 'REACH the model'; the 'history:' line says all and ok; the reply shapes line; 'commands start in /workspace'." ;;
 pilot)
   need_env; ledger
@@ -97,8 +97,8 @@ pilot)
   grep -Fxf "$OUT/all.ids" "$TASKS_DIR/pilot30.ids" > "$OUT/pilot30.ids"; echo "  pilot30: $(wc -l < "$OUT/pilot30.ids") of $(wc -l < "$TASKS_DIR/pilot30.ids") tasks are in all.ids"
   gen pilot30 "$OUT/pilot30.ids" 1 30 "${KEEP_IMAGES}"
   $PY scripts/teacher_gen.py report --out "$OUT"
-  $PY scripts/teacher_gen.py inspect --out "$OUT" --name pilot30 | head -48
-  echo "  📷 the report and inspect blocks" ;;
+  $PY scripts/teacher_gen.py inspect --out "$OUT" --name pilot30 | head -72
+  echo "  📷 the report and inspect blocks (with the line 'replies that repeat or mention the reminder' and every match under it)" ;;
 gen)
   need_env; ledger
   gen all "$OUT/all.ids" "$ATTEMPTS" "$CHUNK" "$KEEP_IMAGES" ;;

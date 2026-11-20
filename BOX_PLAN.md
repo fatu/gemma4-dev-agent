@@ -657,6 +657,15 @@ BUDGET_USD=12 RESERVE_USD=0.40 PRICE=<same three numbers>  bash scripts/teacher_
 ```
 Readings as written above. If the probe said `DO NOT reach`, add `API=chat` to the `export` line.
 
+**Does the teacher repeat or mention the reminder in its replies? (user's question, 2026-11-20)** Second pilot,
+all 621 replies searched by script (thought, visible text, tool-call arguments; not read one by one): the tag 0, the
+sentence's own wording 0, "told to reason" 0, the word "remind" 1 — one thought of an unresolved attempt says "The
+reminder came after." while counting its remaining tool calls; by the context it means the harness's budget notice,
+which cannot be told apart for certain. `inspect` now prints this search as a line (`replies that repeat or mention
+the reminder`, a count with every match and its context, not a gate; `--echo-all` prints all). It finds fixed
+phrases only: a paraphrase in other words is not found. At step 5 every match is read before its turn is used.
+Pull before the third pilot; `inspect` can also be rerun afterwards: `OUT=runs/teach_h2 bash scripts/teacher_gen.sh inspect pilot30`.
+
 ## B-10 · Our own MetaCurate-style data: teacher trajectories from GLM-5.3 through a gateway (plan 2026-11-13, revised the same day: generation settings as the paper, GLM-5.3 only, the official rule logic, SWE-Gym left out; **scope changed 2026-11-17: B-10 = data generation, the students are chosen afterwards**; **2026-11-18: generation continues in B-11, in the competition harness; the mini-swe-agent route below is kept as written and not run**) — step 1 `setup` ✓ · `check` ✓ for SWE-rebench-V2 · `diag` ✓ (2026-11-13: both SWE-rebench problems explained and fixed in the scripts) · ▶ **now on the box: the commands under "On the box now" below**, 📷 · **B-10b (2026-11-17): three data lines against the thought loops, gated on B-9 part 3 step 19 — see the end of this section**
 
 **On the box now (2026-11-13, after `diag`; no tokens except a few cents for the probe).**

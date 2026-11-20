@@ -378,12 +378,35 @@ def cmd_report(a):
     print("   " + teach_ledger.fmt_status(L.status()))
 
 
+# does a reply repeat or refer to the teacher-only reminder? (2026-11-20) The gate on '<reminder>' finds only the
+# literal tag; these find the sentence's own wording and talk about having been told to reason. A count, not a gate:
+# every match is printed with its context and read by a person before the turn goes into a training set.
+ECHO_PATS = (("the tag", r"</?reminder>"), ("the word remind*", r"\bremind"),
+             ("before every tool call", r"before (every|each|any|the|a|my|making|calling)[^.\n]{0,20}tool call"),
+             ("reason briefly / think before", r"reason(ing)? briefly|think(ing)? before|brief(ly)? reason"),
+             ("told to reason", r"(instruct|told|asked|required|supposed)[^.\n]{0,30}(reason|think)"),
+             ("why this step is needed / expect to see", r"why this step is needed|what (i|you) expect to see"))
+
+
+def echo_hits(resp):
+    """→ [(pattern name, where, context)] for one logged reply (its thought, visible text and tool-call arguments)"""
+    c = resp.get("content")
+    parts = (("thought", resp.get("reasoning") or ""), ("text", c if isinstance(c, str) else json.dumps(c or "")),
+             ("tool args", " ".join(str(t.get("args") or "") for t in resp.get("tool_calls") or [])))
+    out = []
+    for where, txt in parts:
+        for name, pat in ECHO_PATS:
+            for m in re.finditer(pat, txt, flags=re.I):
+                out.append((name, where, txt[max(0, m.start() - 90):m.end() + 90].replace("\n", " ")))
+    return out
+
+
 def cmd_inspect(a):
     """what the trajectory logs of the kept runs show (step 2 and the pilot): thoughts, tools, time per call, compaction"""
     st = State(a.out)
     runs = sorted({r["run"] for r in st.att.values() if r.get("run") and (not a.name or os.path.basename(r["run"]).startswith(a.name))})
     calls = thought = 0; tools = collections.Counter(); fin = collections.Counter(); secs = []; per_task = []; resets = collections.Counter()
-    thought_chars = []; multi = 0; flags = {}; rem_lines = 0; back = [0, 0]; by_depth = collections.defaultdict(lambda: [0, 0])
+    echo = []; thought_chars = []; multi = 0; flags = {}; rem_lines = 0; back = [0, 0]; by_depth = collections.defaultdict(lambda: [0, 0])
     for run_ in runs:
         for f in sorted(glob.glob(os.path.join(run_, "traj", "*.jsonl"))):
             if f.endswith(".tools.jsonl"):
@@ -398,6 +421,7 @@ def cmd_inspect(a):
                     if am:
                         back[1] += 1
                         back[0] += bool(am[0].get("reasoning_content") or am[0].get("reasoning") or am[0].get("thinking_blocks"))
+                echo += [(os.path.basename(f)[:-6], n + 1) + h for h in echo_hits(r)]
                 seq.append(bool(r.get("reasoning")))
                 d = by_depth["01-03" if n < 3 else "04-08" if n < 8 else "09-25" if n < 25 else "26+"]; d[0] += 1; d[1] += bool(r.get("reasoning"))
                 n += 1; t += bool(r.get("reasoning")); thought_chars.append(len(r.get("reasoning") or ""))
@@ -450,6 +474,13 @@ def cmd_inspect(a):
     made = collections.Counter(r.get("reminder", "off") for r in st.att.values() if r["state"] == "done")
     print(f"   reminder: done attempts made with it {dict(made)} · trajectory log lines that contain '<reminder>': {rem_lines}  ← GATE: must be 0 "
           f"(the line is for the teacher's request only; no training prompt may hold it) → {'ok' if not rem_lines else 'NOT MET'}")
+    ec = collections.Counter((h[2], h[3]) for h in echo)
+    print(f"   replies that repeat or mention the reminder ({calls} replies searched: thought, text, tool arguments; a count to be read, not a gate): "
+          + (" · ".join(f"{k[0]} in {k[1]} {v}" for k, v in ec.most_common()) if ec else "0 matches of " + str(len(ECHO_PATS)) + " patterns"))
+    for task, call, name, where, ctx in (echo if getattr(a, "echo_all", False) else echo[:12]):
+        print(f"      {task[:36]} call {call} · {name} · {where}: …{ctx[:200]}…")
+    if len(echo) > 12 and not getattr(a, "echo_all", False):
+        print(f"      … {len(echo) - 12} more (python3 scripts/teacher_gen.py inspect --out {a.out} --echo-all)")
     print(f"   (matched to the ledger by call order; trajectories whose call count differs from the ledger's, left out: {unmatched or 'none'})")
     for name, n, t in per_task[:40]:
         r = next((x for x in st.att.values() if x["task"] == name), {})
@@ -481,6 +512,10 @@ def selftest():
         cmd_tasks(argparse.Namespace(table=tab, out=os.path.join(d, "o"), exclude_repos=[ex], sources="rebench,v2"))
         T = [json.loads(l) for l in open(os.path.join(d, "o", "tasks.jsonl"))]
         assert [t["instance_id"] for t in T] == ["a__b-1"] and set(T[0]) == {"instance_id", "repo", "base_commit", "problem_statement", "hints_text"}, T
+        # replies that mention the reminder
+        assert not echo_hits({"reasoning": "Let me look at the file.", "content": None, "tool_calls": [{"name": "run_command", "args": "{}"}]})
+        h = echo_hits({"reasoning": "As instructed, I reason briefly before every tool call.", "content": "<reminder>x", "tool_calls": []})
+        assert {x[0] for x in h} >= {"the tag", "before every tool call", "reason briefly / think before"} and {x[1] for x in h} == {"thought", "text"}, h
         # classify
         assert classify(None, "", None)[0] == "infra"
         assert classify({"total_llm_calls": 0, "error": "x"}, "", None)[0] == "infra"
@@ -512,6 +547,7 @@ def main():
     for name in ("gen", "report", "inspect"):
         s = sub.add_parser(name); s.add_argument("--out", required=True)
         s.add_argument("--ids"); s.add_argument("--name", default="gen" if name == "gen" else "")
+        s.add_argument("--echo-all", action="store_true", help="inspect: print every reply that mentions the reminder, not the first 12")
         s.add_argument("--table", default=env_knob("DOCKER_TASKS_TABLE", "runs/b10/tasks/all.jsonl"))
         s.add_argument("--tasks-dir", default=env_knob("TASKS_DIR", "runs/b10/tasks"))
         s.add_argument("--chunk", type=int, default=env_knob("CHUNK", 50, int))
