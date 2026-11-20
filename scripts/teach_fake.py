@@ -121,7 +121,7 @@ model = ("anthropic/" if os.environ["FAKE_FMT"] == "anthropic" else "openai/") +
 base = f"http://127.0.0.1:{port}" + ("" if os.environ["FAKE_FMT"] == "anthropic" else "/v1")
 msgs = [{"role": "system", "content": "sys"}, {"role": "user", "content": "task"}]
 if os.environ.get("FAKE_TOOLMSG"):     # an agent request as the harness sends it after a tool ran: the last message is the tool's
-    msgs += [{"role": "assistant", "content": None, "tool_calls": [{"id": "c1", "type": "function", "function": {"name": "run_command", "arguments": "{\"command\": \"ls\"}"}}]},
+    msgs += [{"role": "assistant", "content": None, "tool_calls": [{"id": "c1", "type": "function", "function": {"name": ("submit_patch" if os.environ["FAKE_TOOLMSG"] == "submit" else "run_command"), "arguments": "{\"command\": \"ls\"}"}}]},
              {"role": "tool", "tool_call_id": "c1", "content": "{\"stdout\": \"a.py\"}"}]
 before = json.dumps(msgs)
 out = {"calls": 0, "reasoning": 0, "gated": False}
@@ -132,6 +132,8 @@ try:
                                extra_body={"chat_template_kwargs": {"enable_thinking": True}, "thinking_token_budget": 4096})
         m = r.choices[0].message; out["calls"] += 1
         out["reasoning"] += bool(getattr(m, "reasoning_content", None))
+        if not m.tool_calls:      # the closing text-only reply
+            out["tool"] = None; continue
         out["tool"] = m.tool_calls[0].function.name
         if os.environ.get("FAKE_ADK"):
             import asyncio
@@ -254,6 +256,16 @@ def selftest():
             rows.append(f"history thoughts [{fmt}, reply block {'without a signature key' if sig == 'none' else 'signed'}, knob {hist}]: "
                         f"earlier thoughts received in calls 1–4: {[g[0] for g in got]} of {[g[1] for g in got]}"
                         + (" · probe: 1 extra request without them, verdict REACH" if want else " (the defect, reproduced)"))
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+    for fmt in ("anthropic", "openai"):                # after the result of submit_patch: no reminder (nothing is called after it)
+        tmp = tempfile.mkdtemp(prefix="teach_fake_")
+        try:
+            teach_ledger.Ledger(os.path.join(tmp, "ledger")).init(1.0, [1.0, 0.1, 4.0])
+            res, _ = _one("effort:high", fmt, tmp, {"CEIL_REMINDER": "1", "FAKE_TOOLMSG": "submit"})
+            B = [x["body"] for x in bodies(tmp)]
+            assert B and "<reminder>" not in json.dumps(B), "the reminder followed a submit_patch result"
+            rows.append(f"reminder [{fmt}, last message = the result of submit_patch]: in 0 of {len(B)} requests")
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
     tmp = tempfile.mkdtemp(prefix="teach_fake_")       # off by default: no request carries it

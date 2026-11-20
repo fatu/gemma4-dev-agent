@@ -701,6 +701,23 @@ one attempt cost about $0.50 at most. Estimate: 1,215 tasks × 93 % with a passi
 $0.172 ≈ $580 (the cap stops new attempts when spent + reserved reaches $800). Also wanted: the third pilot uploaded
 to the Kaggle dataset, for the recount and for the conversion code of step 5.
 
+**Third pilot recounted on the laptop from the uploaded run (2026-11-20): the box's numbers stand.** 637 calls,
+thoughts 594 = 93.2 %; by call number 90 / 97 / 93 / 91 %; thoughts re-sent 496 of 496; resolved 16 of 27; $4.64.
+The reply shape is now known: all 594 replies with a thought carry one thinking block **without a `signature` key** —
+the case in which ADK discarded it. The probe lines say the re-sent thoughts reach the model (12–26 more prompt
+tokens for thoughts of 56–114 characters).
+
+**The teacher does mention the reminder (the search added to `inspect`):** 8 replies, all in the thought, all the
+closing text-only reply after `submit_patch` (8 of those 27 replies; 0 of the 610 replies before the submit; visible
+text 0, tool arguments 0). That reply has no tool call, so it has no label and its thought is in no target's context.
+But in the 2-task probe run one reply **before** the submit, with a tool call, says "The reminder asks me to reason
+before every tool call." — so the scale run will hold a few such turns. Two measures:
+- *Cause of the 8:* the adapter no longer adds the line after the result of `submit_patch` (nothing is called
+  after it). Stand-in, both routes: 0 of 8 requests. Pull before the scale; if it is already running, leave it — the
+  closing reply is not training data either way.
+- *Step 5:* every turn `inspect` lists is dropped from the targets and its thought removed from the context
+  (counted). The search knows fixed phrases only; a paraphrase is not found.
+
 ## B-10 · Our own MetaCurate-style data: teacher trajectories from GLM-5.3 through a gateway (plan 2026-11-13, revised the same day: generation settings as the paper, GLM-5.3 only, the official rule logic, SWE-Gym left out; **scope changed 2026-11-17: B-10 = data generation, the students are chosen afterwards**; **2026-11-18: generation continues in B-11, in the competition harness; the mini-swe-agent route below is kept as written and not run**) — step 1 `setup` ✓ · `check` ✓ for SWE-rebench-V2 · `diag` ✓ (2026-11-13: both SWE-rebench problems explained and fixed in the scripts) · ▶ **now on the box: the commands under "On the box now" below**, 📷 · **B-10b (2026-11-17): three data lines against the thought loops, gated on B-9 part 3 step 19 — see the end of this section**
 
 **On the box now (2026-11-13, after `diag`; no tokens except a few cents for the probe).**

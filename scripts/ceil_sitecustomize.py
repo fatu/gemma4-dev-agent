@@ -97,6 +97,18 @@ if litellm is not None:
     _REM = "" if _REM in ("", "0") else _REM_DEFAULT if _REM == "1" else _REM
     _REM_N = [0, 0]                   # requests with the reminder · agent requests without (last message not user / tool)
 
+    def _answers(msgs, tool):
+        """is the last message the result of a call to `tool`?"""
+        cid = msgs[-1].get("tool_call_id")
+        for m in reversed(msgs[:-1]):
+            if isinstance(m, dict) and m.get("role") == "assistant":
+                for c in m.get("tool_calls") or []:
+                    c = c if isinstance(c, dict) else c.model_dump()
+                    if (c.get("function") or {}).get("name") == tool and (cid is None or c.get("id") == cid):
+                        return True
+                return False
+        return False
+
     def _remind(kwargs):
         msgs = kwargs.get("messages")
         if not _REM or not kwargs.get("tools") or not isinstance(msgs, list) or not msgs:
@@ -106,6 +118,10 @@ if litellm is not None:
             _REM_N[1] += 1; return
         # always a text block of its own, never inside a tool's output (2026-11-20: the box's replay gave thoughts on
         # 42 % of calls with the line inside the tool output string and 96 % with it as a separate block)
+        if last.get("role") == "tool" and _answers(msgs, "submit_patch"):
+            # nothing is called after the submit: the line there only made the teacher talk about it (2026-11-20, third
+            # pilot: 8 of the 27 closing replies mention "the reminder", 0 of the 610 replies before the submit)
+            _REM_N[1] += 1; return
         if last.get("role") == "tool":      # a user message after the tool's: the Anthropic format merges the two into
             kwargs["messages"] = msgs + [{"role": "user", "content": _REM}]      # one turn [tool_result, text]
         else:
