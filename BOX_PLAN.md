@@ -583,6 +583,23 @@ grep -m3 "commands start in" runs/gen_r.log         # 📷 after the first batch
 ```
 `RESERVE_USD` 0.40 because one attempt cost $0.354. Estimate: about 3,400 attempts × $0.124 ≈ $420 (roughly $350–$550).
 
+**Correction to the proposal above (2026-11-20, later): the missing thoughts in the history are a defect of the
+teacher's route, not how the harness works.** Checked in the uploaded data and in the code:
+- Reminder pilot, 555 pairs of a reply and the same reply as it comes back in the next request: the visible text is
+  re-sent in 346 of 346 cases, the thought in 0 of 391. Re-sent assistant messages have only `role`, `content`, `tool_calls`.
+- The same harness with Gemma (two earlier runs on the laptop, 243 and 394 re-sent assistant messages): every one
+  carries `reasoning` and `reasoning_content`. So the student sees all its earlier thoughts; the teacher saw none of its own.
+  The earlier Opus run on the same route as the teacher: none either.
+- Where it is lost (code read and run on the laptop; the gateway's raw reply is not in the logs, so which of the two
+  cases applies is not known): ADK's LiteLLM layer takes `thinking_blocks` before `reasoning_content`, and discards
+  the thought when the blocks have no `signature` key or the list is empty. With `reasoning_content` alone, or blocks
+  with a signature, it keeps the thought and re-sends it.
+- Not checked: whether a re-sent thought reaches the gateway on this route (LiteLLM's conversion to the Messages
+  format), and whether the teacher then thinks on every call (the box's replay of one trajectory said 25 of 26).
+
+Consequence: the teacher did not run under the student's conditions. **The scale line above waits** until this is
+repaired and a third pilot on the same 27 tasks is read.
+
 ## B-10 · Our own MetaCurate-style data: teacher trajectories from GLM-5.3 through a gateway (plan 2026-11-13, revised the same day: generation settings as the paper, GLM-5.3 only, the official rule logic, SWE-Gym left out; **scope changed 2026-11-17: B-10 = data generation, the students are chosen afterwards**; **2026-11-18: generation continues in B-11, in the competition harness; the mini-swe-agent route below is kept as written and not run**) — step 1 `setup` ✓ · `check` ✓ for SWE-rebench-V2 · `diag` ✓ (2026-11-13: both SWE-rebench problems explained and fixed in the scripts) · ▶ **now on the box: the commands under "On the box now" below**, 📷 · **B-10b (2026-11-17): three data lines against the thought loops, gated on B-9 part 3 step 19 — see the end of this section**
 
 **On the box now (2026-11-13, after `diag`; no tokens except a few cents for the probe).**
