@@ -86,8 +86,8 @@ if litellm is not None:
         raise ValueError(f"CEIL_THINK={_THINK!r}: adaptive | off | harness | budget:<n> | effort:<level> | extra:<json>")
 
     _TK, _TB = _think_kwargs()
-    # CEIL_REMINDER (B-11, the user's decision of 2026-11-20): a line added to the END of the last message of every
-    # agent request (one that carries tools), so the teacher reasons before every tool call. It exists only in the
+    # CEIL_REMINDER (B-11, the user's decision of 2026-11-20): a line added as a text block of its own at the END of
+    # every agent request (one that carries tools; after a tool's output: a user message that follows it), so the teacher reasons before every tool call. It exists only in the
     # request that leaves this adapter: the harness's history is not touched (a copy is changed), the trajectory log
     # (traj_log.py wraps this adapter and sees the request before it) and the Gemma token count do not contain it,
     # and so no training prompt does. unset / 0 = off · 1 = the default text · anything else = that text.
@@ -104,12 +104,16 @@ if litellm is not None:
         last = msgs[-1]
         if not isinstance(last, dict) or last.get("role") not in ("user", "tool"):
             _REM_N[1] += 1; return
-        last = dict(last); c = last.get("content")
-        if isinstance(c, list):
-            last["content"] = list(c) + [{"type": "text", "text": _REM}]
+        # always a text block of its own, never inside a tool's output (2026-11-20: the box's replay gave thoughts on
+        # 42 % of calls with the line inside the tool output string and 96 % with it as a separate block)
+        if last.get("role") == "tool":      # a user message after the tool's: the Anthropic format merges the two into
+            kwargs["messages"] = msgs + [{"role": "user", "content": _REM}]      # one turn [tool_result, text]
         else:
-            last["content"] = (c or "") + "\n\n" + _REM
-        kwargs["messages"] = msgs[:-1] + [last]; _REM_N[0] += 1
+            last = dict(last); c = last.get("content")
+            blocks = list(c) if isinstance(c, list) else ([{"type": "text", "text": c}] if c else [])
+            last["content"] = blocks + [{"type": "text", "text": _REM}]
+            kwargs["messages"] = msgs[:-1] + [last]
+        _REM_N[0] += 1
     _HIST = os.environ.get("CEIL_HIST_THOUGHTS", "0") not in ("", "0")
     _PROBE = [os.environ.get("CEIL_HIST_PROBE", "0") not in ("", "0")]
     _SIG = {}                         # thought text → the signature its block came with (sent back with it)
@@ -283,9 +287,9 @@ if litellm is not None:
                 kwargs["temperature"] = _TEMP; kwargs.pop("top_p", None)     # one of the two, as the provider advises
             for k in ("top_k",):
                 kwargs.pop(k, None)
-            _remind(kwargs)
             if isinstance(kwargs.get("messages"), list):
                 kwargs["messages"] = _cache(_hist_out(kwargs["messages"], model))
+            _remind(kwargs)      # after the cache mark: the mark stays on the conversation itself, the line follows it
         elif extra is not None:
             kwargs["extra_body"] = extra      # other providers keep their fields
         return kwargs

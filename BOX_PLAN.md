@@ -639,6 +639,24 @@ version A uses every turn; below → the turns without a teacher thought get no 
 attempt, compactions and context errors beside the second pilot. Then the scale line, with the user's go:
 `BUDGET_USD=800 RESERVE_USD=<the pilot's maximum, rounded up> … teacher_gen.sh gen`.
 
+**Reminder placement corrected (2026-11-20, pointed out by the box session).** My adapter glued the line to the end
+of the tool's output string; the box's replay that gave 96 % had it as a text block of its own (inside the string:
+42 %). So the second pilot did not run what the replay had tested. Now the line is always its own text block: after a
+tool's output it is a user message that follows (the Anthropic format merges the two into one turn `[tool_result,
+text]`); the cache mark stays on the conversation before it. Stand-in, both routes: at the end of 8 of 8 requests,
+once, never inside a tool output. Not tested: the real gateway.
+
+**The third pilot must run this code in a directory of its own** (the probe in `runs/teach_h` may have run the old
+placement; the probe's readings do not depend on it):
+```bash
+git pull && git log --oneline -1
+export OUT=runs/teach_h2 REMINDER=1
+bash scripts/teacher_gen.sh setup | tail -12
+cp runs/teach_r/gold.json runs/teach_h2/gold.json
+BUDGET_USD=12 RESERVE_USD=0.40 PRICE=<same three numbers>  bash scripts/teacher_gen.sh pilot 2>&1 | tee runs/pilot_h2.log
+```
+Readings as written above. If the probe said `DO NOT reach`, add `API=chat` to the `export` line.
+
 ## B-10 · Our own MetaCurate-style data: teacher trajectories from GLM-5.3 through a gateway (plan 2026-11-13, revised the same day: generation settings as the paper, GLM-5.3 only, the official rule logic, SWE-Gym left out; **scope changed 2026-11-17: B-10 = data generation, the students are chosen afterwards**; **2026-11-18: generation continues in B-11, in the competition harness; the mini-swe-agent route below is kept as written and not run**) — step 1 `setup` ✓ · `check` ✓ for SWE-rebench-V2 · `diag` ✓ (2026-11-13: both SWE-rebench problems explained and fixed in the scripts) · ▶ **now on the box: the commands under "On the box now" below**, 📷 · **B-10b (2026-11-17): three data lines against the thought loops, gated on B-9 part 3 step 19 — see the end of this section**
 
 **On the box now (2026-11-13, after `diag`; no tokens except a few cents for the probe).**

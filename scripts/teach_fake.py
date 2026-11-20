@@ -204,10 +204,20 @@ def selftest():
                 for b in B:
                     last = json.dumps(b["messages"][-1]); rest = json.dumps(b["messages"][:-1]) + json.dumps(b.get("system", ""))
                     assert "<reminder>Before EVERY tool call" in last and last.count("<reminder>") == 1 and "<reminder>" not in rest, last[:300]
+                for b in B:      # a block of its own: never inside a tool's output, never glued to the task text
+                    m = b["messages"][-1]; c = m["content"]
+                    assert m["role"] == "user" and "<reminder>" not in json.dumps([x for x in b["messages"] if x.get("role") == "tool"]), m
+                    if isinstance(c, list):
+                        assert c[-1].get("type") == "text" and c[-1]["text"].startswith("<reminder>"), c[-1]
+                        assert all("<reminder>" not in json.dumps(x) for x in c[:-1]), c
+                        if toolmsg and fmt == "anthropic":
+                            assert c[-2].get("type") == "tool_result", [x.get("type") for x in c]
+                    else:
+                        assert c.startswith("<reminder>"), c[:80]
                 assert "reminder on" in banner_r, banner_r
                 logged = [json.loads(l) for l in open(os.path.join(tmp, "calls.jsonl"))]
                 assert all(x.get("reminder") is True for x in logged), logged[:1]
-                rows.append(f"reminder [{fmt}, last message {'tool' if toolmsg else 'user'}]: in the last message of 8/8 requests, once; the caller's messages unchanged")
+                rows.append(f"reminder [{fmt}, last message {'tool' if toolmsg else 'user'}]: a text block of its own at the end of 8/8 requests, once, not inside the tool output; the caller's messages unchanged")
             finally:
                 shutil.rmtree(tmp, ignore_errors=True)
     # earlier thoughts in the history, built through ADK's own conversions as the harness does: with the knob they reach
