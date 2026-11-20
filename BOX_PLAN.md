@@ -771,6 +771,34 @@ by call number · matches before / after `submit_patch`, each read in context ·
 **Rule for the scale:** `rule @ system` when its thoughts are ≥ 90 % and its matches before the submit are 0;
 otherwise `1 @ end` (93.2 %, 0 before the submit, no line after the submit result any more). The scale waits.
 
+**Fourth pilot read (2026-11-20; tagged line in the system prompt; recounted on the laptop from the upload, equal
+to the box's photo):** the teacher never mentions the line, and thinks on a third fewer calls.
+
+| | pilot 3 · `1 @ end` | pilot 4 · `1 @ system` |
+|---|---|---|
+| calls with a thought | 93.2 % (594 of 637) | **66.7 %** (381 of 571) |
+| by call number 1–3 / 4–8 / 9–25 / 26+ | 90 / 97 / 93 / 91 % | 69 / 73 / 63 / 66 % |
+| replies mentioning the line: before / after the submit | 0 / 8 | 0 / 0 |
+| resolved | 16 of 27 | 17 of 27 |
+| cost per attempt: mean / max | $0.172 / $0.98 (two tries of one task) | $0.126 / $0.553 |
+| compactions | 42 | 32 |
+| gates (thoughts re-sent · reminder in the log · thoughts lost) | hold | hold (325 of 325 · 0 · 0) |
+
+By the rule set in advance (`system` only with thoughts ≥ 90 %) the scale uses `1 @ end`. Not separated by any run:
+how much of pilot 4's 66.7 % comes from the line and how much from the earlier thoughts alone — there is no pilot with
+the history thoughts and no reminder (pilot 1, neither: 40.5 %). The fifth pilot (`rule @ system`, above) is still
+the user's open test; its rule for the scale is unchanged.
+
+**Docker Hub limit — measure, do not assume** (the box session advised against `docker login`; my figures were
+100 pulls / 6 h anonymous and 200 / 6 h logged in, from memory of Docker's documentation, not checked today). The
+registry reports the limit that applies; these requests do not count as pulls:
+```bash
+T=$(curl -s "https://auth.docker.io/token?service=registry.docker.io&scope=repository:ratelimitpreview/test:pull" | python3 -c "import sys,json;print(json.load(sys.stdin)['token'])")
+curl -sI -H "Authorization: Bearer $T" https://registry-1.docker.io/v2/ratelimitpreview/test/manifests/latest | grep -i ratelimit     # 📷 anonymous: limit;w=seconds and what remains
+```
+`ratelimit-limit: 100;w=21600` = 100 per 6 hours. At 1,215 images the anonymous limit alone means 3 days; logged in
+(the same check with `curl -u <user>` on the token request, typed by the user) it is whatever that line then says.
+
 ## B-10 · Our own MetaCurate-style data: teacher trajectories from GLM-5.3 through a gateway (plan 2026-11-13, revised the same day: generation settings as the paper, GLM-5.3 only, the official rule logic, SWE-Gym left out; **scope changed 2026-11-17: B-10 = data generation, the students are chosen afterwards**; **2026-11-18: generation continues in B-11, in the competition harness; the mini-swe-agent route below is kept as written and not run**) — step 1 `setup` ✓ · `check` ✓ for SWE-rebench-V2 · `diag` ✓ (2026-11-13: both SWE-rebench problems explained and fixed in the scripts) · ▶ **now on the box: the commands under "On the box now" below**, 📷 · **B-10b (2026-11-17): three data lines against the thought loops, gated on B-9 part 3 step 19 — see the end of this section**
 
 **On the box now (2026-11-13, after `diag`; no tokens except a few cents for the probe).**
