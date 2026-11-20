@@ -666,6 +666,41 @@ the reminder`, a count with every match and its context, not a gate; `--echo-all
 phrases only: a paraphrase in other words is not found. At step 5 every match is read before its turn is used.
 Pull before the third pilot; `inspect` can also be rerun afterwards: `OUT=runs/teach_h2 bash scripts/teacher_gen.sh inspect pilot30`.
 
+**Third pilot (2026-11-20; reminder as its own block + earlier thoughts in the history; same 27 tasks; $4.64) —
+every reading set in advance holds.** Numbers from the box's photo, not yet recounted on the laptop.
+
+| reading | pilot 2 (reminder, no thoughts in history) | pilot 3 | |
+|---|---|---|---|
+| replies with a thought that come back with it | 0 | 496 of 496 | gate holds |
+| trajectory-log lines with the reminder | 0 | 0 | gate holds |
+| commands start in | `/` | `/workspace`, 29 of 29 | fix holds on real Docker |
+| calls with a thought | 68.0 % | **93.2 %** | ≥ 90 % → version A uses every turn |
+| thoughts by call number 1–3 / 4–8 / 9–25 / 26+ | 94 / 73 / 64 / 48 % | 90 / 97 / 93 / 91 % | no fall with depth |
+| resolved | 15 of 27 | 16 of 27 | ≥ 12 holds |
+
+Beside it: attempts at ≥ 34 tool calls 9 → 7 → 4 over the three pilots, mean tool calls 22.4 → 20.6 → 18.3. Cost per
+attempt mean $0.172 (was $0.105, $0.124), median $0.077; compactions 18 → 42 (the thoughts now count in the 32K
+window, as for the student); 6 calls reached the 8,192 output limit. One call to a tool named `bash`, which is not
+among the 6 (the harness answers with an error).
+
+**Driver defect found by the box, fixed here:** an attempt the harness ended at the 7.5-minute session limit was
+taken for an infrastructure failure ("session timeout" matched the pattern) and run again; two tasks were paid twice
+($0.98 and $0.76 for the two tries together). Ending at a V21 budget (time, turns) is now the attempt's result
+(`done`, graded like any other) and is never rerun.
+
+**▶ Step 4 on the 8-card box · scale (paid; the user's go):**
+```bash
+git pull && git log --oneline -1
+docker login
+export OUT=runs/teach_h2 REMINDER=1
+BUDGET_USD=800 RESERVE_USD=0.60 PRICE=<same three numbers>  nohup bash scripts/teacher_gen.sh gen > runs/gen_h2.log 2>&1 &
+tail -5 runs/gen_h2.log; bash scripts/teacher_gen.sh report        # 📷 now and then; generation stops by 2026-11-25
+```
+Same directory as the third pilot: its 27 first attempts count, and the $800 includes its $4.64. `RESERVE_USD` 0.60:
+one attempt cost about $0.50 at most. Estimate: 1,215 tasks × 93 % with a passing gold patch × 3 ≈ 3,400 attempts ×
+$0.172 ≈ $580 (the cap stops new attempts when spent + reserved reaches $800). Also wanted: the third pilot uploaded
+to the Kaggle dataset, for the recount and for the conversion code of step 5.
+
 ## B-10 · Our own MetaCurate-style data: teacher trajectories from GLM-5.3 through a gateway (plan 2026-11-13, revised the same day: generation settings as the paper, GLM-5.3 only, the official rule logic, SWE-Gym left out; **scope changed 2026-11-17: B-10 = data generation, the students are chosen afterwards**; **2026-11-18: generation continues in B-11, in the competition harness; the mini-swe-agent route below is kept as written and not run**) — step 1 `setup` ✓ · `check` ✓ for SWE-rebench-V2 · `diag` ✓ (2026-11-13: both SWE-rebench problems explained and fixed in the scripts) · ▶ **now on the box: the commands under "On the box now" below**, 📷 · **B-10b (2026-11-17): three data lines against the thought loops, gated on B-9 part 3 step 19 — see the end of this section**
 
 **On the box now (2026-11-13, after `diag`; no tokens except a few cents for the probe).**

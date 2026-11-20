@@ -103,6 +103,8 @@ class State:
                 out.append(i)
         return out
 
+BUDGET_END_RE = re.compile(r"Agent exceeded (session timeout|turns budget|maximum allowed)", re.I)
+
 
 def classify(result, patch, per_key):
     """one harness result → (state, fields). `result` = the task's line of task_results.jsonl or None."""
@@ -115,7 +117,10 @@ def classify(result, patch, per_key):
     ledger_errs = (per_key or {}).get("errors", 0)
     if calls == 0:
         return "infra", {"why": ("no model call: " + err)[:200]}
-    if INFRA_RE.search(err) and not patch:
+    # the harness ending the attempt at one of the V21 budgets (7.5 min, 80 turns) is the attempt's result, not a
+    # failure of the machinery: never run again (2026-11-20: "session timeout" matched the infra pattern, two
+    # attempts were run and paid twice)
+    if INFRA_RE.search(err) and not patch and not BUDGET_END_RE.search(err):
         return "infra", {"why": err[:200]}
     return "done", {"llm_calls": calls, "tool_calls": result.get("tool_calls"), "patch_chars": len(patch or ""),
                     "harness_error": err[:200] or None, "ledger_errors": ledger_errs, "seconds": result.get("duration_seconds")}
@@ -522,6 +527,9 @@ def selftest():
         assert classify({"total_llm_calls": 3, "error": "litellm.RateLimitError: slow down"}, "", None)[0] == "infra"
         assert classify({"total_llm_calls": 3, "error": "teach_ledger: budget reached (spent …)"}, "", None)[0] == "infra"
         assert classify({"total_llm_calls": 9, "error": "Agent exceeded turns budget (80 turns)", "tool_calls": 36}, "diff", None)[0] == "done"
+        s_, f_ = classify({"total_llm_calls": 30, "error": "Agent exceeded session timeout (7.5 min)", "tool_calls": 20}, "", None)
+        assert s_ == "done" and "session timeout" in f_["harness_error"], (s_, f_)      # a V21 budget ended it: the result, no rerun
+        assert classify({"total_llm_calls": 3, "error": "litellm.Timeout: request timed out"}, "", None)[0] == "infra"
         assert classify({"total_llm_calls": 9, "error": None, "tool_calls": 7}, "", None)[0] == "done"       # an empty patch is the model's result
         assert classify({"total_llm_calls": 9, "error": "TimeoutExceeded: Command timed out"}, "", None)[0] == "done"
         # state: last line wins, retries, resume
