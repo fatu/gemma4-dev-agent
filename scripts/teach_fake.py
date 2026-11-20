@@ -258,6 +258,25 @@ def selftest():
                         + (" · probe: 1 extra request without them, verdict REACH" if want else " (the defect, reproduced)"))
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
+    for fmt in ("anthropic", "openai"):                # place system: once, in the system prompt, nowhere else
+        for toolmsg in ("", "1"):
+            tmp = tempfile.mkdtemp(prefix="teach_fake_")
+            try:
+                teach_ledger.Ledger(os.path.join(tmp, "ledger")).init(1.0, [1.0, 0.1, 4.0])
+                res, banner_s = _one("effort:high", fmt, tmp, {"CEIL_REMINDER": "1", "CEIL_REMINDER_PLACE": "system", "FAKE_TOOLMSG": toolmsg})
+                B = [x["body"] for x in bodies(tmp)]
+                assert len(B) == 8 and res["caller_messages_unchanged"] and "place system" in banner_s, (len(B), banner_s)
+                for b in B:
+                    if fmt == "anthropic":
+                        sysb = json.dumps(b.get("system", "")); rest = json.dumps(b["messages"])
+                    else:
+                        sysb = json.dumps([m for m in b["messages"] if m["role"] == "system"]); rest = json.dumps([m for m in b["messages"] if m["role"] != "system"])
+                    assert sysb.count("<reminder>Before EVERY tool call") == 1 and "<reminder>" not in rest and "sys" in sysb, (sysb[:300], rest[:200])
+                logged = [json.loads(l) for l in open(os.path.join(tmp, "calls.jsonl"))]
+                assert all(x.get("reminder") is True and x.get("reminder_place") == "system" for x in logged), logged[:1]
+                rows.append(f"reminder place system [{fmt}, last message {'tool' if toolmsg else 'user'}]: once in the system prompt of 8/8 requests, in no other message; the caller's messages unchanged")
+            finally:
+                shutil.rmtree(tmp, ignore_errors=True)
     for fmt in ("anthropic", "openai"):                # after the result of submit_patch: no reminder (nothing is called after it)
         tmp = tempfile.mkdtemp(prefix="teach_fake_")
         try:

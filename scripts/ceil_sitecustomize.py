@@ -95,6 +95,12 @@ if litellm is not None:
                     "in your thinking about why this step is needed and what you expect to see.</reminder>")
     _REM = os.environ.get("CEIL_REMINDER", "")
     _REM = "" if _REM in ("", "0") else _REM_DEFAULT if _REM == "1" else _REM
+    # CEIL_REMINDER_PLACE (2026-11-20, the user's test): end = the block at the end of the request (above) ·
+    # system = the same line appended to the system prompt of the outgoing request, nothing at the end. Either way the
+    # harness's own messages and the trajectory log keep the submission's prompt unchanged.
+    _REM_PLACE = os.environ.get("CEIL_REMINDER_PLACE", "end") or "end"
+    if _REM_PLACE not in ("end", "system"):
+        raise ValueError(f"CEIL_REMINDER_PLACE={_REM_PLACE!r}: end | system")
     _REM_N = [0, 0]                   # requests with the reminder · agent requests without (last message not user / tool)
 
     def _answers(msgs, tool):
@@ -112,6 +118,19 @@ if litellm is not None:
     def _remind(kwargs):
         msgs = kwargs.get("messages")
         if not _REM or not kwargs.get("tools") or not isinstance(msgs, list) or not msgs:
+            return
+        if _REM_PLACE == "system":
+            first = msgs[0]
+            if not isinstance(first, dict) or first.get("role") != "system":
+                _REM_N[1] += 1; return
+            first = dict(first); c = first.get("content")
+            if isinstance(c, list):      # the cache mark sits on the last block: the line goes in front of it, inside the cached part
+                blocks = list(c); blocks.insert(max(0, len(blocks) - 1), {"type": "text", "text": _REM}); first["content"] = blocks
+                if len(c) == 1 and isinstance(c[0], dict) and c[0].get("type") == "text":
+                    first["content"] = [dict(c[0], text=c[0].get("text", "") + "\n\n" + _REM)]
+            else:
+                first["content"] = (c or "") + "\n\n" + _REM
+            kwargs["messages"] = [first] + msgs[1:]; _REM_N[0] += 1
             return
         last = msgs[-1]
         if not isinstance(last, dict) or last.get("role") not in ("user", "tool"):
@@ -238,7 +257,7 @@ if litellm is not None:
     print(f"ceil adapter: temperature {'as sent by the harness / dropped by the provider rule' if _TEMP is None else _TEMP} (CEIL_TEMP) · "
           f"thinking {_THINK} (CEIL_THINK) · every model remote {_REMOTE_ALL} (CEIL_REMOTE) · "
           f"ledger {os.environ.get('TEACH_LEDGER_DIR') or 'off'} · attempt {_ATTEMPT} (TEACH_ATTEMPT) · "
-          f"reminder {('on, ' + str(len(_REM)) + ' chars, sha ' + __import__('hashlib').sha256(_REM.encode()).hexdigest()[:8] + ': ' + _REM[:60] + '…') if _REM else 'off'} (CEIL_REMINDER; "
+          f"reminder {('on, ' + str(len(_REM)) + ' chars, sha ' + __import__('hashlib').sha256(_REM.encode()).hexdigest()[:8] + ': ' + _REM[:60] + '…') if _REM else 'off'} (CEIL_REMINDER) · place {_REM_PLACE} (CEIL_REMINDER_PLACE; "
           f"in the outgoing request only, never in the trajectory log)", flush=True)
 
     def _is_remote(model):
@@ -389,7 +408,8 @@ if litellm is not None:
         rec = {"t": round(time.time(), 1), "s": round(time.time() - t0, 2), "model": kwargs.get("model"),
                "in": own if own is not None else d.get("prompt_tokens"), "gemma_in": gemma, "out": d.get("completion_tokens"),
                "reasoning": (d.get("completion_tokens_details") or {}).get("reasoning_tokens") if isinstance(d.get("completion_tokens_details"), dict) else None,
-               "temp": kwargs.get("temperature"), "reminder": bool(_REM) and _REM in json.dumps(kwargs.get("messages")[-1:] if isinstance(kwargs.get("messages"), list) else "", default=str),
+               "temp": kwargs.get("temperature"), "reminder": bool(_REM) and _REM in json.dumps((kwargs.get("messages")[:1] if _REM_PLACE == "system" else kwargs.get("messages")[-1:]) if isinstance(kwargs.get("messages"), list) else "", default=str),
+               "reminder_place": _REM_PLACE if _REM else None,
                "cache_read": (d.get("prompt_tokens_details") or {}).get("cached_tokens") if isinstance(d.get("prompt_tokens_details"), dict) else d.get("cache_read_input_tokens"),
                "cache_write": d.get("cache_creation_input_tokens"), "err": (str(err)[:160] if err else None),
                "think_shape": shape, "hist": dict(zip(("assistant_msgs", "with_thought", "thought_chars"), _hist_stats(kwargs.get("messages"))))}

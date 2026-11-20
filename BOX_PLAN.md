@@ -718,6 +718,31 @@ before every tool call." — so the scale run will hold a few such turns. Two me
 - *Step 5:* every turn `inspect` lists is dropped from the targets and its thought removed from the context
   (counted). The search knows fixed phrases only; a paraphrase is not found.
 
+**Fourth pilot (user, 2026-11-20): the reminder in the system prompt of the teacher's request, nothing after the
+user / tool message — do the mentions disappear from the thoughts and replies?** New knob `REMINDER_PLACE`
+(`end` = the block at the end of each request, the default · `system` = the same line appended to the system prompt
+of the outgoing request; printed; one output directory = one place). The harness's own messages and the trajectory
+log keep V21's prompt unchanged in both cases. Stand-in, both routes: once in the system prompt of 8 of 8 requests,
+in no other message. `inspect` now splits the matches into before `submit_patch` (training turns) and after it (the
+closing reply). **The scale line above waits for this pilot.**
+
+```bash
+git pull && git log --oneline -1
+export OUT=runs/teach_s REMINDER=1 REMINDER_PLACE=system     # first line: reminder 1 · reminder place system · history thoughts 1
+bash scripts/teacher_gen.sh setup | tail -12
+cp runs/teach_r/gold.json runs/teach_s/gold.json
+BUDGET_USD=12 RESERVE_USD=0.60 PRICE=<same three numbers>  bash scripts/teacher_gen.sh pilot 2>&1 | tee runs/pilot_s.log
+```
+📷 the report and inspect blocks; upload `runs/teach_s` to the Kaggle dataset. About $5. Read (set in advance),
+beside the third pilot (place `end`: matches 0 before the submit, 8 after it; thoughts 93.2 %, 90 / 97 / 93 / 91 % by
+call number; resolved 16 of 27):
+- `replies with a match: N BEFORE submit_patch · M after it`, every match read in its context.
+- thoughts overall and by call number; resolved (≥ 12); the three gates (`history`, `reminder` 0 log lines, `GATE: must be 0`).
+- **Which place goes to the scale:** `system` when its thoughts are ≥ 90 % and it has fewer matches than `end`;
+  `end` (now without the line after the submit result) when the thoughts under `system` fall below 90 %. Anything
+  else → the user decides. 27 tasks cannot tell rare cases apart: the probe run had 1 match before the submit in 2
+  tasks, the third pilot 0 in 27 — whichever place is used, step 5 drops the matched turns.
+
 ## B-10 · Our own MetaCurate-style data: teacher trajectories from GLM-5.3 through a gateway (plan 2026-11-13, revised the same day: generation settings as the paper, GLM-5.3 only, the official rule logic, SWE-Gym left out; **scope changed 2026-11-17: B-10 = data generation, the students are chosen afterwards**; **2026-11-18: generation continues in B-11, in the competition harness; the mini-swe-agent route below is kept as written and not run**) — step 1 `setup` ✓ · `check` ✓ for SWE-rebench-V2 · `diag` ✓ (2026-11-13: both SWE-rebench problems explained and fixed in the scripts) · ▶ **now on the box: the commands under "On the box now" below**, 📷 · **B-10b (2026-11-17): three data lines against the thought loops, gated on B-9 part 3 step 19 — see the end of this section**
 
 **On the box now (2026-11-13, after `diag`; no tokens except a few cents for the probe).**

@@ -192,7 +192,7 @@ def harness(a, name, ids, attempt):
     env = dict(os.environ, LATEST="0", ARMS="base", SUBMISSION=a.submission, MODEL_ALIAS=a.model_alias, MODELS_YAML=a.models_yaml,
                MAX_CALLS=str(a.max_calls), TIME_MIN=str(a.time_min), MAX_TURNS=str(a.max_turns), COMPACT_INTERVAL=str(a.compact_interval),
                NO_TESTDEPS="1", SPLIT=idf, TAG=name, CONC=str(a.conc), TRAJ="1", SANDBOX=a.sandbox,
-               CEIL_TEMP=str(a.temp), CEIL_THINK=a.think, CEIL_REMINDER=str(a.reminder), CEIL_HIST_THOUGHTS=str(a.hist_thoughts), CEIL_HIST_PROBE=str(a.hist_thoughts), TEACH_LEDGER_DIR=os.path.abspath(os.path.join(a.out, "ledger")),
+               CEIL_TEMP=str(a.temp), CEIL_THINK=a.think, CEIL_REMINDER=str(a.reminder), CEIL_REMINDER_PLACE=a.reminder_place, CEIL_HIST_THOUGHTS=str(a.hist_thoughts), CEIL_HIST_PROBE=str(a.hist_thoughts), TEACH_LEDGER_DIR=os.path.abspath(os.path.join(a.out, "ledger")),
                TEACH_ATTEMPT=str(attempt), CEIL_CALL_LOG=os.path.abspath(os.path.join(a.out, "calls", name + ".jsonl")))
     os.makedirs(os.path.join(a.out, "calls"), exist_ok=True)
     if a.sandbox == "docker":
@@ -238,7 +238,7 @@ def cmd_gen(a):
     ids = [x for x in open(a.ids).read().split() if x]
     knobs = {k: getattr(a, k) for k in ("chunk", "attempts", "retries", "conc", "reserve_usd", "temp", "think", "submission", "model_alias",
                                         "models_yaml", "max_calls", "time_min", "max_turns", "compact_interval", "sandbox", "keep_images",
-                                        "min_free_gb", "tasks_dir", "table", "grader", "reopen_lost", "reopen_failed", "pull_waits", "pull_wait_min", "reminder", "hist_thoughts")}
+                                        "min_free_gb", "tasks_dir", "table", "grader", "reopen_lost", "reopen_failed", "pull_waits", "pull_wait_min", "reminder", "reminder_place", "hist_thoughts")}
     print(f"teacher_gen gen · name {a.name} · {len(ids)} tasks from {a.ids} · out {a.out}")
     print("   knobs: " + " · ".join(f"{k} {v}" for k, v in knobs.items()))
     print("   " + teach_ledger.fmt_status(L.status()))
@@ -251,6 +251,11 @@ def cmd_gen(a):
     other = [r for r in st.att.values() if r["state"] == "done" and r.get("reminder", "off") != rem]
     if other:
         sys.exit(f"STOP: {len(other)} done attempts in {a.out} were made with the reminder {other[0].get('reminder', 'off')}, this run has it {rem}. "
+                 f"Use another OUT for the other setting.")
+    place = a.reminder_place if rem == "on" else "none"
+    other = [r for r in st.att.values() if r["state"] == "done" and r.get("reminder", "off") == "on" and r.get("reminder_place", "end") != place]
+    if other:
+        sys.exit(f"STOP: {len(other)} done attempts in {a.out} had the reminder at '{other[0].get('reminder_place', 'end')}', this run has it at '{place}'. "
                  f"Use another OUT for the other setting.")
     hist = "on" if str(a.hist_thoughts) not in ("", "0") else "off"
     other = [r for r in st.att.values() if r["state"] == "done" and r.get("hist", "off") != hist]
@@ -330,7 +335,7 @@ def cmd_gen(a):
                         st.put(dict(f, task=i, attempt=att, state=s, tries=tries, resolved=resolved.get(i) if s == "done" else None,
                                     usd=round(k.get("usd", 0.0), 6), tok_in=k.get("in", 0), tok_cached=k.get("cached", 0),
                                     tok_out=k.get("out", 0), tok_reasoning=k.get("reasoning", 0), model_calls=k.get("calls", 0),
-                                    est_calls=k.get("est_calls", 0), run=rundir, reminder=rem, hist=hist))
+                                    est_calls=k.get("est_calls", 0), run=rundir, reminder=rem, reminder_place=place, hist=hist))
                 finally:
                     for i in batch:
                         L.release(f"{i}#{att}")
@@ -416,7 +421,7 @@ def cmd_inspect(a):
         for f in sorted(glob.glob(os.path.join(run_, "traj", "*.jsonl"))):
             if f.endswith(".tools.jsonl"):
                 continue
-            n = t = 0; seq = []
+            n = t = 0; seq = []; submitted = False
             for line in open(f):
                 rem_lines += "<reminder>" in line
                 c = json.loads(line); r = c.get("resp") or {}
@@ -426,7 +431,8 @@ def cmd_inspect(a):
                     if am:
                         back[1] += 1
                         back[0] += bool(am[0].get("reasoning_content") or am[0].get("reasoning") or am[0].get("thinking_blocks"))
-                echo += [(os.path.basename(f)[:-6], n + 1) + h for h in echo_hits(r)]
+                echo += [(os.path.basename(f)[:-6], n + 1) + h + ("after submit_patch" if submitted else "BEFORE submit_patch",) for h in echo_hits(r)]
+                submitted = submitted or any(x.get("name") == "submit_patch" for x in r.get("tool_calls") or [])
                 seq.append(bool(r.get("reasoning")))
                 d = by_depth["01-03" if n < 3 else "04-08" if n < 8 else "09-25" if n < 25 else "26+"]; d[0] += 1; d[1] += bool(r.get("reasoning"))
                 n += 1; t += bool(r.get("reasoning")); thought_chars.append(len(r.get("reasoning") or ""))
@@ -480,10 +486,14 @@ def cmd_inspect(a):
     print(f"   reminder: done attempts made with it {dict(made)} · trajectory log lines that contain '<reminder>': {rem_lines}  ← GATE: must be 0 "
           f"(the line is for the teacher's request only; no training prompt may hold it) → {'ok' if not rem_lines else 'NOT MET'}")
     ec = collections.Counter((h[2], h[3]) for h in echo)
+    turns = collections.Counter(x[2] for x in {(h[0], h[1], h[5]) for h in echo})
+    made_p = collections.Counter(r.get("reminder_place", "end") for r in st.att.values() if r["state"] == "done" and r.get("reminder", "off") == "on")
+    print(f"   reminder place of the done attempts: {dict(made_p) or 'no reminder'} · replies with a match: {turns.get('BEFORE submit_patch', 0)} BEFORE submit_patch "
+          f"(training turns) · {turns.get('after submit_patch', 0)} after it (the closing reply)")
     print(f"   replies that repeat or mention the reminder ({calls} replies searched: thought, text, tool arguments; a count to be read, not a gate): "
           + (" · ".join(f"{k[0]} in {k[1]} {v}" for k, v in ec.most_common()) if ec else "0 matches of " + str(len(ECHO_PATS)) + " patterns"))
-    for task, call, name, where, ctx in (echo if getattr(a, "echo_all", False) else echo[:12]):
-        print(f"      {task[:36]} call {call} · {name} · {where}: …{ctx[:200]}…")
+    for task, call, name, where, ctx, when in (echo if getattr(a, "echo_all", False) else echo[:12]):
+        print(f"      {task[:36]} call {call} · {when} · {name} · {where}: …{ctx[:200]}…")
     if len(echo) > 12 and not getattr(a, "echo_all", False):
         print(f"      … {len(echo) - 12} more (python3 scripts/teacher_gen.py inspect --out {a.out} --echo-all)")
     print(f"   (matched to the ledger by call order; trajectories whose call count differs from the ledger's, left out: {unmatched or 'none'})")
@@ -575,6 +585,8 @@ def main():
         s.add_argument("--sandbox", default=env_knob("SANDBOX", "docker"), choices=["docker", "subprocess"])
         s.add_argument("--keep-images", type=int, default=env_knob("KEEP_IMAGES", 0, int))
         s.add_argument("--hist-thoughts", default=env_knob("HIST_THOUGHTS", "1", str), help="CEIL_HIST_THOUGHTS: 1 the teacher's earlier thoughts stay in its history, as the student's do · 0 the old behaviour")
+        s.add_argument("--reminder-place", default=env_knob("REMINDER_PLACE", "end", str), choices=["end", "system"],
+                       help="CEIL_REMINDER_PLACE: end = a block at the end of each request · system = appended to the system prompt of the outgoing request")
         s.add_argument("--reminder", default=env_knob("REMINDER", "0", str), help="CEIL_REMINDER: 0 off · 1 the default think-before-every-call line · other = that text")
         s.add_argument("--reopen-failed", type=int, default=env_knob("REOPEN_FAILED", 0, int), help="1 = failed rows run again")
         s.add_argument("--pull-waits", type=int, default=env_knob("PULL_WAITS", 16, int)); s.add_argument("--pull-wait-min", type=float, default=env_knob("PULL_WAIT_MIN", 30, float))
