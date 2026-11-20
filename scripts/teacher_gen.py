@@ -51,6 +51,7 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import teach_ledger  # noqa: E402
+import teach_reminder  # noqa: E402
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 INFRA_RE = re.compile(r"RateLimit|APIConnection|APIError|InternalServerError|ServiceUnavailable|Timeout(?!Exceeded)|BadGateway|"
@@ -252,10 +253,11 @@ def cmd_gen(a):
     if other:
         sys.exit(f"STOP: {len(other)} done attempts in {a.out} were made with the reminder {other[0].get('reminder', 'off')}, this run has it {rem}. "
                  f"Use another OUT for the other setting.")
-    place = a.reminder_place if rem == "on" else "none"
-    other = [r for r in st.att.values() if r["state"] == "done" and r.get("reminder", "off") == "on" and r.get("reminder_place", "end") != place]
+    place = a.reminder_place if rem == "on" else "none"; rid = teach_reminder.ident(a.reminder)
+    other = [r for r in st.att.values() if r["state"] == "done" and r.get("reminder", "off") == "on"
+             and (r.get("reminder_place", "end"), r.get("reminder_id", "1")) != (place, rid)]
     if other:
-        sys.exit(f"STOP: {len(other)} done attempts in {a.out} had the reminder at '{other[0].get('reminder_place', 'end')}', this run has it at '{place}'. "
+        sys.exit(f"STOP: {len(other)} done attempts in {a.out} had the reminder '{other[0].get('reminder_id', '1')}' at '{other[0].get('reminder_place', 'end')}', this run has '{rid}' at '{place}'. "
                  f"Use another OUT for the other setting.")
     hist = "on" if str(a.hist_thoughts) not in ("", "0") else "off"
     other = [r for r in st.att.values() if r["state"] == "done" and r.get("hist", "off") != hist]
@@ -335,7 +337,7 @@ def cmd_gen(a):
                         st.put(dict(f, task=i, attempt=att, state=s, tries=tries, resolved=resolved.get(i) if s == "done" else None,
                                     usd=round(k.get("usd", 0.0), 6), tok_in=k.get("in", 0), tok_cached=k.get("cached", 0),
                                     tok_out=k.get("out", 0), tok_reasoning=k.get("reasoning", 0), model_calls=k.get("calls", 0),
-                                    est_calls=k.get("est_calls", 0), run=rundir, reminder=rem, reminder_place=place, hist=hist))
+                                    est_calls=k.get("est_calls", 0), run=rundir, reminder=rem, reminder_place=place, reminder_id=rid, hist=hist))
                 finally:
                     for i in batch:
                         L.release(f"{i}#{att}")
@@ -395,7 +397,9 @@ ECHO_PATS = (("the tag", r"</?reminder>"), ("the word remind*", r"\bremind"),
              ("before every tool call", r"before (every|each|any|the|a|my|making|calling)[^.\n]{0,20}tool call"),
              ("reason briefly / think before", r"reason(ing)? briefly|think(ing)? before|brief(ly)? reason"),
              ("told to reason", r"(instruct|told|asked|required|supposed)[^.\n]{0,30}(reason|think)"),
-             ("why this step is needed / expect to see", r"why this step is needed|what (i|you) expect to see"))
+             ("why this step is needed / expect to see", r"why this step is needed|what (i|you) expect to see"),
+             ("the rule's wording", r"without (thinking|reasoning) first|(think|reason)(ing)? (first )?before (each|every|any)|"
+                                    r"(rule|prompt|instruction)s?\b[^.\n]{0,40}\b(think|reason)(ing)? (first|before|in 1-3)"))
 
 
 def echo_hits(resp):
@@ -416,14 +420,14 @@ def cmd_inspect(a):
     st = State(a.out)
     runs = sorted({r["run"] for r in st.att.values() if r.get("run") and (not a.name or os.path.basename(r["run"]).startswith(a.name))})
     calls = thought = 0; tools = collections.Counter(); fin = collections.Counter(); secs = []; per_task = []; resets = collections.Counter()
-    echo = []; thought_chars = []; multi = 0; flags = {}; rem_lines = 0; back = [0, 0]; by_depth = collections.defaultdict(lambda: [0, 0])
+    LEAK = teach_reminder.needles(); echo = []; thought_chars = []; multi = 0; flags = {}; rem_lines = 0; back = [0, 0]; by_depth = collections.defaultdict(lambda: [0, 0])
     for run_ in runs:
         for f in sorted(glob.glob(os.path.join(run_, "traj", "*.jsonl"))):
             if f.endswith(".tools.jsonl"):
                 continue
             n = t = 0; seq = []; submitted = False
             for line in open(f):
-                rem_lines += "<reminder>" in line
+                rem_lines += any(x in line for x in LEAK)
                 c = json.loads(line); r = c.get("resp") or {}
                 # the previous reply as it comes back in this request: does its thought come with it?
                 if seq and seq[-1] and not c.get("reset"):
@@ -483,11 +487,11 @@ def cmd_inspect(a):
             h = c.get("hist") or {}; sent[0] += h.get("with_thought", 0); sent[1] += h.get("assistant_msgs", 0)
     print(f"   as sent to the gateway (call log): earlier assistant messages with a thought {sent[0]} of {sent[1]} · reply shapes: {dict(shapes.most_common(4)) or 'not logged'}")
     made = collections.Counter(r.get("reminder", "off") for r in st.att.values() if r["state"] == "done")
-    print(f"   reminder: done attempts made with it {dict(made)} · trajectory log lines that contain '<reminder>': {rem_lines}  ← GATE: must be 0 "
+    print(f"   reminder: done attempts made with it {dict(made)} · trajectory log lines that contain a reminder text ({len(LEAK)} needles): {rem_lines}  ← GATE: must be 0 "
           f"(the line is for the teacher's request only; no training prompt may hold it) → {'ok' if not rem_lines else 'NOT MET'}")
     ec = collections.Counter((h[2], h[3]) for h in echo)
     turns = collections.Counter(x[2] for x in {(h[0], h[1], h[5]) for h in echo})
-    made_p = collections.Counter(r.get("reminder_place", "end") for r in st.att.values() if r["state"] == "done" and r.get("reminder", "off") == "on")
+    made_p = collections.Counter(r.get("reminder_id", "1") + " @ " + r.get("reminder_place", "end") for r in st.att.values() if r["state"] == "done" and r.get("reminder", "off") == "on")
     print(f"   reminder place of the done attempts: {dict(made_p) or 'no reminder'} · replies with a match: {turns.get('BEFORE submit_patch', 0)} BEFORE submit_patch "
           f"(training turns) · {turns.get('after submit_patch', 0)} after it (the closing reply)")
     print(f"   replies that repeat or mention the reminder ({calls} replies searched: thought, text, tool arguments; a count to be read, not a gate): "
@@ -587,7 +591,7 @@ def main():
         s.add_argument("--hist-thoughts", default=env_knob("HIST_THOUGHTS", "1", str), help="CEIL_HIST_THOUGHTS: 1 the teacher's earlier thoughts stay in its history, as the student's do · 0 the old behaviour")
         s.add_argument("--reminder-place", default=env_knob("REMINDER_PLACE", "end", str), choices=["end", "system"],
                        help="CEIL_REMINDER_PLACE: end = a block at the end of each request · system = appended to the system prompt of the outgoing request")
-        s.add_argument("--reminder", default=env_knob("REMINDER", "0", str), help="CEIL_REMINDER: 0 off · 1 the default think-before-every-call line · other = that text")
+        s.add_argument("--reminder", default=env_knob("REMINDER", "0", str), help="CEIL_REMINDER: 0 off · 1 the tagged line · rule = the same demand as a rule of the system prompt, no tag · other = that text (scripts/teach_reminder.py)")
         s.add_argument("--reopen-failed", type=int, default=env_knob("REOPEN_FAILED", 0, int), help="1 = failed rows run again")
         s.add_argument("--pull-waits", type=int, default=env_knob("PULL_WAITS", 16, int)); s.add_argument("--pull-wait-min", type=float, default=env_knob("PULL_WAIT_MIN", 30, float))
         s.add_argument("--reopen-lost", type=int, default=env_knob("REOPEN_LOST", 0, int), help="1 = done rows without a trajectory file run again")

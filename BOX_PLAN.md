@@ -743,6 +743,34 @@ call number; resolved 16 of 27):
   else → the user decides. 27 tasks cannot tell rare cases apart: the probe run had 1 match before the submit in 2
   tasks, the third pilot 0 in 27 — whichever place is used, step 5 drops the matched turns.
 
+**Fourth pilot (tagged line in the system prompt), from the box's photo — its report and inspect blocks are not
+on the laptop yet:** thoughts re-sent 325 of 325; earlier assistant messages with a thought 2,430 of 3,545 (third
+pilot: 3,447 of 3,548), so the teacher thinks on clearly fewer calls with the line in the system prompt. Thought
+share, matches and resolved count: to be filled in from the photo or the upload.
+
+**Fifth pilot (user, 2026-11-20): another wording — does it help?** `REMINDER=rule`: the same demand written as one
+more rule in the style of V21's own rules, without the tag and without calling itself a reminder
+(`scripts/teach_reminder.py` holds both texts; the driver's leak gate and the mention search know both):
+
+> - **Reason Before EVERY Tool Call**: Before each tool call — including simple reads, searches and test runs — first
+>   think in 1-3 short sentences: why this step is needed and what you expect to see. NEVER emit a tool call without
+>   thinking first.
+
+Stand-in: the rule is once in the system prompt of 8 of 8 requests, the word "reminder" in none. One output
+directory = one text and one place (the row keeps both).
+```bash
+git pull && git log --oneline -1
+export OUT=runs/teach_s2 REMINDER=rule REMINDER_PLACE=system    # first line: reminder rule · reminder place system · history thoughts 1
+bash scripts/teacher_gen.sh setup | tail -12
+cp runs/teach_r/gold.json runs/teach_s2/gold.json
+BUDGET_USD=12 RESERVE_USD=0.60 PRICE=<same three numbers>  bash scripts/teacher_gen.sh pilot 2>&1 | tee runs/pilot_s2.log
+```
+📷 the report and inspect blocks; upload `runs/teach_s` and `runs/teach_s2`. About $5. Read (set in advance), three
+columns side by side — pilot 3 (`1 @ end`), pilot 4 (`1 @ system`), pilot 5 (`rule @ system`): thoughts overall and
+by call number · matches before / after `submit_patch`, each read in context · resolved (≥ 12) · the gates.
+**Rule for the scale:** `rule @ system` when its thoughts are ≥ 90 % and its matches before the submit are 0;
+otherwise `1 @ end` (93.2 %, 0 before the submit, no line after the submit result any more). The scale waits.
+
 ## B-10 · Our own MetaCurate-style data: teacher trajectories from GLM-5.3 through a gateway (plan 2026-11-13, revised the same day: generation settings as the paper, GLM-5.3 only, the official rule logic, SWE-Gym left out; **scope changed 2026-11-17: B-10 = data generation, the students are chosen afterwards**; **2026-11-18: generation continues in B-11, in the competition harness; the mini-swe-agent route below is kept as written and not run**) — step 1 `setup` ✓ · `check` ✓ for SWE-rebench-V2 · `diag` ✓ (2026-11-13: both SWE-rebench problems explained and fixed in the scripts) · ▶ **now on the box: the commands under "On the box now" below**, 📷 · **B-10b (2026-11-17): three data lines against the thought loops, gated on B-9 part 3 step 19 — see the end of this section**
 
 **On the box now (2026-11-13, after `diag`; no tokens except a few cents for the probe).**

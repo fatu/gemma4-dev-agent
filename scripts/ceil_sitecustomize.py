@@ -91,10 +91,9 @@ if litellm is not None:
     # request that leaves this adapter: the harness's history is not touched (a copy is changed), the trajectory log
     # (traj_log.py wraps this adapter and sees the request before it) and the Gemma token count do not contain it,
     # and so no training prompt does. unset / 0 = off · 1 = the default text · anything else = that text.
-    _REM_DEFAULT = ("<reminder>Before EVERY tool call, including simple ones like reading a file or running a command, first reason briefly "
-                    "in your thinking about why this step is needed and what you expect to see.</reminder>")
-    _REM = os.environ.get("CEIL_REMINDER", "")
-    _REM = "" if _REM in ("", "0") else _REM_DEFAULT if _REM == "1" else _REM
+    import teach_reminder
+    _REM = teach_reminder.text(os.environ.get("CEIL_REMINDER", ""))
+    _REM_ID = teach_reminder.ident(os.environ.get("CEIL_REMINDER", ""))
     # CEIL_REMINDER_PLACE (2026-11-20, the user's test): end = the block at the end of the request (above) ·
     # system = the same line appended to the system prompt of the outgoing request, nothing at the end. Either way the
     # harness's own messages and the trajectory log keep the submission's prompt unchanged.
@@ -257,7 +256,7 @@ if litellm is not None:
     print(f"ceil adapter: temperature {'as sent by the harness / dropped by the provider rule' if _TEMP is None else _TEMP} (CEIL_TEMP) · "
           f"thinking {_THINK} (CEIL_THINK) · every model remote {_REMOTE_ALL} (CEIL_REMOTE) · "
           f"ledger {os.environ.get('TEACH_LEDGER_DIR') or 'off'} · attempt {_ATTEMPT} (TEACH_ATTEMPT) · "
-          f"reminder {('on, ' + str(len(_REM)) + ' chars, sha ' + __import__('hashlib').sha256(_REM.encode()).hexdigest()[:8] + ': ' + _REM[:60] + '…') if _REM else 'off'} (CEIL_REMINDER) · place {_REM_PLACE} (CEIL_REMINDER_PLACE; "
+          f"reminder {('on [' + _REM_ID + '], ' + str(len(_REM)) + ' chars, sha ' + __import__('hashlib').sha256(_REM.encode()).hexdigest()[:8] + ': ' + _REM[:60] + '…') if _REM else 'off'} (CEIL_REMINDER) · place {_REM_PLACE} (CEIL_REMINDER_PLACE; "
           f"in the outgoing request only, never in the trajectory log)", flush=True)
 
     def _is_remote(model):
@@ -409,7 +408,7 @@ if litellm is not None:
                "in": own if own is not None else d.get("prompt_tokens"), "gemma_in": gemma, "out": d.get("completion_tokens"),
                "reasoning": (d.get("completion_tokens_details") or {}).get("reasoning_tokens") if isinstance(d.get("completion_tokens_details"), dict) else None,
                "temp": kwargs.get("temperature"), "reminder": bool(_REM) and _REM in json.dumps((kwargs.get("messages")[:1] if _REM_PLACE == "system" else kwargs.get("messages")[-1:]) if isinstance(kwargs.get("messages"), list) else "", default=str),
-               "reminder_place": _REM_PLACE if _REM else None,
+               "reminder_place": _REM_PLACE if _REM else None, "reminder_id": _REM_ID,
                "cache_read": (d.get("prompt_tokens_details") or {}).get("cached_tokens") if isinstance(d.get("prompt_tokens_details"), dict) else d.get("cache_read_input_tokens"),
                "cache_write": d.get("cache_creation_input_tokens"), "err": (str(err)[:160] if err else None),
                "think_shape": shape, "hist": dict(zip(("assistant_msgs", "with_thought", "thought_chars"), _hist_stats(kwargs.get("messages"))))}

@@ -277,6 +277,18 @@ def selftest():
                 rows.append(f"reminder place system [{fmt}, last message {'tool' if toolmsg else 'user'}]: once in the system prompt of 8/8 requests, in no other message; the caller's messages unchanged")
             finally:
                 shutil.rmtree(tmp, ignore_errors=True)
+    tmp = tempfile.mkdtemp(prefix="teach_fake_")       # REMINDER=rule: the untagged rule, at the end of the system prompt
+    try:
+        teach_ledger.Ledger(os.path.join(tmp, "ledger")).init(1.0, [1.0, 0.1, 4.0])
+        res, banner_u = _one("effort:high", "anthropic", tmp, {"CEIL_REMINDER": "rule", "CEIL_REMINDER_PLACE": "system", "FAKE_TOOLMSG": "1"})
+        B = [x["body"] for x in bodies(tmp)]
+        assert len(B) == 8 and "on [rule]" in banner_u and "place system" in banner_u, banner_u
+        for b in B:
+            sysb = json.dumps(b.get("system", ""), ensure_ascii=False); rest = json.dumps(b["messages"], ensure_ascii=False)
+            assert sysb.count("Reason Before EVERY Tool Call") == 1 and "reminder" not in sysb.lower() and "Reason Before" not in rest, sysb[:300]
+        rows.append("reminder rule, place system [anthropic]: the untagged rule once in the system prompt of 8/8 requests; the word 'reminder' in 0")
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
     for fmt in ("anthropic", "openai"):                # after the result of submit_patch: no reminder (nothing is called after it)
         tmp = tempfile.mkdtemp(prefix="teach_fake_")
         try:
