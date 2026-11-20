@@ -20,11 +20,11 @@ PY=.venv-eval/bin/python
 OUT="${OUT:-runs/teach}"; TABLE="${TABLE:-runs/b10/tasks/all.jsonl}"; TASKS_DIR="${TASKS_DIR:-runs/b10/tasks}"
 SUBMISSION="${SUBMISSION:-runs/subs/v21_e4b}"; API="${API:-messages}"; TEMP="${TEMP:-0.7}"; THINK="${THINK:-effort:high}"
 CONC="${CONC:-4}"; ATTEMPTS="${ATTEMPTS:-3}"; CHUNK="${CHUNK:-50}"; KEEP_IMAGES="${KEEP_IMAGES:-0}"; MIN_FREE_GB="${MIN_FREE_GB:-50}"
-export REMINDER="${REMINDER:-0}"; RESERVE_USD="${RESERVE_USD:-}"; BUDGET_USD="${BUDGET_USD:-}"; PRICE="${PRICE:-}"; EXCLUDE_REPOS="${EXCLUDE_REPOS:-splits/eval_repos.txt}"
+export REMINDER="${REMINDER:-0}" HIST_THOUGHTS="${HIST_THOUGHTS:-1}"; RESERVE_USD="${RESERVE_USD:-}"; BUDGET_USD="${BUDGET_USD:-}"; PRICE="${PRICE:-}"; EXCLUDE_REPOS="${EXCLUDE_REPOS:-splits/eval_repos.txt}"
 ALIAS=gemma-4-e4b-it-qat-w4a16-ct
 BASE_NAME=$([ -n "${GATEWAY_BASE_URL:-}" ] && echo GATEWAY_BASE_URL || { [ -n "${ANTHROPIC_BASE_URL:-}" ] && echo ANTHROPIC_BASE_URL || echo ""; })
 KEY_NAME=$(for k in GATEWAY_API_KEY ANTHROPIC_AUTH_TOKEN ANTHROPIC_API_KEY; do [ -n "${!k:-}" ] && { echo $k; break; }; done)
-echo "teacher_gen $STEP · out $OUT · table $TABLE · submission $SUBMISSION · api $API · temperature $TEMP · thinking $THINK · reminder $REMINDER (1 = think-before-every-call line in the teacher's request only) · conc $CONC · attempts $ATTEMPTS · chunk $CHUNK · keep images $KEEP_IMAGES · min free $MIN_FREE_GB GB · reserve ${RESERVE_USD:-unset} · budget ${BUDGET_USD:-unchanged} · price ${PRICE:-unset} · teacher $([ -n "${TEACHER:-}" ] && echo set || echo MISSING) · address from ${BASE_NAME:-MISSING} · key from ${KEY_NAME:-MISSING} · code $(git log --oneline -1 | cut -c1-60)"
+echo "teacher_gen $STEP · out $OUT · table $TABLE · submission $SUBMISSION · api $API · temperature $TEMP · thinking $THINK · reminder $REMINDER (1 = think-before-every-call line in the teacher's request only) · history thoughts $HIST_THOUGHTS (1 = the teacher's earlier thoughts are re-sent, as the student's are) · conc $CONC · attempts $ATTEMPTS · chunk $CHUNK · keep images $KEEP_IMAGES · min free $MIN_FREE_GB GB · reserve ${RESERVE_USD:-unset} · budget ${BUDGET_USD:-unchanged} · price ${PRICE:-unset} · teacher $([ -n "${TEACHER:-}" ] && echo set || echo MISSING) · address from ${BASE_NAME:-MISSING} · key from ${KEY_NAME:-MISSING} · code $(git log --oneline -1 | cut -c1-60)"
 
 need_env() {
   [ -n "${TEACHER:-}" ] && [ -n "$BASE_NAME" ] && [ -n "$KEY_NAME" ] || { echo "STOP: TEACHER, an address and a key are needed in this shell (names above; type them here, never into a file under git)"; exit 1; }
@@ -81,6 +81,16 @@ PYEOF
   $PY scripts/rebench_mini.py grade --tasks "$TASKS_DIR" --name check6_empty --preds empty --out "$OUT/grade/check6_empty" 2>&1 | tail -4 | sed 's/^/  empty patch · /'
   $PY scripts/teacher_gen.py inspect --out "$OUT" --name check6
   echo "  📷 from 'teacher_gen check' down. Gate: gold-failing tasks are dropped and counted (at least 4 of 6 go on), the empty patch resolves on none, the 6 shim lines end with 'PREP ok', no attempt over the tool-call cap, and the inspect line 'calls without thought text … GATE' says ok." ;;
+probe)
+  # B-11, 2026-11-20: do the teacher's earlier thoughts reach the model? 2 pilot tasks, 1 attempt each (about $0.25);
+  # the adapter sends one extra request without the thoughts and prints both prompt token counts.
+  need_env; BUDGET_USD="${BUDGET_USD:-1}"; RESERVE_USD="${RESERVE_USD:-0.40}"; ledger
+  [ -f "$TASKS_DIR/pilot30.ids" ] || { echo "STOP: no $TASKS_DIR/pilot30.ids"; exit 1; }
+  grep -Fxf "$OUT/all.ids" "$TASKS_DIR/pilot30.ids" | head -"${PROBE_N:-2}" > "$OUT/probe.ids"; echo "  probe: $(tr '\n' ' ' < "$OUT/probe.ids")(PROBE_N ${PROBE_N:-2})"
+  gen probe "$OUT/probe.ids" 1 "${PROBE_N:-2}" 1
+  echo "  -- probe lines (the eval's own log):"; grep -h "ceil hist probe\|ceil history:\|commands start in" "$OUT/gen.log" | tail -8 | sed 's/^/  /'
+  $PY scripts/teacher_gen.py inspect --out "$OUT" --name probe | head -14
+  echo "  📷 from '-- probe lines' down. Read: the probe line ends with 'REACH the model'; the 'history:' line says all and ok; the reply shapes line; 'commands start in /workspace'." ;;
 pilot)
   need_env; ledger
   [ -f "$TASKS_DIR/pilot30.ids" ] || { echo "STOP: no $TASKS_DIR/pilot30.ids (B-10: NAME=pilot30 N=30 bash scripts/rebench_mini.sh subset)"; exit 1; }

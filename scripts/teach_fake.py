@@ -25,6 +25,11 @@ import threading
 USAGE = {"input_tokens": 1200, "cache_read_input_tokens": 800, "cache_creation_input_tokens": 0, "output_tokens": 150}
 
 
+def SIG():
+    """FAKE_SIG=none: thinking blocks without a `signature` key (the shape with which ADK discards the thought)"""
+    return {} if os.environ.get("FAKE_SIG") == "none" else {"signature": "fake"}
+
+
 def make_handler(logdir, script):
     n = {"calls": 0}
 
@@ -38,6 +43,9 @@ def make_handler(logdir, script):
             with open(os.path.join(logdir, "requests.jsonl"), "a") as f:
                 f.write(json.dumps({"path": self.path, "body": body}) + "\n")
             tools = [t.get("name") or (t.get("function") or {}).get("name") for t in body.get("tools") or []]
+            seen = sum(len(b.get("thinking", "")) for m in body.get("messages") or [] if isinstance(m.get("content"), list)
+                       for b in m["content"] if isinstance(b, dict) and b.get("type") == "thinking")
+            seen += sum(len(m.get("reasoning_content") or "") for m in body.get("messages") or [])
             turns = sum(1 for m in body.get("messages") or [] if m.get("role") == "assistant")
             name = next((t for t in tools if t in ("run_command", "bash")), (tools or ["run_command"])[0])
             args = {"command": "git status --short"}
@@ -51,7 +59,7 @@ def make_handler(logdir, script):
                 # the harness's loop (measured 2026-11-18: a submit_patch call alone does not, the run went on to 80 turns)
                 if self.path.rstrip("/").endswith("/messages"):
                     out = {"id": f"msg_fake_{n['calls']}", "type": "message", "role": "assistant", "model": body.get("model"),
-                           "content": [{"type": "thinking", "thinking": thought, "signature": "fake"}, {"type": "text", "text": "Submitted."}],
+                           "content": [dict({"type": "thinking", "thinking": thought}, **SIG()), {"type": "text", "text": "Submitted."}],
                            "stop_reason": "end_turn", "stop_sequence": None, "usage": dict(USAGE)}
                 else:
                     out = {"id": f"chatcmpl-fake-{n['calls']}", "object": "chat.completion", "created": 0, "model": body.get("model"),
@@ -64,16 +72,16 @@ def make_handler(logdir, script):
                 return
             if self.path.rstrip("/").endswith("/messages"):
                 out = {"id": f"msg_fake_{n['calls']}", "type": "message", "role": "assistant", "model": body.get("model"),
-                       "content": [{"type": "thinking", "thinking": thought, "signature": "fake"},
+                       "content": [dict({"type": "thinking", "thinking": thought}, **SIG()),
                                    {"type": "tool_use", "id": f"toolu_fake_{n['calls']}", "name": name, "input": args}],
-                       "stop_reason": "tool_use", "stop_sequence": None, "usage": dict(USAGE)}
+                       "stop_reason": "tool_use", "stop_sequence": None, "usage": dict(USAGE, input_tokens=USAGE["input_tokens"] + seen)}
             else:
                 out = {"id": f"chatcmpl-fake-{n['calls']}", "object": "chat.completion", "created": 0, "model": body.get("model"),
                        "choices": [{"index": 0, "finish_reason": "tool_calls", "message": {
                            "role": "assistant", "content": None, "reasoning_content": thought,
                            "tool_calls": [{"id": f"call_fake_{n['calls']}", "type": "function",
                                            "function": {"name": name, "arguments": json.dumps(args)}}]}}],
-                       "usage": {"prompt_tokens": 1200, "completion_tokens": 150, "total_tokens": 1350,
+                       "usage": {"prompt_tokens": 1200 + seen, "completion_tokens": 150, "total_tokens": 1350 + seen,
                                  "prompt_tokens_details": {"cached_tokens": 800},
                                  "completion_tokens_details": {"reasoning_tokens": 40}}}
             data = json.dumps(out).encode()
@@ -107,7 +115,7 @@ def _one(think, fmt, tmp, extra_env=None):
 import json, os, sys
 sys.path.insert(0, os.path.join(os.getcwd(), "scripts"))
 import teach_fake, teach_ledger
-srv = teach_fake.start(os.environ["FAKE_DIR"]); port = srv.server_address[1]
+srv = teach_fake.start(os.environ["FAKE_DIR"], script=os.environ.get("FAKE_SCRIPT", "submit")); port = srv.server_address[1]
 import ceil_sitecustomize, litellm
 model = ("anthropic/" if os.environ["FAKE_FMT"] == "anthropic" else "openai/") + "stand-in-teacher"
 base = f"http://127.0.0.1:{port}" + ("" if os.environ["FAKE_FMT"] == "anthropic" else "/v1")
@@ -125,6 +133,15 @@ try:
         m = r.choices[0].message; out["calls"] += 1
         out["reasoning"] += bool(getattr(m, "reasoning_content", None))
         out["tool"] = m.tool_calls[0].function.name
+        if os.environ.get("FAKE_ADK"):
+            import asyncio
+            from google.adk.models import lite_llm as L
+            content = L._message_to_generate_content_response(m).content        # reply → ADK parts (what the session stores)
+            back = asyncio.run(L._content_to_message_param(content, model=model))  # parts → the message of the next request
+            back = dict(back)
+            out.setdefault("resent_keys", []).append(sorted(k for k, v in back.items() if v is not None))
+            msgs = msgs + [back, {"role": "tool", "tool_call_id": m.tool_calls[0].id, "content": "{\"stdout\": \"ok\"}"}]
+            if i == 3: break
 except teach_ledger.BudgetReached:
     out["gated"] = True
 out["caller_messages_unchanged"] = json.dumps(msgs) == before
@@ -140,7 +157,7 @@ print("RESULT " + json.dumps(out))
     if line is None:
         raise SystemExit(f"selftest child failed ({think}, {fmt}):\n{p.stdout[-1500:]}\n{p.stderr[-3000:]}")
     banner = next((l for l in p.stdout.splitlines() if l.startswith("ceil adapter:")), "")
-    return json.loads(line[7:]), banner
+    return dict(json.loads(line[7:]), stdout=p.stdout), banner
 
 
 def selftest():
@@ -193,6 +210,42 @@ def selftest():
                 rows.append(f"reminder [{fmt}, last message {'tool' if toolmsg else 'user'}]: in the last message of 8/8 requests, once; the caller's messages unchanged")
             finally:
                 shutil.rmtree(tmp, ignore_errors=True)
+    # earlier thoughts in the history, built through ADK's own conversions as the harness does: with the knob they reach
+    # the server on both routes whatever the reply's shape; without it, a block without a signature key is lost (the
+    # defect of 2026-11-20, reproduced); the probe reads the difference in prompt tokens
+    def thoughts_received(b):
+        n = sum(1 for m in b["messages"] if m.get("role") == "assistant" and (m.get("reasoning_content") or (
+            isinstance(m.get("content"), list) and any(x.get("type") == "thinking" for x in m["content"] if isinstance(x, dict)))))
+        return n, sum(1 for m in b["messages"] if m.get("role") == "assistant")
+    for fmt, sig, hist, want in (("anthropic", "none", "1", True), ("anthropic", "fake", "1", True), ("openai", "fake", "1", True),
+                                 ("anthropic", "none", "0", False)):
+        tmp = tempfile.mkdtemp(prefix="teach_fake_")
+        try:
+            teach_ledger.Ledger(os.path.join(tmp, "ledger")).init(1.0, [1.0, 0.1, 4.0])
+            os.environ["FAKE_SIG"] = sig
+            res, _ = _one("effort:high", fmt, tmp, {"FAKE_ADK": "1", "FAKE_SCRIPT": "loop", "FAKE_SIG": sig, "CEIL_HIST_THOUGHTS": hist, "CEIL_HIST_PROBE": "1", "CEIL_REMINDER": "1"})
+            os.environ.pop("FAKE_SIG", None)
+            B = [x["body"] for x in bodies(tmp)]
+            main_calls = [b for b in B if b.get("max_tokens") != 16]; probes = [b for b in B if b.get("max_tokens") == 16]
+            got = [thoughts_received(b) for b in main_calls]
+            assert len(main_calls) == 4, len(B)
+            if want:
+                assert got == [(0, 0), (1, 1), (2, 2), (3, 3)], (fmt, sig, got, res)
+                assert len(probes) == 1 and thoughts_received(probes[0]) == (0, 1), [thoughts_received(b) for b in probes]
+                assert "REACH the model" in res["stdout"], res["stdout"][-600:]
+                if fmt == "anthropic" and sig == "fake":      # the signature a block came with goes back with it
+                    assert '"signature": "fake"' in json.dumps(main_calls[-1]["messages"]), main_calls[-1]["messages"][2]
+                assert all("reasoning_content" in k and "thinking_blocks" not in k for k in res["resent_keys"]), res["resent_keys"]
+            else:
+                assert got == [(0, 0), (0, 1), (0, 2), (0, 3)] and not probes, (got, len(probes))
+            logged = [json.loads(l) for l in open(os.path.join(tmp, "calls.jsonl"))]
+            assert [x["hist"]["with_thought"] for x in logged] == [g[0] for g in got] and "blocks" in logged[0]["think_shape"], logged[:2]
+            assert all("<reminder>" in json.dumps(b["messages"][-1]) for b in main_calls)
+            rows.append(f"history thoughts [{fmt}, reply block {'without a signature key' if sig == 'none' else 'signed'}, knob {hist}]: "
+                        f"earlier thoughts received in calls 1–4: {[g[0] for g in got]} of {[g[1] for g in got]}"
+                        + (" · probe: 1 extra request without them, verdict REACH" if want else " (the defect, reproduced)"))
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
     tmp = tempfile.mkdtemp(prefix="teach_fake_")       # off by default: no request carries it
     try:
         teach_ledger.Ledger(os.path.join(tmp, "ledger")).init(1.0, [1.0, 0.1, 4.0])

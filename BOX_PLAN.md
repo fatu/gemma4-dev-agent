@@ -600,6 +600,45 @@ teacher's route, not how the harness works.** Checked in the uploaded data and i
 Consequence: the teacher did not run under the student's conditions. **The scale line above waits** until this is
 repaired and a third pilot on the same 27 tasks is read.
 
+**Repair (user agreed, 2026-11-20): the teacher's earlier thoughts stay in its history, as the student's do.**
+- Cause, reproduced with the stand-in gateway: LiteLLM returns the thought both as `reasoning_content` and as
+  `thinking_blocks`; ADK takes the blocks first and keeps nothing when a block has no `signature` key. With that reply
+  shape and the old code, calls 1–4 received 0, 0, 0, 0 earlier thoughts.
+- New knob `HIST_THOUGHTS` (default 1; printed; adapter `CEIL_HIST_THOUGHTS`): the reply's thought is left as
+  `reasoning_content` only, so ADK stores and re-sends it; on the Anthropic route the adapter sends it as a thinking
+  block (LiteLLM drops the plain field there; a signature a block came with goes back with it), on the OpenAI route
+  the field passes as it is. Stand-in, both routes, signed and unsigned replies: calls 1–4 received 0, 1, 2, 3.
+- The emulated Gemma window now counts the earlier thoughts (3 turns: 138 → 276 tokens in a test), as the student's
+  server does. Expect more compactions and a higher cost per attempt than in the two pilots.
+- `inspect` has new lines: thoughts by call number; `history:` — replies with a thought that come back with it,
+  **GATE: all**; the reply shapes and the thoughts as sent to the gateway (call log). One output directory = one setting.
+- Not testable on the laptop: whether the gateway hands the re-sent thoughts to the model. New step `probe` measures
+  it: 2 pilot tasks, and once the adapter repeats a request without the thoughts and prints both prompt token counts.
+
+**▶ On the 8-card box (replaces every scale line above):**
+```bash
+git pull && git log --oneline -1
+export OUT=runs/teach_h REMINDER=1                 # the first line must print: reminder 1 · history thoughts 1
+bash scripts/teacher_gen.sh setup | tail -12       # 📷 `sources rebench v2`, 1,215 tasks
+cp runs/teach_r/gold.json runs/teach_h/gold.json
+PRICE=<same three numbers>  bash scripts/teacher_gen.sh probe 2>&1 | tee runs/probe_h.log      # about $0.25
+```
+📷 from `-- probe lines` down, then stop. Read (set in advance):
+- `ceil hist probe: … → the thoughts REACH the model`. `DO NOT reach` → stop; the next try is `API=chat` (the OpenAI
+  format) in another `OUT`, same command.
+- `history: … N of N ← GATE: all → ok`, and the reply shapes line (it tells which case the gateway's reply is).
+- `commands start in /workspace` (the working-directory fix on real Docker); a task stopping there = that fix failed.
+
+After the probe is read, the third pilot (same 27 tasks; the 2 probe tasks are not run again):
+```bash
+BUDGET_USD=12 RESERVE_USD=0.40 PRICE=<same three numbers>  bash scripts/teacher_gen.sh pilot 2>&1 | tee runs/pilot_h.log
+```
+📷 the report and inspect blocks. Read (set in advance): the two gates above and the reminder gate hold · resolved
+≥ 12 of 27 · thoughts by call number beside the second pilot's 94 / 73 / 64 / 48 % · thoughts overall: ≥ 90 % →
+version A uses every turn; below → the turns without a teacher thought get no loss (the proposal above) · cost per
+attempt, compactions and context errors beside the second pilot. Then the scale line, with the user's go:
+`BUDGET_USD=800 RESERVE_USD=<the pilot's maximum, rounded up> … teacher_gen.sh gen`.
+
 ## B-10 · Our own MetaCurate-style data: teacher trajectories from GLM-5.3 through a gateway (plan 2026-11-13, revised the same day: generation settings as the paper, GLM-5.3 only, the official rule logic, SWE-Gym left out; **scope changed 2026-11-17: B-10 = data generation, the students are chosen afterwards**; **2026-11-18: generation continues in B-11, in the competition harness; the mini-swe-agent route below is kept as written and not run**) — step 1 `setup` ✓ · `check` ✓ for SWE-rebench-V2 · `diag` ✓ (2026-11-13: both SWE-rebench problems explained and fixed in the scripts) · ▶ **now on the box: the commands under "On the box now" below**, 📷 · **B-10b (2026-11-17): three data lines against the thought loops, gated on B-9 part 3 step 19 — see the end of this section**
 
 **On the box now (2026-11-13, after `diag`; no tokens except a few cents for the probe).**
