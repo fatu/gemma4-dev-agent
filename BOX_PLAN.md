@@ -527,10 +527,11 @@ $0.105 per attempt, tool calls median 16 resolved / 35 not):
 - cost per attempt and the attempts that used all 36 calls or 7.5 minutes, beside the first pilot's.
 All four hold → the full run, same directory, same shell (`OUT`, `REMINDER` still exported):
 ```bash
-BUDGET_USD=<the user's number> RESERVE_USD=0.25 PRICE=<the same three numbers>  nohup bash scripts/teacher_gen.sh gen > runs/gen_r.log 2>&1 &
+BUDGET_USD=800 RESERVE_USD=0.25 PRICE=<the same three numbers>  nohup bash scripts/teacher_gen.sh gen > runs/gen_r.log 2>&1 &
 tail -f runs/gen_r.log                                             # one line per batch; 📷 `bash scripts/teacher_gen.sh report` twice a day
 ```
-One fails → stop, photo, nothing larger starts. Stop and photo during the run if: a batch line shows `infra` on most
+`BUDGET_USD=800` is the user's cap for this directory (2026-11-20), the pilot's attempts in it included; the ledger
+stops there and the cap is raised only on the user's word. One fails → stop, photo, nothing larger starts. Stop and photo during the run if: a batch line shows `infra` on most
 of its tasks · a gold line drops more than a quarter of a chunk · "waiting … min" passes 4 tries on one chunk · free
 disk nears `MIN_FREE_GB`. The trajectories of the first pilot (`runs/teach`, no reminder) are not training data;
 they stay as the comparison.
