@@ -10,7 +10,7 @@
 # Knobs (each printed): API messages|chat (the request format) · TEMP 0.7 · THINK effort:high (CEIL_THINK form) · CONC 4 ·
 # ATTEMPTS 3 · CHUNK 50 · BUDGET_USD (the ledger's budget; set by setup/check/pilot/gen ONLY when given) · PRICE "in,cached,out"
 # $ per 1M tokens (used when the gateway reports no cost) · RESERVE_USD (per attempt) · KEEP_IMAGES 0 · MIN_FREE_GB 50 ·
-# SOURCES rebench,v2 (task sources kept by setup; SWE-Gym is left out, `all` keeps every source) · OUT runs/teach · TABLE runs/b10/tasks/all.jsonl · SUBMISSION runs/subs/v21_e4b · EXCLUDE_REPOS (files, one owner/name per line;
+# FIRST_N (gen: only N tasks drawn with seed 0, e.g. 200; unset = all) · SOURCES rebench,v2 (task sources kept by setup; SWE-Gym is left out, `all` keeps every source) · OUT runs/teach · TABLE runs/b10/tasks/all.jsonl · SUBMISSION runs/subs/v21_e4b · EXCLUDE_REPOS (files, one owner/name per line;
 # default: the 4 repositories of the evaluation tasks. splits/b7_repos.txt lists the repositories of the B-7 task sets: adding
 # it would remove about 31 % of the tasks, so a later evaluation on B-7 tasks takes only tasks of repositories not trained on).
 set -uo pipefail
@@ -101,7 +101,16 @@ pilot)
   echo "  📷 the report and inspect blocks (with the line 'replies that repeat or mention the reminder' and every match under it)" ;;
 gen)
   need_env; ledger
-  gen all "$OUT/all.ids" "$ATTEMPTS" "$CHUNK" "$KEEP_IMAGES" ;;
+  IDS="$OUT/all.ids"
+  # FIRST_N (2026-11-20): a first batch — N tasks drawn from all.ids with seed 0 (not the head of the list, which is
+  # one source in alphabetical order), all ATTEMPTS of each. The later run without FIRST_N covers every task and
+  # skips what is done.
+  if [ -n "${FIRST_N:-}" ]; then
+    $PY -c "import random,sys; a=open(sys.argv[1]).read().split(); random.Random(0).shuffle(a); open(sys.argv[2],'w').write('\n'.join(sorted(a[:int(sys.argv[3])]))+'\n')" "$OUT/all.ids" "$OUT/first_${FIRST_N}.ids" "$FIRST_N"
+    IDS="$OUT/first_${FIRST_N}.ids"
+  fi
+  echo "  tasks of this run: $(wc -l < "$IDS" | tr -d ' ') of $(wc -l < "$OUT/all.ids" | tr -d ' ') in all.ids (FIRST_N ${FIRST_N:-unset = all}) · attempts per task $ATTEMPTS"
+  gen all "$IDS" "$ATTEMPTS" "$CHUNK" "$KEEP_IMAGES" ;;
 report)  $PY scripts/teacher_gen.py report --out "$OUT" ;;
 inspect) $PY scripts/teacher_gen.py inspect --out "$OUT" --name "${2:-}" ;;
 *) echo "unknown step $STEP"; exit 1 ;;

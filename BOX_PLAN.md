@@ -850,6 +850,23 @@ sleep 60; head -3 runs/gen_h2.log; tail -5 runs/gen_h2.log
   (the user's choice, open); turns `inspect` lists lose their thought; the closing reply is left out; a hand-read
   sample of thoughts estimates the mentions the fixed phrases miss.
 
+**▶▶ In two batches (user, 2026-11-20): first 200 tasks, read, then the rest.** Sizes: 1,215 tasks in the list;
+with about 93 % passing the gold check and 3 attempts each, about 3,400 attempts in all. New knob `FIRST_N`
+(printed): N tasks drawn from `all.ids` with seed 0 — not the head of the list, which is one source in alphabetical
+order — with all 3 attempts of each. First batch = 200 tasks ≈ 560 attempts ≈ $100, 200 image pulls.
+```bash
+git pull && git log --oneline -1
+export OUT=runs/teach_h2 REMINDER=1
+FIRST_N=200 BUDGET_USD=150 RESERVE_USD=0.60 PRICE=<same three numbers>  nohup bash scripts/teacher_gen.sh gen > runs/gen_h2_first.log 2>&1 &
+sleep 60; head -4 runs/gen_h2_first.log        # must print: tasks of this run: 200 of 1215 · reminder 1 · reminder place end · history thoughts 1
+```
+When it has ended: 📷 `OUT=runs/teach_h2 bash scripts/teacher_gen.sh report` and `… inspect all | head -16`, and
+upload `runs/teach_h2`. Read (set in advance): thoughts ≥ 90 % · the three gates · matches before the submit (a
+count, each read) and none after it · resolved share beside the pilot's 59 % · cost per attempt beside $0.172 ·
+attempts ended by the time limit · image pulls refused by the registry (the `ratelimit` check above still wanted).
+Then the second batch, the same command without `FIRST_N` and with `BUDGET_USD=800` (the 200 tasks are skipped;
+the ledger keeps what was spent).
+
 ## B-10 · Our own MetaCurate-style data: teacher trajectories from GLM-5.3 through a gateway (plan 2026-11-13, revised the same day: generation settings as the paper, GLM-5.3 only, the official rule logic, SWE-Gym left out; **scope changed 2026-11-17: B-10 = data generation, the students are chosen afterwards**; **2026-11-18: generation continues in B-11, in the competition harness; the mini-swe-agent route below is kept as written and not run**) — step 1 `setup` ✓ · `check` ✓ for SWE-rebench-V2 · `diag` ✓ (2026-11-13: both SWE-rebench problems explained and fixed in the scripts) · ▶ **now on the box: the commands under "On the box now" below**, 📷 · **B-10b (2026-11-17): three data lines against the thought loops, gated on B-9 part 3 step 19 — see the end of this section**
 
 **On the box now (2026-11-13, after `diag`; no tokens except a few cents for the probe).**
