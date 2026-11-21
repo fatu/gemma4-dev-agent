@@ -869,6 +869,51 @@ attempts ended by the time limit · image pulls refused by the registry, as a co
 Then the second batch, the same command without `FIRST_N` and with `BUDGET_USD=800` (the 200 tasks are skipped;
 the ledger keeps what was spent).
 
+**Result of the first batch (2026-11-21; uploaded, recounted on the laptop per task and attempt).** 200 tasks drawn,
+186 pass the gold check (93 %), 558 attempts, all done.
+
+| reading (set in advance) | first batch | third pilot |
+|---|---|---|
+| resolved attempts | 283 of 558 = 50.7 % (98 / 93 / 92 by attempt) | 16 of 27 = 59 % |
+| tasks resolved at least once | 104 of 186; all three attempts 85, two 9, one 10, none 82 | — |
+| thought on a tool-call turn | 10,679 of 10,884 = 98.1 % (resolved trajectories 97.6 %) | 97.8 % |
+| the same by `inspect` (every model call, summaries and closing replies included) | 91.1 % | 93.2 % |
+| gate: no thought text but reasoning tokens | 0 of 176 turns matched to the ledger | 0 |
+| gate: a thought comes back in the next request | 9,351 of 9,351 | 496 of 496 |
+| gate: reminder text in the trajectory logs | 0 lines | 0 |
+| replies that mention the reminder, before the submit | 6 tool-call turns of 10,884 (3 in resolved trajectories) + 1 unclear | 0 of 610 |
+| the same after the submit | 1 of 519 closing replies | 8 of 27 |
+| cost per attempt | mean $0.1875 · batch $104.61 | $0.172 |
+| ended by a harness limit | 11 time limit · 2 context window | 2 |
+| image pulls refused by the registry | 0 lines in the logs | — |
+
+- Turns without a thought: 205, of which 178 are the first call of an attempt (32 % of first calls); later calls 27
+  of 10,326.
+- Replies with several tool calls: 870 of 10,884 (8.0 %; the pilot had 3.9 %). Text-only replies before the submit:
+  80, of which 65 are a thought cut by the output limit. Compaction: 1,327 summary calls; 166 of the 283 resolved
+  trajectories had at least one. Tool names outside the six: none.
+- The requests agree with the placement: 1,843 requests went without the reminder = 1,327 summaries + 519 closing
+  replies (3 off). Summaries searched as well: no mention of the reminder (5 headings "Constraints Reminder", 2
+  invented chat markers).
+- Incident: the gateway's spend limit stopped two chunks; 76 attempts ended with no model call and no cost, and were
+  run again. 19.4 h from the first to the last attempt, about 6.5 h of it the stop.
+- `inspect` on three attempts per task is not right in three places (to be repaired before the second batch is
+  read): the ledger match is per task, not per attempt, so its reasoning-token gate matched nothing; the mention
+  search also reads the summaries (24 "matches", mostly the harness's own token-limit message retold); the thought
+  share mixes in summaries and closing replies.
+- Not checked: the 6 mentions were found by fixed phrases, paraphrases are not; the one closing reply that mentions
+  a reminder was not traced to its own request (the counts above say closing requests carried none).
+
+**Second batch (waits for the user's go):** the same command without `FIRST_N`, `BUDGET_USD=800`. By the first
+batch: about 1,015 tasks left ≈ 2,830 attempts ≈ $530 (total about $640), about 50 h at this speed, about 1,700
+resolved trajectories from about 630 tasks in all. The gateway's spend limit must be raised first.
+```bash
+git pull && git log --oneline -1
+export OUT=runs/teach_h2 REMINDER=1
+BUDGET_USD=800 RESERVE_USD=0.60 PRICE=<same three numbers>  nohup bash scripts/teacher_gen.sh gen > runs/gen_h2_rest.log 2>&1 &
+sleep 60; head -4 runs/gen_h2_rest.log        # tasks of this run: 1215 of 1215 · reminder 1 · reminder place end · history thoughts 1
+```
+
 ## B-10 · Our own MetaCurate-style data: teacher trajectories from GLM-5.3 through a gateway (plan 2026-11-13, revised the same day: generation settings as the paper, GLM-5.3 only, the official rule logic, SWE-Gym left out; **scope changed 2026-11-17: B-10 = data generation, the students are chosen afterwards**; **2026-11-18: generation continues in B-11, in the competition harness; the mini-swe-agent route below is kept as written and not run**) — step 1 `setup` ✓ · `check` ✓ for SWE-rebench-V2 · `diag` ✓ (2026-11-13: both SWE-rebench problems explained and fixed in the scripts) · ▶ **now on the box: the commands under "On the box now" below**, 📷 · **B-10b (2026-11-17): three data lines against the thought loops, gated on B-9 part 3 step 19 — see the end of this section**
 
 **On the box now (2026-11-13, after `diag`; no tokens except a few cents for the probe).**
