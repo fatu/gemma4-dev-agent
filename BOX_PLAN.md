@@ -799,6 +799,31 @@ curl -sI -H "Authorization: Bearer $T" https://registry-1.docker.io/v2/ratelimit
 `ratelimit-limit: 100;w=21600` = 100 per 6 hours. At 1,215 images the anonymous limit alone means 3 days; logged in
 (the same check with `curl -u <user>` on the token request, typed by the user) it is whatever that line then says.
 
+**Fifth pilot read (2026-11-20; the untagged rule in the system prompt; recounted on the laptop from the upload):
+the wording does not help.** Thoughts 66.2 % (391 of 591), by call number 69 / 69 / 62 / 71 % — the same as the
+tagged line in the system prompt (66.7 %). Resolved 15 of 27. Mentions: 0 before the submit; 1 match after it, read
+in context — it is about the harness's own "token limit" notice, not about the rule. Gates hold (331 of 331 thoughts
+re-sent, no rule text in the log, no thought lost). $3.77.
+
+**The five pilots on the same 27 tasks (first attempts):**
+
+| pilot | reminder | earlier thoughts in history | thoughts | resolved | mean tool calls | attempts ≥ 34 calls | mean $ |
+|---|---|---|---|---|---|---|---|
+| 1 | none | no | 40.5 % | 16 | 22.4 | 9 | 0.105 |
+| 2 | tagged, glued to the tool output | no | 68.0 % | 15 | 20.6 | 7 | 0.124 |
+| 3 | tagged, own block at the end | yes | **93.2 %** | 16 | 18.3 | 4 | 0.172 |
+| 4 | tagged, in the system prompt | yes | 66.7 % | 17 | 18.3 | 4 | 0.126 |
+| 5 | untagged rule, in the system prompt | yes | 66.2 % | 15 | 18.9 | 6 | 0.140 |
+
+- The solve rate does not depend on any of this: 14 tasks are resolved in all five pilots, 10 in none, 3 change.
+  So 17 of 27 tasks were resolved at least once in five attempts — three attempts per task will mostly add more
+  trajectories of the same tasks, few new tasks.
+- **Decision by the rule set in advance: the scale runs pilot 3's setting** (`REMINDER=1`, place `end`, history
+  thoughts on; no line after the submit result). The scale line under "Step 4 on the 8-card box · scale" stands.
+- Rough yield, from 16 of 27: about 1,130 tasks with a passing gold patch × 59 % × 3 attempts ≈ 2,000 resolved
+  trajectories before the rule filter (27 tasks: anywhere between about 1,400 and 2,500).
+- Still not separated: what the earlier thoughts alone give without any reminder (no such pilot).
+
 ## B-10 · Our own MetaCurate-style data: teacher trajectories from GLM-5.3 through a gateway (plan 2026-11-13, revised the same day: generation settings as the paper, GLM-5.3 only, the official rule logic, SWE-Gym left out; **scope changed 2026-11-17: B-10 = data generation, the students are chosen afterwards**; **2026-11-18: generation continues in B-11, in the competition harness; the mini-swe-agent route below is kept as written and not run**) — step 1 `setup` ✓ · `check` ✓ for SWE-rebench-V2 · `diag` ✓ (2026-11-13: both SWE-rebench problems explained and fixed in the scripts) · ▶ **now on the box: the commands under "On the box now" below**, 📷 · **B-10b (2026-11-17): three data lines against the thought loops, gated on B-9 part 3 step 19 — see the end of this section**
 
 **On the box now (2026-11-13, after `diag`; no tokens except a few cents for the probe).**
