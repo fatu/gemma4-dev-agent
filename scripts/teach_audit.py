@@ -436,6 +436,19 @@ def audit(out, ids=None, name="", attempts=3, min_thought=90.0, eval_repos=(), b
             if h in hs[:j]:
                 dup += 1; a0 = next(a for a in per_task[t] if a["attempt"] == sorted(d)[j]); off["dup_patch"].append([a0["i"], 0, "the same patch as an earlier resolved attempt of this task"])
     add("dup_patch", G[6], "resolved attempts whose patch equals an earlier attempt's of the same task", "补丁与同题更早一次完全相同的解出尝试", "info", pct(dup, len(res)))
+    # what is left for training after the three removals decided so far (a preview: the filter itself is step 5)
+    why = collections.defaultdict(list)
+    for cid, lab in (("dup_patch", "same patch as an earlier attempt"), ("rules", "reject rule"), ("no_submit", "no submit_patch")):
+        for x in off.get(cid, []):
+            if A[x[0]]["resolved"] and lab not in why[x[0]]:
+                why[x[0]].append(lab)
+    off["trainable"] = [[i, 0, "left out: " + " + ".join(v)] for i, v in sorted(why.items())]
+    keep = [a for a in res if a["i"] not in why]
+    n_by = {lab: sum(1 for v in why.values() if lab in v) for lab in ("same patch as an earlier attempt", "reject rule", "no submit_patch")}
+    add("trainable", G[6], "resolved trajectories left for training (preview; the list holds the ones left out)", "预计可训练的轨迹（预估；清单里是被去掉的）", "info",
+        f"{len(keep)} of {len(res)} · {len({a['task'] for a in keep})} tasks · {sum(a['tool_turns'] for a in keep):,} tool-call turns ({sum(a['thought_turns'] for a in keep):,} with a thought)",
+        f"left out {len(why)}: same patch {n_by['same patch as an earlier attempt']} · reject rule {n_by['reject rule']} · no submit_patch {n_by['no submit_patch']} (one attempt may have several reasons)",
+        f"去掉 {len(why)} 条：补丁重复 {n_by['same patch as an earlier attempt']} · 规则拒绝 {n_by['reject rule']} · 没有 submit_patch {n_by['no submit_patch']}（一条可能有多个原因）")
     rc = C(a["repo"] or a["task"].rsplit("-", 1)[0] for a in res)
     add("repos", G[6], "repositories among the resolved trajectories", "解出的轨迹涉及的仓库", "info", f"{len(rc)} repositories · top 5 hold {pct(sum(v for _, v in rc.most_common(5)), len(res))}",
         " · ".join(f"{r} {v}" for r, v in rc.most_common(5)), " · ".join(f"{r} {v}" for r, v in rc.most_common(5)))
@@ -579,6 +592,7 @@ def selftest():
         assert not bad, bad
         assert st["no_thought"]["value"].startswith("16 / 16") and st["back"]["value"].startswith("16 / 16") and st["placement"]["value"] == "4 vs 4", (st["no_thought"]["value"], st["back"]["value"], st["placement"]["value"])
         assert R["meta"]["calls"] == dict(summary=0, tool=16, text=0, closing=4) and st["rules"]["value"].startswith("0 / 2"), (R["meta"]["calls"], st["rules"])
+        assert int(st["trainable"]["value"].split()[0]) + len(st["trainable"]["off"]) == R["meta"]["resolved"] == 2, st["trainable"]
         n, _ = write_page(R, os.path.join(d, "page")); js = open(os.path.join(d, "page", "traj", "000.js")).read()
         assert n == 1 and "</script>" not in js and "<\\/script>" in js and os.path.exists(os.path.join(d, "page", "index.html")), n
         want = {"leak": ("leak", "FAIL", 0), "back": ("back", "FAIL", 3), "foreign": ("foreign", "note", 3), "files": ("files", "FAIL", 0), "ledger": ("ledger", "note", 0),

@@ -948,6 +948,22 @@ and without stream redirections: as written, the rules found a test run in none 
 `echo …; … 2>&1`; step 5's entry needs the same.
 Not verified: paraphrased mentions (fixed phrases only) · the page with all ~3,400 attempts · a run on the box.
 
+**How many trajectories of the first batch are left for training (2026-11-21, a preview; the filter itself is step 5).**
+The audit has one more row, `trainable`: the resolved trajectories without the three kinds decided so far. Its list holds the ones left out, each with its reasons.
+
+| from 200 tasks drawn | left |
+|---|---|
+| tasks whose gold patch resolves | 186 |
+| attempts | 558 |
+| resolved attempts | 283, from 104 tasks |
+| without the 32 whose patch equals an earlier attempt's of the same task | 251 |
+| without the 3 a reject rule drops (1 is also a repeat) | 249 |
+| without the 7 that never called `submit_patch` | **242**, from 104 tasks |
+
+The 242 hold 4,252 tool-call turns, 4,146 of them with a thought. The 7 without `submit_patch` resolved because the harness takes the patch from the working tree
+when a run ends without the call; they are left out because their end shows no submit. Not checked: why each of the 7 ended without the call, and whether their
+patches carry scratch files. At the same rate the second batch gives about 1,200 more.
+
 ## B-10 · Our own MetaCurate-style data: teacher trajectories from GLM-5.3 through a gateway (plan 2026-11-13, revised the same day: generation settings as the paper, GLM-5.3 only, the official rule logic, SWE-Gym left out; **scope changed 2026-11-17: B-10 = data generation, the students are chosen afterwards**; **2026-11-18: generation continues in B-11, in the competition harness; the mini-swe-agent route below is kept as written and not run**) — step 1 `setup` ✓ · `check` ✓ for SWE-rebench-V2 · `diag` ✓ (2026-11-13: both SWE-rebench problems explained and fixed in the scripts) · ▶ **now on the box: the commands under "On the box now" below**, 📷 · **B-10b (2026-11-17): three data lines against the thought loops, gated on B-9 part 3 step 19 — see the end of this section**
 
 **On the box now (2026-11-13, after `diag`; no tokens except a few cents for the probe).**
