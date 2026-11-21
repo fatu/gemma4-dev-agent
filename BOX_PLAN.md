@@ -824,6 +824,32 @@ re-sent, no rule text in the log, no thought lost). $3.77.
   trajectories before the rule filter (27 tasks: anywhere between about 1,400 and 2,500).
 - Still not separated: what the earlier thoughts alone give without any reminder (no such pilot).
 
+**▶▶ GO (user, 2026-11-20): the scale runs the third pilot's setting, cap $800.** This block replaces every
+earlier scale line.
+```bash
+git pull && git log --oneline -1
+# the pull limit that applies to this machine (does not count as a pull) — 📷 the ratelimit lines
+T=$(curl -s "https://auth.docker.io/token?service=registry.docker.io&scope=repository:ratelimitpreview/test:pull" | python3 -c "import sys,json;print(json.load(sys.stdin)['token'])")
+curl -sI -H "Authorization: Bearer $T" https://registry-1.docker.io/v2/ratelimitpreview/test/manifests/latest | grep -i ratelimit
+export OUT=runs/teach_h2 REMINDER=1                # first line must print: reminder 1 · reminder place end · history thoughts 1
+BUDGET_USD=800 RESERVE_USD=0.60 PRICE=<same three numbers>  nohup bash scripts/teacher_gen.sh gen > runs/gen_h2.log 2>&1 &
+sleep 60; head -3 runs/gen_h2.log; tail -5 runs/gen_h2.log
+```
+- Same directory as the third pilot (its 27 first attempts count; the $800 includes its $4.64). `setup` is not
+  needed again **if** `wc -l runs/teach_h2/all.ids` says 1,215; otherwise run `bash scripts/teacher_gen.sh setup | tail -12` first.
+- 📷 a few times a day: `OUT=runs/teach_h2 bash scripts/teacher_gen.sh report`. After the first batch also
+  `OUT=runs/teach_h2 bash scripts/teacher_gen.sh inspect all | head -16` — read: the three gates, thoughts ≥ 90 %,
+  `replies with a match: … BEFORE submit_patch`, and that the matches after the submit are gone (the adapter no
+  longer adds the line there; first run of that change on the real gateway).
+- Stop by 2026-11-25. The run stops starting attempts by itself when spent + reserved reaches $800; it can be
+  stopped and started again with the same command at any time (finished attempts are skipped).
+- Why this setting (the user's question, answered before the go): thoughts 93 % against 66 % with the line in the
+  system prompt, where the missing thoughts sit on `submit_patch` (41 %) and `read_file` (49 %); the solve rate is
+  the same; the mentions of the line were all in the closing reply, and thoughts are never a training target.
+- Owed at step 5 for this setting: visible text beside a call (91 % of calls) goes into the thought or is removed
+  (the user's choice, open); turns `inspect` lists lose their thought; the closing reply is left out; a hand-read
+  sample of thoughts estimates the mentions the fixed phrases miss.
+
 ## B-10 · Our own MetaCurate-style data: teacher trajectories from GLM-5.3 through a gateway (plan 2026-11-13, revised the same day: generation settings as the paper, GLM-5.3 only, the official rule logic, SWE-Gym left out; **scope changed 2026-11-17: B-10 = data generation, the students are chosen afterwards**; **2026-11-18: generation continues in B-11, in the competition harness; the mini-swe-agent route below is kept as written and not run**) — step 1 `setup` ✓ · `check` ✓ for SWE-rebench-V2 · `diag` ✓ (2026-11-13: both SWE-rebench problems explained and fixed in the scripts) · ▶ **now on the box: the commands under "On the box now" below**, 📷 · **B-10b (2026-11-17): three data lines against the thought loops, gated on B-9 part 3 step 19 — see the end of this section**
 
 **On the box now (2026-11-13, after `diag`; no tokens except a few cents for the probe).**
