@@ -15,7 +15,7 @@ value, and the list of offenders as (task, attempt, call).
 
 The page is written as plain files (index.html + audit.js + traj/NN.js) and opens from the disk: no server, no
 network, nothing uploaded. The trajectory text is data from a model and from repositories: the page shows it with
-textContent only. Stdlib only. Knobs (all printed): --ids --name --attempts --min-thought --eval-repos --page.
+textContent only. Stdlib only. Knobs (all printed): --ids --name --attempts --min-thought --max-patch --eval-repos --page.
 """
 import argparse
 import collections
@@ -197,7 +197,7 @@ def load_rows(out, ids=None, name=""):
     return sorted(keep, key=lambda r: (r["task"].lower(), r["attempt"])), len(rows)
 
 
-def audit(out, ids=None, name="", attempts=3, min_thought=90.0, eval_repos=(), bodies=False):
+def audit(out, ids=None, name="", attempts=3, min_thought=90.0, eval_repos=(), bodies=False, max_patch=20000):
     """→ {meta, checks, charts, attempts, [bodies]} for the done attempts of `out` (optionally: only the tasks in
     `ids`, only the runs whose name starts with `name`)."""
     rows, n_all = load_rows(out, ids, name)
@@ -436,19 +436,24 @@ def audit(out, ids=None, name="", attempts=3, min_thought=90.0, eval_repos=(), b
             if h in hs[:j]:
                 dup += 1; a0 = next(a for a in per_task[t] if a["attempt"] == sorted(d)[j]); off["dup_patch"].append([a0["i"], 0, "the same patch as an earlier resolved attempt of this task"])
     add("dup_patch", G[6], "resolved attempts whose patch equals an earlier attempt's of the same task", "补丁与同题更早一次完全相同的解出尝试", "info", pct(dup, len(res)))
-    # what is left for training after the three removals decided so far (a preview: the filter itself is step 5)
+    for a in res:
+        if (a.get("patch_chars") or 0) > max_patch:
+            off["big_patch"].append([a["i"], 0, f"patch of {a['patch_chars']:,} characters (limit {max_patch:,})"])
+    add("big_patch", G[6], f"resolved attempts whose patch is larger than {max_patch:,} characters (files left in the working tree)", f"补丁超过 {max_patch:,} 字符的解出尝试（工作区里留下了文件）", "info",
+        f"{len(off['big_patch'])} of {len(res)}", f"largest patch under the limit: {max([a.get('patch_chars') or 0 for a in res if (a.get('patch_chars') or 0) <= max_patch] or [0]):,}", f"上限以内最大的补丁：{max([a.get('patch_chars') or 0 for a in res if (a.get('patch_chars') or 0) <= max_patch] or [0]):,}")
+    # what is left for training after the removals decided so far (a preview: the filter itself is step 5)
     why = collections.defaultdict(list)
-    for cid, lab in (("dup_patch", "same patch as an earlier attempt"), ("rules", "reject rule"), ("no_submit", "no submit_patch")):
+    for cid, lab in (("dup_patch", "same patch as an earlier attempt"), ("rules", "reject rule"), ("no_submit", "no submit_patch"), ("big_patch", "patch over the limit")):
         for x in off.get(cid, []):
             if A[x[0]]["resolved"] and lab not in why[x[0]]:
                 why[x[0]].append(lab)
     off["trainable"] = [[i, 0, "left out: " + " + ".join(v)] for i, v in sorted(why.items())]
     keep = [a for a in res if a["i"] not in why]
-    n_by = {lab: sum(1 for v in why.values() if lab in v) for lab in ("same patch as an earlier attempt", "reject rule", "no submit_patch")}
+    n_by = {lab: sum(1 for v in why.values() if lab in v) for lab in ("same patch as an earlier attempt", "reject rule", "no submit_patch", "patch over the limit")}
     add("trainable", G[6], "resolved trajectories left for training (preview; the list holds the ones left out)", "预计可训练的轨迹（预估；清单里是被去掉的）", "info",
         f"{len(keep)} of {len(res)} · {len({a['task'] for a in keep})} tasks · {sum(a['tool_turns'] for a in keep):,} tool-call turns ({sum(a['thought_turns'] for a in keep):,} with a thought)",
-        f"left out {len(why)}: same patch {n_by['same patch as an earlier attempt']} · reject rule {n_by['reject rule']} · no submit_patch {n_by['no submit_patch']} (one attempt may have several reasons)",
-        f"去掉 {len(why)} 条：补丁重复 {n_by['same patch as an earlier attempt']} · 规则拒绝 {n_by['reject rule']} · 没有 submit_patch {n_by['no submit_patch']}（一条可能有多个原因）")
+        f"left out {len(why)}: same patch {n_by['same patch as an earlier attempt']} · reject rule {n_by['reject rule']} · no submit_patch {n_by['no submit_patch']} · patch over the limit {n_by['patch over the limit']} (one attempt may have several reasons)",
+        f"去掉 {len(why)} 条：补丁重复 {n_by['same patch as an earlier attempt']} · 规则拒绝 {n_by['reject rule']} · 没有 submit_patch {n_by['no submit_patch']} · 补丁超过上限 {n_by['patch over the limit']}（一条可能有多个原因）")
     rc = C(a["repo"] or a["task"].rsplit("-", 1)[0] for a in res)
     add("repos", G[6], "repositories among the resolved trajectories", "解出的轨迹涉及的仓库", "info", f"{len(rc)} repositories · top 5 hold {pct(sum(v for _, v in rc.most_common(5)), len(res))}",
         " · ".join(f"{r} {v}" for r, v in rc.most_common(5)), " · ".join(f"{r} {v}" for r, v in rc.most_common(5)))
@@ -472,7 +477,7 @@ def audit(out, ids=None, name="", attempts=3, min_thought=90.0, eval_repos=(), b
         dict(en="tool calls made", zh="各工具的调用数", unit="", bars=[[n, v, ""] for n, v in tools.most_common()]),
         dict(en="cost per attempt, $", zh="每次尝试的花费（美元）", unit="", bars=[[a_, b_, ""] for a_, b_ in hist([int(100 * u) for u in usd], [0, 5, 10, 20, 30, 50, 100])], label_div=100),
     ]
-    meta = dict(out=os.path.abspath(out), ids=None if ids is None else len(ids), name=name, attempts_wanted=attempts, min_thought=min_thought, rows_in_file=n_all,
+    meta = dict(out=os.path.abspath(out), ids=None if ids is None else len(ids), name=name, attempts_wanted=attempts, min_thought=min_thought, max_patch=max_patch, rows_in_file=n_all,
                 rows=len(rows), done=len(done), tasks=len(per_task), resolved=len(res), calls=dict(summary=k["summary"], tool=k["tool"], text=k["text"], closing=k["closing"]),
                 all_calls_thought_note="", made=time.strftime("%Y-%m-%d %H:%M"), echo_pats=[[n, p] for n, p in ECHO_PATS], eval_repos=sorted(ev),
                 mc_rules=bool(mc_rules), groups=list(G))
@@ -576,7 +581,7 @@ def _fixture(d, break_=""):
                 open(os.path.join(d, f"runs/r_a{n}/traj/{task}.jsonl"), "w").write("".join(json.dumps(x) + "\n" for x in lines))
             open(os.path.join(d, f"runs/r_a{n}/patches/{task}.patch"), "w").write(f"diff --git a/a.py b/a.py\n+{task}{n}\n")
             open(os.path.join(d, f"calls/r_a{n}.jsonl"), "a").write("".join(json.dumps({"reminder": i < 4, "err": None}) + "\n" for i in range(5)))
-            att.write(json.dumps({"task": task, "attempt": n, "state": "done", "resolved": task == "o__b-2", "usd": 0.05, "seconds": 9, "tool_calls": 4, "patch_chars": 30, "harness_error": None,
+            att.write(json.dumps({"task": task, "attempt": n, "state": "done", "resolved": task == "o__b-2", "usd": 0.05, "seconds": 9, "tool_calls": 4, "patch_chars": (30000 if break_ == "big_patch" and (task, n) == ("o__b-2", 2) else 30), "harness_error": None,
                                   "run": f"runs/x/runs/r_a{n}", "reminder": "on", "reminder_id": "1", "reminder_place": "system" if B == "settings" else "end", "hist": "on"}) + "\n")
     att.close(); led.close()
 
@@ -596,7 +601,7 @@ def selftest():
         n, _ = write_page(R, os.path.join(d, "page")); js = open(os.path.join(d, "page", "traj", "000.js")).read()
         assert n == 1 and "</script>" not in js and "<\\/script>" in js and os.path.exists(os.path.join(d, "page", "index.html")), n
         want = {"leak": ("leak", "FAIL", 0), "back": ("back", "FAIL", 3), "foreign": ("foreign", "note", 3), "files": ("files", "FAIL", 0), "ledger": ("ledger", "note", 0),
-                "reasoning": ("reasoning", "FAIL", 2), "settings": ("settings", "FAIL", None), "eval_repo": ("eval_repo", "FAIL", None), "no_thought": ("no_thought", "FAIL", 1), "echo": ("echo_tool", "note", 3)}
+                "reasoning": ("reasoning", "FAIL", 2), "settings": ("settings", "FAIL", None), "eval_repo": ("eval_repo", "FAIL", None), "no_thought": ("no_thought", "FAIL", 1), "echo": ("echo_tool", "note", 3), "big_patch": ("big_patch", "info", 0)}
         for brk, (cid, status, call) in want.items():
             _fixture(d, brk); R = audit(d, attempts=2, eval_repos=ev); c = next(x for x in R["checks"] if x["id"] == cid)
             assert c["status"] == status, (brk, c["status"], c["value"])
@@ -620,6 +625,7 @@ def main():
     ap.add_argument("--name", default="", help="only the runs whose name starts with this")
     ap.add_argument("--attempts", type=int, default=3, help="attempts wanted per task")
     ap.add_argument("--min-thought", type=float, default=90.0, help="gate: share of tool-call turns with a thought, %%")
+    ap.add_argument("--max-patch", type=int, default=20000, help="a resolved attempt with a larger patch (characters) is left out of the trainable count")
     ap.add_argument("--eval-repos", default=os.path.join(os.path.dirname(HERE), "splits", "eval_repos.txt"))
     ap.add_argument("--page", default="", help="write the local page into this directory")
     ap.add_argument("--echo-all", action="store_true")
@@ -627,8 +633,8 @@ def main():
     ids = set(open(a.ids).read().split()) if a.ids else None
     ev = [l.strip() for l in open(a.eval_repos) if l.strip() and not l.startswith("#")] if a.eval_repos and os.path.exists(a.eval_repos) else []
     print(f"== teach_audit · out {a.out} · ids {a.ids or 'all tasks'}{'' if ids is None else f' ({len(ids)})'} · name {a.name or 'all runs'} · attempts wanted {a.attempts} · "
-          f"min thought {a.min_thought:g} % · eval repos {a.eval_repos if ev else 'none'} ({len(ev)}) · page {a.page or 'not written'} · rule preview {'on (train/mc_rules.py)' if mc_rules else 'OFF: ' + MC_ERR}")
-    R = audit(a.out, ids, a.name, a.attempts, a.min_thought, ev, bodies=bool(a.page))
+          f"min thought {a.min_thought:g} % · max patch {a.max_patch:,} chars · eval repos {a.eval_repos if ev else 'none'} ({len(ev)}) · page {a.page or 'not written'} · rule preview {'on (train/mc_rules.py)' if mc_rules else 'OFF: ' + MC_ERR}")
+    R = audit(a.out, ids, a.name, a.attempts, a.min_thought, ev, bodies=bool(a.page), max_patch=a.max_patch)
     print_table(R, a.echo_all)
     if a.page:
         n, total = write_page(R, a.page)

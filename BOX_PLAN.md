@@ -958,9 +958,10 @@ The audit has one more row, `trainable`: the resolved trajectories without the t
 | resolved attempts | 283, from 104 tasks |
 | without the 32 whose patch equals an earlier attempt's of the same task | 251 |
 | without the 3 a reject rule drops (1 is also a repeat) | 249 |
-| without the 7 that never called `submit_patch` | **242**, from 104 tasks |
+| without the 7 that never called `submit_patch` | 242 |
+| without the 2 whose patch is over 20,000 characters | **240**, from 104 tasks |
 
-The 242 hold 4,252 tool-call turns, 4,146 of them with a thought. The 7 without `submit_patch` resolved because the harness takes the patch from the working tree
+The 240 hold 4,183 tool-call turns, 4,079 of them with a thought. The patch limit is the audit's `--max-patch` (default 20,000 characters, printed): two resolved attempts of one task carry patches of 4.8 MB and 1.0 MB — the fix itself is 1.5 KB, the rest is report files and scratch scripts left in the working tree; the largest patch under the limit is 15,312 characters. The limit does not find a small scratch script left beside the fix; that is not counted yet. The 7 without `submit_patch` resolved because the harness takes the patch from the working tree
 when a run ends without the call; they are left out because their end shows no submit. Not checked: why each of the 7 ended without the call, and whether their
 patches carry scratch files. At the same rate the second batch gives about 1,200 more.
 
