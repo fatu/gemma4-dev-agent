@@ -1,0 +1,295 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>教师轨迹审计</title>
+<!-- written by scripts/teach_audit.py --page. Opens from the disk: audit.js and traj/NNN.js are loaded as scripts.
+     Every piece of trajectory text is put on the page with textContent — never as HTML. No network. -->
+<style>
+/* layout: one column — verdict, the checks (click → offenders → the turn), charts, the attempts, the reader */
+:root{
+  --bg:#f6f7f5; --surface:#ffffff; --fg:#1d2422; --muted:#5d6a66; --line:#d9dfdb;
+  --thought:#8a5a00; --thought-bg:#fbf3df; --call:#0b6b5c; --call-bg:#e6f3f0; --res-bg:#eef0ee;
+  --ok:#17705a; --bad:#a23b2c; --warn:#8a5a00; --mark:#ffd95a; --mark-fg:#1d2422; --sel:#e6f3f0;
+  --sans:"PingFang SC","Hiragino Sans GB","Microsoft YaHei",system-ui,-apple-system,"Segoe UI",sans-serif;
+  --mono:"SF Mono",Menlo,Consolas,"Liberation Mono",monospace;
+}
+@media (prefers-color-scheme: dark){ :root:not([data-theme="light"]){
+  --bg:#141917; --surface:#1c2320; --fg:#e4eae7; --muted:#96a39f; --line:#2f3936;
+  --thought:#e6b656; --thought-bg:#2b2413; --call:#5fc9b6; --call-bg:#14302b; --res-bg:#222a27;
+  --ok:#5fc9a8; --bad:#ef8a78; --warn:#e6b656; --mark:#8a6a00; --mark-fg:#fff6d6; --sel:#14302b; color-scheme:dark } }
+:root[data-theme="dark"]{
+  --bg:#141917; --surface:#1c2320; --fg:#e4eae7; --muted:#96a39f; --line:#2f3936;
+  --thought:#e6b656; --thought-bg:#2b2413; --call:#5fc9b6; --call-bg:#14302b; --res-bg:#222a27;
+  --ok:#5fc9a8; --bad:#ef8a78; --warn:#e6b656; --mark:#8a6a00; --mark-fg:#fff6d6; --sel:#14302b; color-scheme:dark }
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font-family:var(--sans);font-size:15px;line-height:1.6}
+.wrap{max-width:1040px;margin:0 auto;padding-block:28px 80px;padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px));display:flex;flex-direction:column;gap:32px}
+h1{font-size:24px;line-height:1.25;margin:0;font-weight:600}
+h2{font-size:18px;margin:0 0 10px;font-weight:600}
+h3{font-size:14px;margin:0;font-weight:600;color:var(--muted)}
+p{margin:0 0 8px} .muted{color:var(--muted)} .mono{font-family:var(--mono);font-size:12.5px;overflow-wrap:anywhere}
+button,select,input{font:inherit;color:inherit;background:var(--surface);border:1px solid var(--line);border-radius:5px;padding:5px 9px}
+button{cursor:pointer} button:hover{border-color:var(--call)} :focus-visible{outline:2px solid var(--call);outline-offset:2px}
+.verdict{display:flex;flex-wrap:wrap;gap:10px;margin-top:14px}
+.tile{background:var(--surface);border:1px solid var(--line);border-radius:6px;padding:10px 14px;min-width:120px}
+.tile b{display:block;font-size:24px;line-height:1.2;font-variant-numeric:tabular-nums}
+.tile.FAIL b{color:var(--bad)} .tile.note b{color:var(--warn)} .tile.pass b{color:var(--ok)}
+.tw{overflow-x:auto;border:1px solid var(--line);border-radius:6px;background:var(--surface)}
+table{border-collapse:collapse;width:100%;font-size:14px}
+th,td{padding:7px 11px;text-align:left;border-bottom:1px solid var(--line);vertical-align:top}
+tr:last-child>td{border-bottom:0} th{font-weight:600;color:var(--muted);font-size:13px;white-space:nowrap}
+td.num,th.num{font-variant-numeric:tabular-nums;white-space:nowrap}
+#checks td:nth-child(2){min-width:250px} #checks td.num{white-space:normal;min-width:150px} #checks td:nth-child(4){font-size:13px;min-width:180px}
+tr.grp td{background:var(--bg);font-weight:600;font-size:13px;color:var(--muted)}
+tr.click{cursor:pointer} tr.click:hover td{background:var(--sel)} tr.open td{background:var(--sel)}
+.pill{display:inline-block;font-size:12px;font-weight:600;padding:1px 8px;border-radius:10px;border:1px solid currentColor;white-space:nowrap}
+.pill.pass{color:var(--ok)} .pill.FAIL{color:var(--bad)} .pill.note{color:var(--warn)} .pill.info{color:var(--muted)}
+.offs{padding:6px 0 4px}
+.off{display:grid;grid-template-columns:minmax(0,260px) minmax(0,1fr);gap:4px 12px;padding:5px 0;border-top:1px dashed var(--line);font-size:13px}
+.off a{color:var(--call);cursor:pointer;text-decoration:underline;overflow-wrap:anywhere}
+.charts{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:14px}
+.chart{background:var(--surface);border:1px solid var(--line);border-radius:6px;padding:12px 14px;min-width:0}
+.bar{display:grid;grid-template-columns:96px minmax(0,1fr) auto;gap:8px;align-items:center;font-size:12.5px;margin-top:6px}
+.bar .l{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--muted)}
+.bar .t{height:10px;background:var(--res-bg);border-radius:2px;overflow:hidden} .bar .t i{display:block;height:100%;background:var(--call)}
+.bar .v{font-variant-numeric:tabular-nums;white-space:nowrap}
+.filters{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:10px;align-items:center}
+.filters input{flex:1 1 180px;min-width:0}
+.ok{color:var(--ok);font-weight:600} .bad{color:var(--bad);font-weight:600}
+.reader{border-top:2px solid var(--fg);padding-top:14px;display:flex;flex-direction:column;gap:10px}
+.meta{display:flex;flex-wrap:wrap;gap:4px 14px;font-size:13px;color:var(--muted);font-variant-numeric:tabular-nums}
+pre{margin:0;font-family:var(--mono);font-size:12.5px;line-height:1.55;white-space:pre-wrap;overflow-wrap:anywhere}
+details>summary{cursor:pointer;color:var(--muted);font-size:13px}
+details pre{margin-top:6px;padding:10px 12px;background:var(--res-bg);border-radius:4px}
+ol.steps{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:14px}
+ol.steps>li{display:grid;grid-template-columns:76px minmax(0,1fr);gap:10px;scroll-margin-top:12px}
+ol.steps>li.target .n{color:var(--bad);font-weight:600}
+ol.steps>li.target .body{outline:2px solid var(--mark);outline-offset:4px;border-radius:4px}
+.n{font-size:12px;color:var(--muted);padding-top:6px;font-variant-numeric:tabular-nums}
+.body{display:flex;flex-direction:column;gap:4px;min-width:0}
+.blk{padding:6px 10px;border-radius:4px;min-width:0}
+.lab{display:block;font-size:11px;letter-spacing:.04em;font-weight:600;margin-bottom:2px}
+.th{background:var(--thought-bg)} .th .lab{color:var(--thought)}
+.call{background:var(--call-bg)} .call .lab{color:var(--call)}
+.res{background:var(--res-bg)} .res .lab,.tx .lab,.sys .lab{color:var(--muted)} .res pre{color:var(--muted)}
+.tx{border:1px solid var(--line)} .sys{border:1px dashed var(--muted)} .none{border:1px dashed var(--bad)} .none .lab{color:var(--bad);margin:0}
+.err .lab{color:var(--bad)}
+mark{background:var(--mark);color:var(--mark-fg);padding:0 2px;border-radius:2px}
+.more{font-size:12px;margin-top:4px;padding:1px 8px}
+.legend{display:flex;flex-wrap:wrap;gap:8px;font-size:12px} .legend span{padding:2px 8px;border-radius:4px}
+.pager{display:flex;gap:10px;align-items:center;margin-top:8px;font-size:13px}
+@media (max-width:600px){ ol.steps>li{grid-template-columns:1fr;gap:2px} .n{padding-top:0} .off{grid-template-columns:1fr} .bar{grid-template-columns:70px minmax(0,1fr) auto} }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>教师轨迹审计</h1>
+    <p class="muted mono" id="src"></p>
+    <div class="verdict" id="verdict"></div>
+  </header>
+  <section>
+    <h2>检查</h2>
+    <p class="muted">点一行看违例清单，点清单里的一条打开那条轨迹并跳到那一回合。"通过 / 不通过"是门槛；"注意"是需要人读的计数；"计数"只是数字。</p>
+    <div class="tw"><table id="checks"></table></div>
+  </section>
+  <section>
+    <h2>分布</h2>
+    <div class="charts" id="charts"></div>
+  </section>
+  <section>
+    <h2>尝试</h2>
+    <div class="filters">
+      <select id="f-res" aria-label="解出"><option value="">解出 + 未解出</option><option value="1">只看解出</option><option value="0">只看未解出</option></select>
+      <select id="f-att" aria-label="第几次"><option value="">每一次尝试</option></select>
+      <select id="f-flag" aria-label="被检查标出"><option value="">不限检查</option></select>
+      <input id="f-q" type="search" placeholder="任务或仓库名" aria-label="搜索任务或仓库">
+      <span class="muted" id="f-n"></span>
+    </div>
+    <div class="tw"><table id="attempts"></table></div>
+    <div class="pager"><button id="p-prev">上一页</button><span id="p-info"></span><button id="p-next">下一页</button></div>
+  </section>
+  <section id="reader-sec" hidden>
+    <div class="reader" id="reader"></div>
+  </section>
+</div>
+<script src="audit.js"></script>
+<script>
+"use strict";
+const D = window.AUDIT, A = D.attempts, $ = id => document.getElementById(id);
+const ZH = {pass:"通过", FAIL:"不通过", note:"注意", info:"计数"};
+const GROUP = {integrity:"完整性", gates:"三个门槛", reminder:"提醒", thoughts:"思考", shape:"回复形状", outcome:"结果", fitness:"训练适用性（预估步骤 5）", cost:"花费和时间"};
+const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text !== undefined && text !== null) e.textContent = String(text); return e; };
+const CHECK = {}; D.checks.forEach(c => CHECK[c.id] = c);
+const PATS = D.meta.echo_pats.map(p => { try { return new RegExp(p[1], "gi"); } catch (e) { return null; } }).filter(Boolean);
+const store = { get(k){ try { return localStorage.getItem(k); } catch(e){ return null; } }, set(k,v){ try { localStorage.setItem(k,v); } catch(e){} } };
+
+// ---- header
+(function(){
+  const m = D.meta;
+  $("src").textContent = m.out + " · " + (m.ids === null ? "全部任务" : "任务清单 " + m.ids + " 个") + (m.name ? " · 运行名前缀 " + m.name : "") + " · 生成于 " + m.made;
+  const n = {FAIL:0, note:0, pass:0, info:0}; D.checks.forEach(c => n[c.status]++);
+  const tiles = [["FAIL", n.FAIL, "门槛不通过"], ["note", n.note, "要人读的"], ["pass", n.pass, "通过"], ["", m.done, "完成的尝试"], ["", m.resolved, "解出"], ["", m.tasks, "任务"], ["", m.calls.tool, "工具调用回合"]];
+  tiles.forEach(t => { const d = el("div", "tile " + t[0]); d.append(el("b", "", Number(t[1]).toLocaleString()), el("span", "muted", t[2])); $("verdict").append(d); });
+})();
+
+// ---- checks
+(function(){
+  const T = $("checks"); let grp = null;
+  const hd = el("tr"); ["状态", "检查", "值", "说明"].forEach(h => hd.append(el("th", "", h))); T.append(hd);
+  D.checks.forEach(c => {
+    if (c.group !== grp) { grp = c.group; const g = el("tr", "grp"); const td = el("td", "", GROUP[grp] || grp); td.colSpan = 4; g.append(td); T.append(g); }
+    const tr = el("tr", c.off.length ? "click" : ""); tr.id = "chk-" + c.id;
+    const s = el("td"); s.append(el("span", "pill " + c.status, ZH[c.status]));
+    const t = el("td", "", c.zh); if (c.off.length) t.append(el("span", "muted", "  ▸ " + c.off.length));
+    tr.append(s, t, el("td", "num", c.value), el("td", "muted", c.note_zh || ""));
+    T.append(tr);
+    if (!c.off.length) return;
+    const ex = el("tr"); ex.hidden = true; const td = el("td"); td.colSpan = 4; ex.append(td); T.append(ex);
+    tr.tabIndex = 0;
+    const toggle = () => {
+      ex.hidden = !ex.hidden; tr.classList.toggle("open", !ex.hidden);
+      if (!ex.hidden && !td.firstChild) fill(td, c, 60);
+    };
+    tr.addEventListener("click", toggle); tr.addEventListener("keydown", e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); toggle(); } });
+  });
+  function fill(td, c, n) {
+    td.textContent = ""; const box = el("div", "offs");
+    c.off.slice(0, n).forEach(o => {
+      const a = A[o[0]], row = el("div", "off"), link = el("a", "", a.task + " · 第 " + a.attempt + " 次" + (o[1] ? " · 调用 " + o[1] : ""));
+      link.tabIndex = 0; link.setAttribute("role", "link");
+      const go = () => openAttempt(o[0], o[1]); link.addEventListener("click", go); link.addEventListener("keydown", e => { if (e.key === "Enter") go(); });
+      const left = el("div"); left.append(link, el("span", a.resolved ? "ok" : "muted", a.resolved ? "  解出" : "  未解出"));
+      row.append(left, el("div", "mono", o[2])); box.append(row);
+    });
+    td.append(box);
+    if (c.off.length > n) { const b = el("button", "more", "再显示 " + Math.min(200, c.off.length - n) + " 条（共 " + c.off.length + "）"); b.addEventListener("click", e => { e.stopPropagation(); fill(td, c, n + 200); }); td.append(b); }
+  }
+})();
+
+// ---- charts
+D.charts.forEach(ch => {
+  const box = el("div", "chart"); box.append(el("h3", "", ch.zh));
+  const max = ch.unit === "%" ? 100 : Math.max(1, ...ch.bars.map(b => b[1]));
+  ch.bars.forEach(b => {
+    let label = b[0];
+    if (ch.label_div) label = label.replace(/\d+/g, x => (Number(x) / ch.label_div).toFixed(2));
+    const r = el("div", "bar"), t = el("div", "t"), i = el("i"); i.style.width = (100 * b[1] / max).toFixed(1) + "%"; t.append(i);
+    r.append(el("span", "l", label), t, el("span", "v", b[1].toLocaleString() + (ch.unit || "") + (b[2] ? "  (" + b[2] + ")" : ""))); r.title = label; box.append(r);
+  });
+  $("charts").append(box);
+});
+
+// ---- attempts
+const PAGE = 100; let page = 0, rows = [];
+(function(){
+  [...new Set(A.map(a => a.attempt))].sort().forEach(n => { const o = el("option", "", "第 " + n + " 次"); o.value = n; $("f-att").append(o); });
+  D.checks.filter(c => c.off.length).forEach(c => { const o = el("option", "", c.zh.slice(0, 34) + "（" + c.off.length + "）"); o.value = c.id; $("f-flag").append(o); });
+  ["f-res", "f-att", "f-flag"].forEach(id => $(id).addEventListener("change", () => { page = 0; draw(); }));
+  $("f-q").addEventListener("input", () => { page = 0; draw(); });
+  $("p-prev").addEventListener("click", () => { if (page) { page--; draw(); } });
+  $("p-next").addEventListener("click", () => { if ((page + 1) * PAGE < rows.length) { page++; draw(); } });
+  draw();
+})();
+function draw() {
+  const res = $("f-res").value, att = $("f-att").value, flag = $("f-flag").value, qq = $("f-q").value.trim().toLowerCase();
+  rows = A.filter(a => (res === "" || String(+a.resolved) === res) && (att === "" || String(a.attempt) === att) && (!flag || a.flags.includes(flag)) && (!qq || (a.task + " " + a.repo).toLowerCase().includes(qq)));
+  const T = $("attempts"); T.textContent = "";
+  const hd = el("tr"); [["任务", ""], ["次", "num"], ["结果", ""], ["工具调用回合", "num"], ["带思考", "num"], ["摘要", "num"], ["补丁字符", "num"], ["秒", "num"], ["$", "num"], ["被标出", ""]].forEach(h => hd.append(el("th", h[1], h[0]))); T.append(hd);
+  rows.slice(page * PAGE, (page + 1) * PAGE).forEach(a => {
+    const tr = el("tr", "click"); tr.tabIndex = 0;
+    const name = el("td", "mono", a.task);
+    tr.append(name, el("td", "num", a.attempt), el("td", a.resolved ? "ok" : "muted", a.resolved ? "解出" : "未解出"), el("td", "num", a.tool_turns), el("td", "num", a.thought_turns),
+      el("td", "num", a.summaries || ""), el("td", "num", a.patch_chars.toLocaleString()), el("td", "num", a.seconds), el("td", "num", a.usd.toFixed(3)),
+      el("td", "muted", a.flags.filter(f => CHECK[f] && CHECK[f].status !== "info").map(f => CHECK[f].zh.slice(0, 12)).join(" · ")));
+    const go = () => openAttempt(a.i, 0); tr.addEventListener("click", go); tr.addEventListener("keydown", e => { if (e.key === "Enter") go(); });
+    T.append(tr);
+  });
+  $("f-n").textContent = rows.length.toLocaleString() + " 条";
+  $("p-info").textContent = rows.length ? "第 " + (page + 1) + " / " + Math.ceil(rows.length / PAGE) + " 页" : "没有符合的尝试";
+}
+
+// ---- trajectory text: loaded as script files, one per chunk
+const CHUNKS = {}, WAIT = {};
+window.TRAJ_LOADED = (n, data) => { CHUNKS[n] = data; (WAIT[n] || []).forEach(f => f()); WAIT[n] = []; };
+function withChunk(n, ok, fail) {
+  if (CHUNKS[n]) return ok();
+  if (WAIT[n] && WAIT[n].length) { WAIT[n].push(ok); return; }
+  WAIT[n] = [ok];
+  const s = document.createElement("script"); s.src = "traj/" + String(n).padStart(3, "0") + ".js"; s.onerror = () => { WAIT[n] = []; fail(); }; document.head.append(s);
+}
+
+// text with the reminder patterns marked; long text folded, never dropped
+function marked(text) {
+  const frag = document.createDocumentFragment(); const spans = [];
+  PATS.forEach(re => { re.lastIndex = 0; let m; while ((m = re.exec(text))) { spans.push([m.index, m.index + m[0].length]); if (!m[0].length) re.lastIndex++; } });
+  spans.sort((a, b) => a[0] - b[0]); let at = 0;
+  spans.forEach(s => { if (s[0] < at) return; if (s[0] > at) frag.append(text.slice(at, s[0])); frag.append(el("mark", "", text.slice(s[0], s[1]))); at = s[1]; });
+  frag.append(text.slice(at)); return frag;
+}
+function block(cls, label, text, opt) {
+  opt = opt || {}; const limit = opt.limit || 1600;
+  const b = el("div", "blk " + cls); b.append(el("span", "lab", label));
+  const pre = el("pre"); b.append(pre);
+  const put = t => { pre.textContent = ""; pre.append(opt.mark ? marked(t) : document.createTextNode(t)); };
+  if (text.length <= limit * 1.3) { put(text); return b; }
+  let open = false; const btn = el("button", "more");
+  const hit = opt.mark && PATS.some(re => { re.lastIndex = 0; const m = re.exec(text); return m && m.index > limit; });
+  const set = () => { put(open ? text : text.slice(0, limit) + " …"); btn.textContent = open ? "收起" : "展开其余 " + (text.length - limit).toLocaleString() + " 字符"; };
+  btn.addEventListener("click", () => { open = !open; set(); });
+  open = !!hit; set(); b.append(btn); return b;
+}
+const pretty = s => { try { const o = JSON.parse(s); return Object.keys(o).map(k => k + ": " + (typeof o[k] === "string" ? o[k] : JSON.stringify(o[k]))).join("\n"); } catch (e) { return String(s); } };
+
+function openAttempt(i, call, nohash) {
+  const a = A[i], sec = $("reader-sec"), R = $("reader");
+  sec.hidden = false; R.textContent = ""; R.append(el("p", "muted", "正在读取轨迹…"));
+  if (!nohash) { try { history.replaceState(null, "", "#a" + i + (call ? "c" + call : "")); } catch (e) { location.hash = "a" + i + (call ? "c" + call : ""); } }
+  if (a.chunk < 0) { R.textContent = ""; R.append(el("p", "bad", "这条尝试没有轨迹文件。")); sec.scrollIntoView(); return; }
+  withChunk(a.chunk, () => render(a, CHUNKS[a.chunk][String(i)], call), () => { R.textContent = ""; R.append(el("p", "bad", "读不到 traj/" + String(a.chunk).padStart(3, "0") + ".js")); });
+}
+function render(a, b, call) {
+  const R = $("reader"); R.textContent = "";
+  const h = el("h2", "mono", a.task + " · 第 " + a.attempt + " 次"); R.append(h);
+  const meta = el("div", "meta");
+  [a.resolved ? "解出" : "未解出", a.repo, "运行 " + a.run, a.calls + " 次模型调用", a.tool_turns + " 个工具调用回合，" + a.thought_turns + " 个带思考", a.summaries ? a.summaries + " 次压缩" : "没有压缩",
+   "补丁 " + a.patch_chars.toLocaleString() + " 字符", a.seconds + " 秒", "$" + a.usd.toFixed(4), a.end ? "终止：" + a.end : "", (a.signals && a.signals.length) ? "规则：" + a.signals.join(", ") : ""].filter(Boolean)
+    .forEach((t, k) => meta.append(el("span", k === 0 ? (a.resolved ? "ok" : "bad") : "", t)));
+  R.append(meta);
+  const fl = a.flags.filter(f => CHECK[f]); if (fl.length) R.append(el("p", "muted", "被这些检查标出：" + fl.map(f => CHECK[f].zh).join("；")));
+  const lg = el("div", "legend"); [["th", "思考"], ["call", "工具调用"], ["res", "工具返回"], ["tx", "可见文字"], ["sys", "harness 的消息"]].forEach(x => lg.append(el("span", "blk " + x[0], x[1]))); R.append(lg);
+  const d = el("details"); d.append(el("summary", "", "任务说明（" + b.task.length.toLocaleString() + " 字符）")); d.append(el("pre", "", b.task)); R.append(d);
+  const ol = el("ol", "steps"); let target = null;
+  b.steps.forEach(st => {
+    const li = el("li"); li.id = "call-" + st.n;
+    const K = {summary: "压缩摘要", tool: "", text: "无调用", closing: "收尾"}[st.kind];
+    const n = el("div", "n"); n.append(el("div", "", "调用 " + st.n)); if (K) n.append(el("div", st.kind === "text" ? "bad" : "", K)); n.append(el("div", "", st.s.toFixed(1) + " s"), el("div", "", st.tin.toLocaleString() + " → " + st.tout.toLocaleString()));
+    const body = el("div", "body");
+    if (st.reset) body.append(block("sys", "历史在这里被重建（压缩之后）", (st.ctx || []).join("\n\n— — —\n\n") || "（没有 user 消息）", {limit: 900}));
+    (st.nudge || []).forEach(t => body.append(block("sys", "HARNESS 的消息", t, {limit: 900})));
+    if (st.kind === "summary" && st.ask) body.append(block("sys", "摘要请求（开头）", st.ask));
+    if (st.th) body.append(block("th", "思考 · " + st.th.length.toLocaleString() + " 字符", st.th, {mark: true}));
+    else if (st.kind === "tool") { const x = el("div", "blk none"); x.append(el("span", "lab", "这一回合没有思考")); body.append(x); }
+    if (st.tx) body.append(block("tx", st.kind === "summary" ? "摘要" : "可见文字", st.tx, {mark: true, limit: st.kind === "summary" ? 900 : 1600}));
+    st.calls.forEach(c => {
+      body.append(block("call", "工具调用 · " + c.name.slice(0, 60), pretty(c.args), {mark: true, limit: 2400}));
+      if (c.res !== null && c.res !== undefined) body.append(block("res" + (c.status && c.status !== "ok" ? " err" : ""), "工具返回" + (c.status && c.status !== "ok" ? " · " + c.status : ""), pretty(c.res), {limit: 700}));
+    });
+    if (st.fin && st.fin !== "tool_calls" && st.fin !== "stop") body.append(el("div", "muted", "finish_reason: " + st.fin));
+    li.append(n, body); ol.append(li);
+    if (call && st.n === call) { li.classList.add("target"); target = li; }
+  });
+  R.append(ol);
+  (target || $("reader-sec")).scrollIntoView({block: "start"});
+}
+
+// ---- deep link: #a<index>c<call>
+(function(){
+  const m = /^#a(\d+)(?:c(\d+))?$/.exec(location.hash || "");
+  if (m && A[+m[1]]) openAttempt(+m[1], m[2] ? +m[2] : 0, true);
+})();
+</script>
+</body>
+</html>

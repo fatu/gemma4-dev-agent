@@ -862,7 +862,7 @@ export OUT=runs/teach_h2 REMINDER=1
 FIRST_N=200 BUDGET_USD=150 RESERVE_USD=0.60 PRICE=<same three numbers>  nohup bash scripts/teacher_gen.sh gen > runs/gen_h2_first.log 2>&1 &
 sleep 60; head -4 runs/gen_h2_first.log        # must print: tasks of this run: 200 of 1215 · reminder 1 · reminder place end · history thoughts 1
 ```
-When it has ended: 📷 `OUT=runs/teach_h2 bash scripts/teacher_gen.sh report` and `… inspect all | head -16`, and
+When it has ended: 📷 `OUT=runs/teach_h2 bash scripts/teacher_gen.sh report` and `… inspect all | head -60`, and
 upload `runs/teach_h2`. Read (set in advance): thoughts ≥ 90 % · the three gates · matches before the submit (a
 count, each read) and none after it · resolved share beside the pilot's 59 % · cost per attempt beside $0.172 ·
 attempts ended by the time limit · image pulls refused by the registry, as a count from the log only.
@@ -913,6 +913,40 @@ export OUT=runs/teach_h2 REMINDER=1
 BUDGET_USD=800 RESERVE_USD=0.60 PRICE=<same three numbers>  nohup bash scripts/teacher_gen.sh gen > runs/gen_h2_rest.log 2>&1 &
 sleep 60; head -4 runs/gen_h2_rest.log        # tasks of this run: 1215 of 1215 · reminder 1 · reminder place end · history thoughts 1
 ```
+
+**The audit of a directory of teacher trajectories, and its local page (2026-11-21).** `scripts/teach_audit.py`
+counts everything per (task, attempt) and sorts each model call into summary / tool-call turn / text-only reply /
+closing reply; `teacher_gen.py inspect` now prints this count (its three faults with three attempts per task are gone
+with the old code). 38 checks in 8 groups — integrity, the three gates, the reminder, thoughts, reply shape, outcome,
+fitness for training (a preview of step 5: the reject rules, equal patches, repositories, the evaluation
+repositories), cost — each with a status (pass / FAIL for a gate, note for a count to be read, info) and the list of
+offenders as (task, attempt, call).
+```bash
+OUT=runs/teach_h2 bash scripts/teacher_gen.sh inspect "" | head -60      # the check table; IDS=<file> for some tasks only
+OUT=runs/teach_h2 bash scripts/teacher_gen.sh audit                      # the same + the page in runs/audit/teach_h2 (PAGE=)
+python3 scripts/teach_audit.py selftest
+```
+The page is plain files (`index.html`, `audit.js`, `traj/NNN.js`) that open from the disk — no server, no network,
+nothing uploaded; the trajectory text is shown as text only. Click a check → its offenders → the trajectory at that
+call; filter the attempts by result, attempt number, check, name.
+
+Verified on the laptop:
+- the first batch gives the hand count of the row above in every number compared (283 / 558 · 10,679 / 10,884 ·
+  9,351 / 9,351 · 178 first calls · 870 · 1,327 · 80 · 519 · mentions 9 + 1 + 1 replies, the same replies);
+- the earlier pilots as real negatives: the second, fourth and fifth fail the thought gate (69.7 / 69.9 / 69.7 % of
+  tool-call turns), the third passes and shows its 8 closing replies that mention the reminder;
+- 10 planted defects in a made-up directory each turn their own check and name the planted attempt and call
+  (`selftest`); a clean one passes every gate;
+- the page in Chrome: no console error, check → offender → the marked turn, the filters, 9 trajectories with
+  `<script`-like text shown as text with no element made, dark and narrow; loaded from the disk in headless Chrome.
+
+New in the first batch by these checks: 8 tool calls with missing arguments · 7 resolved attempts that never called
+`submit_patch` · 32 of the 283 resolved attempts carry the same patch as an earlier attempt of their task · 90
+repositories, the five largest hold 14 % · no task from an evaluation repository · the reject rules would drop 3
+resolved trajectories. For the rule preview a harness command is read without the clock snippet, without `timeout N`
+and without stream redirections: as written, the rules found a test run in none of the 283 and an edit in every
+`echo …; … 2>&1`; step 5's entry needs the same.
+Not verified: paraphrased mentions (fixed phrases only) · the page with all ~3,400 attempts · a run on the box.
 
 ## B-10 · Our own MetaCurate-style data: teacher trajectories from GLM-5.3 through a gateway (plan 2026-11-13, revised the same day: generation settings as the paper, GLM-5.3 only, the official rule logic, SWE-Gym left out; **scope changed 2026-11-17: B-10 = data generation, the students are chosen afterwards**; **2026-11-18: generation continues in B-11, in the competition harness; the mini-swe-agent route below is kept as written and not run**) — step 1 `setup` ✓ · `check` ✓ for SWE-rebench-V2 · `diag` ✓ (2026-11-13: both SWE-rebench problems explained and fixed in the scripts) · ▶ **now on the box: the commands under "On the box now" below**, 📷 · **B-10b (2026-11-17): three data lines against the thought loops, gated on B-9 part 3 step 19 — see the end of this section**
 

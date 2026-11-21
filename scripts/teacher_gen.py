@@ -52,6 +52,8 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import teach_ledger  # noqa: E402
 import teach_reminder  # noqa: E402
+import teach_audit  # noqa: E402
+from teach_audit import BUDGET_END_RE, ECHO_PATS, echo_hits  # noqa: E402,F401  (one place for both: the audit counts with them)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 INFRA_RE = re.compile(r"RateLimit|APIConnection|APIError|InternalServerError|ServiceUnavailable|Timeout(?!Exceeded)|BadGateway|"
@@ -104,7 +106,6 @@ class State:
                 out.append(i)
         return out
 
-BUDGET_END_RE = re.compile(r"Agent exceeded (session timeout|turns budget|maximum allowed)", re.I)
 
 
 def classify(result, patch, per_key):
@@ -390,121 +391,18 @@ def cmd_report(a):
     print("   " + teach_ledger.fmt_status(L.status()))
 
 
-# does a reply repeat or refer to the teacher-only reminder? (2026-11-20) The gate on '<reminder>' finds only the
-# literal tag; these find the sentence's own wording and talk about having been told to reason. A count, not a gate:
-# every match is printed with its context and read by a person before the turn goes into a training set.
-ECHO_PATS = (("the tag", r"</?reminder>"), ("the word remind*", r"\bremind"),
-             ("before every tool call", r"before (every|each|any|the|a|my|making|calling)[^.\n]{0,20}tool call"),
-             ("reason briefly / think before", r"reason(ing)? briefly|think(ing)? before|brief(ly)? reason"),
-             ("told to reason", r"(instruct|told|asked|required|supposed)[^.\n]{0,30}(reason|think)"),
-             ("why this step is needed / expect to see", r"why this step is needed|what (i|you) expect to see"),
-             ("the rule's wording", r"without (thinking|reasoning) first|(think|reason)(ing)? (first )?before (each|every|any)|"
-                                    r"(rule|prompt|instruction)s?\b[^.\n]{0,40}\b(think|reason)(ing)? (first|before|in 1-3)"))
-
-
-def echo_hits(resp):
-    """→ [(pattern name, where, context)] for one logged reply (its thought, visible text and tool-call arguments)"""
-    c = resp.get("content")
-    parts = (("thought", resp.get("reasoning") or ""), ("text", c if isinstance(c, str) else json.dumps(c or "")),
-             ("tool args", " ".join(str(t.get("args") or "") for t in resp.get("tool_calls") or [])))
-    out = []
-    for where, txt in parts:
-        for name, pat in ECHO_PATS:
-            for m in re.finditer(pat, txt, flags=re.I):
-                out.append((name, where, txt[max(0, m.start() - 90):m.end() + 90].replace("\n", " ")))
-    return out
-
-
 def cmd_inspect(a):
-    """what the trajectory logs of the kept runs show (step 2 and the pilot): thoughts, tools, time per call, compaction"""
-    st = State(a.out)
-    runs = sorted({r["run"] for r in st.att.values() if r.get("run") and (not a.name or os.path.basename(r["run"]).startswith(a.name))})
-    calls = thought = 0; tools = collections.Counter(); fin = collections.Counter(); secs = []; per_task = []; resets = collections.Counter()
-    LEAK = teach_reminder.needles(); echo = []; thought_chars = []; multi = 0; flags = {}; rem_lines = 0; back = [0, 0]; by_depth = collections.defaultdict(lambda: [0, 0])
-    for run_ in runs:
-        for f in sorted(glob.glob(os.path.join(run_, "traj", "*.jsonl"))):
-            if f.endswith(".tools.jsonl"):
-                continue
-            n = t = 0; seq = []; submitted = False
-            for line in open(f):
-                rem_lines += any(x in line for x in LEAK)
-                c = json.loads(line); r = c.get("resp") or {}
-                # the previous reply as it comes back in this request: does its thought come with it?
-                if seq and seq[-1] and not c.get("reset"):
-                    am = [m for m in c.get("new") or [] if m.get("role") == "assistant"]
-                    if am:
-                        back[1] += 1
-                        back[0] += bool(am[0].get("reasoning_content") or am[0].get("reasoning") or am[0].get("thinking_blocks"))
-                echo += [(os.path.basename(f)[:-6], n + 1) + h + ("after submit_patch" if submitted else "BEFORE submit_patch",) for h in echo_hits(r)]
-                submitted = submitted or any(x.get("name") == "submit_patch" for x in r.get("tool_calls") or [])
-                seq.append(bool(r.get("reasoning")))
-                d = by_depth["01-03" if n < 3 else "04-08" if n < 8 else "09-25" if n < 25 else "26+"]; d[0] += 1; d[1] += bool(r.get("reasoning"))
-                n += 1; t += bool(r.get("reasoning")); thought_chars.append(len(r.get("reasoning") or ""))
-                tc = r.get("tool_calls") or []; multi += len(tc) > 1
-                for x in tc:
-                    tools[x.get("name")] += 1
-                fin[r.get("finish_reason")] += 1; secs.append(c.get("s") or 0)
-                if c.get("reset"):
-                    resets[str(c["reset"])[:30]] += 1
-            calls += n; thought += t; per_task.append((os.path.basename(f)[:-6], n, t))
-            flags[os.path.basename(f)[:-6]] = seq
-    q = lambda xs, p: (sorted(xs)[min(len(xs) - 1, int(len(xs) * p))] if xs else 0)
-    print(f"== teacher_gen inspect · {a.out} · runs {len(runs)} ({a.name or 'all'}) · trajectories {len(per_task)} · model calls {calls}")
-    print(f"   thoughts: {thought} of {calls} calls = {100 * thought / max(1, calls):.1f} %  (no gate on this share since 2026-11-18; the gate is the 'reasoning tokens reported' line below) · chars per thought p50 {q(thought_chars, .5)} p90 {q(thought_chars, .9)} max {max(thought_chars or [0])}")
-    print(f"   tools called: {dict(tools.most_common())} · calls with several tool calls {multi} · finish reasons {dict(fin)}")
-    print(f"   seconds per model call: p50 {q(secs, .5):.1f} · p90 {q(secs, .9):.1f} · max {max(secs or [0]):.1f} · history resets / compactions {dict(resets) or 'none'}")
-    # where the missing thoughts are lost: the ledger's line of the same call (its order within the task) has the output
-    # and reasoning token counts. No thought text but many output / reasoning tokens = produced and dropped on the way;
-    # few output tokens = the teacher did not think on that call.
-    led = collections.defaultdict(list); lf = os.path.join(a.out, "ledger", "calls.jsonl")
-    for line in (open(lf) if os.path.exists(lf) else []):
-        c = json.loads(line)
-        if not c.get("err"):
-            led[c["key"].split("#")[0]].append(c)
-    cell = {True: [], False: []}; unmatched = []
-    for name, seq in flags.items():
-        if len(led.get(name, [])) != len(seq):
-            unmatched.append(f"{name} {len(seq)} vs {len(led.get(name, []))}"); continue
-        for has, c in zip(seq, led[name]):
-            cell[has].append(c)
-    for has in (True, False):
-        cs = cell[has]; outs = [c.get("out") or 0 for c in cs]; rs = [c.get("reasoning") or 0 for c in cs]
-        print(f"   calls {'with   ' if has else 'without'} thought text: {len(cs):4} · output tokens p50 {q(outs, .5)} p90 {q(outs, .9)} · "
-              f"reasoning tokens reported > 0 on {sum(x > 0 for x in rs)} (p50 {q(rs, .5)})"
-              + (f"  ← GATE: must be 0 (a thought that was produced and is not in the log) → {'ok' if not sum(x > 0 for x in rs) else 'NOT MET'}" if not has else ""))
-    print("   thoughts by call number: " + " · ".join(f"{k} {100 * v[1] / max(1, v[0]):.0f} % of {v[0]}" for k, v in sorted(by_depth.items())))
-    made_h = collections.Counter(r.get("hist", "off") for r in st.att.values() if r["state"] == "done")
-    want_all = set(made_h) == {"on"}
-    print(f"   history: done attempts made with the earlier thoughts kept {dict(made_h)} · replies with a thought that come back WITH it in the next request: "
-          f"{back[0]} of {back[1]}" + (f"  ← GATE: all → {'ok' if back[0] == back[1] and back[1] else 'NOT MET'}" if want_all else "  (no gate: the setting is off)"))
-    shapes = collections.Counter(); sent = [0, 0]
-    for run_ in runs:
-        cf = os.path.join(a.out, "calls", os.path.basename(run_) + ".jsonl")
-        for line in (open(cf) if os.path.exists(cf) else []):
-            c = json.loads(line)
-            if c.get("think_shape"):
-                shapes[c["think_shape"].split(" · reasoning_content")[0]] += 1
-            h = c.get("hist") or {}; sent[0] += h.get("with_thought", 0); sent[1] += h.get("assistant_msgs", 0)
-    print(f"   as sent to the gateway (call log): earlier assistant messages with a thought {sent[0]} of {sent[1]} · reply shapes: {dict(shapes.most_common(4)) or 'not logged'}")
-    made = collections.Counter(r.get("reminder", "off") for r in st.att.values() if r["state"] == "done")
-    print(f"   reminder: done attempts made with it {dict(made)} · trajectory log lines that contain a reminder text ({len(LEAK)} needles): {rem_lines}  ← GATE: must be 0 "
-          f"(the line is for the teacher's request only; no training prompt may hold it) → {'ok' if not rem_lines else 'NOT MET'}")
-    ec = collections.Counter((h[2], h[3]) for h in echo)
-    turns = collections.Counter(x[2] for x in {(h[0], h[1], h[5]) for h in echo})
-    made_p = collections.Counter(r.get("reminder_id", "1") + " @ " + r.get("reminder_place", "end") for r in st.att.values() if r["state"] == "done" and r.get("reminder", "off") == "on")
-    print(f"   reminder place of the done attempts: {dict(made_p) or 'no reminder'} · replies with a match: {turns.get('BEFORE submit_patch', 0)} BEFORE submit_patch "
-          f"(training turns) · {turns.get('after submit_patch', 0)} after it (the closing reply)")
-    print(f"   replies that repeat or mention the reminder ({calls} replies searched: thought, text, tool arguments; a count to be read, not a gate): "
-          + (" · ".join(f"{k[0]} in {k[1]} {v}" for k, v in ec.most_common()) if ec else "0 matches of " + str(len(ECHO_PATS)) + " patterns"))
-    for task, call, name, where, ctx, when in (echo if getattr(a, "echo_all", False) else echo[:12]):
-        print(f"      {task[:36]} call {call} · {when} · {name} · {where}: …{ctx[:200]}…")
-    if len(echo) > 12 and not getattr(a, "echo_all", False):
-        print(f"      … {len(echo) - 12} more (python3 scripts/teacher_gen.py inspect --out {a.out} --echo-all)")
-    print(f"   (matched to the ledger by call order; trajectories whose call count differs from the ledger's, left out: {unmatched or 'none'})")
-    for name, n, t in per_task[:40]:
-        r = next((x for x in st.att.values() if x["task"] == name), {})
-        print(f"      {name:44} calls {n:3} · with thought {t:3} · {r.get('state')} · resolved {r.get('resolved')} · tool calls {r.get('tool_calls')} · "
-              f"patch {r.get('patch_chars')} chars · {r.get('seconds') or 0:.0f} s · ${r.get('usd', 0):.4f}{' (estimate)' if r.get('est_calls') else ''}")
+    """what the trajectory logs of the kept runs show. The counting is scripts/teach_audit.py's (2026-11-21): per
+    (task, attempt) — with three attempts per task the old count per task matched no ledger line — with the summaries
+    and the closing replies kept apart from the tool-call turns, in the thought share and in the mention search."""
+    ids = set(open(a.ids).read().split()) if getattr(a, "ids", None) else None
+    print(f"== teacher_gen inspect · {a.out} · runs {a.name or 'all'} · ids {a.ids or 'all tasks'} · attempts wanted {a.attempts} · counted by scripts/teach_audit.py")
+    ev = os.path.join(os.path.dirname(HERE), "splits", "eval_repos.txt")
+    R = teach_audit.audit(a.out, ids, a.name or "", a.attempts, eval_repos=[l.strip() for l in open(ev) if l.strip() and not l.startswith("#")] if os.path.exists(ev) else [])
+    teach_audit.print_table(R, getattr(a, "echo_all", False))
+    for x in R["attempts"][:40]:
+        print(f"      {x['task']:44} a{x['attempt']} · model calls {x['calls']:3} · tool-call turns {x['tool_turns']:3} with thought {x['thought_turns']:3} · resolved {x['resolved']} · "
+              f"patch {x['patch_chars']} chars · {x['seconds']} s · ${x['usd']:.4f}")
     log = os.path.join(a.out, "gen.log")
     if os.path.exists(log):
         L = open(log, errors="replace").read().splitlines()
@@ -554,6 +452,7 @@ def selftest():
         assert S.open_tasks(["t1", "t2", "t3"], 1, 2) == ["t3"]                                               # tries > retries: left alone
         S2 = State(os.path.join(d, "s"))
         assert S2.att[("t1", 1)]["tries"] == 3 and S2.open_tasks(["t2"], 1, 2) == [] and S2.open_tasks(["t2"], 2, 2) == ["t2"]
+        teach_audit.selftest()
         print("teacher_gen selftest: task conversion (skip rows, excluded repositories, sources kept, no test fields), 7 result classes, "
               "state file (last line wins, retry limit, resume) → all as expected")
     finally:

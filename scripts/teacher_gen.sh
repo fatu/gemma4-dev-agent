@@ -15,7 +15,7 @@
 # it would remove about 31 % of the tasks, so a later evaluation on B-7 tasks takes only tasks of repositories not trained on).
 set -uo pipefail
 cd "$(dirname "$0")/.."
-STEP="${1:?setup|check|pilot|gen|report|inspect}"
+STEP="${1:?setup|check|pilot|gen|report|inspect|audit}"
 PY=.venv-eval/bin/python
 OUT="${OUT:-runs/teach}"; TABLE="${TABLE:-runs/b10/tasks/all.jsonl}"; TASKS_DIR="${TASKS_DIR:-runs/b10/tasks}"
 SUBMISSION="${SUBMISSION:-runs/subs/v21_e4b}"; API="${API:-messages}"; TEMP="${TEMP:-0.7}"; THINK="${THINK:-effort:high}"
@@ -112,6 +112,8 @@ gen)
   echo "  tasks of this run: $(wc -l < "$IDS" | tr -d ' ') of $(wc -l < "$OUT/all.ids" | tr -d ' ') in all.ids (FIRST_N ${FIRST_N:-unset = all}) · attempts per task $ATTEMPTS"
   gen all "$IDS" "$ATTEMPTS" "$CHUNK" "$KEEP_IMAGES" ;;
 report)  $PY scripts/teacher_gen.py report --out "$OUT" ;;
-inspect) $PY scripts/teacher_gen.py inspect --out "$OUT" --name "${2:-}" ;;
+inspect) $PY scripts/teacher_gen.py inspect --out "$OUT" --name "${2:-}" ${IDS:+--ids "$IDS"} ;;      # IDS=<file of task ids>: only those tasks
+audit)   # the same checks + the local page (scripts/teach_audit.py prints its own knobs); PAGE= where the page goes
+  $PY scripts/teach_audit.py --out "$OUT" ${IDS:+--ids "$IDS"} --attempts "${ATTEMPTS:-3}" --page "${PAGE:-runs/audit/$(basename "$OUT")}" ;;
 *) echo "unknown step $STEP"; exit 1 ;;
 esac
