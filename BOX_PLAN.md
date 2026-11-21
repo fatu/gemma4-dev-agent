@@ -824,8 +824,8 @@ re-sent, no rule text in the log, no thought lost). $3.77.
   trajectories before the rule filter (27 tasks: anywhere between about 1,400 and 2,500).
 - Still not separated: what the earlier thoughts alone give without any reminder (no such pilot).
 
-**▶▶ GO (user, 2026-11-20): the scale runs the third pilot's setting, cap $800.** This block replaces every
-earlier scale line.
+**GO (user, 2026-11-20): the scale runs the third pilot's setting, cap $800.** (Commands replaced by the
+"CURRENT STEP" block below — do not run this one; its curl lines about the Docker Hub limit are not needed.)
 ```bash
 git pull && git log --oneline -1
 # the pull limit that applies to this machine (does not count as a pull) — 📷 the ratelimit lines
@@ -850,7 +850,9 @@ sleep 60; head -3 runs/gen_h2.log; tail -5 runs/gen_h2.log
   (the user's choice, open); turns `inspect` lists lose their thought; the closing reply is left out; a hand-read
   sample of thoughts estimates the mentions the fixed phrases miss.
 
-**▶▶ In two batches (user, 2026-11-20): first 200 tasks, read, then the rest.** Sizes: 1,215 tasks in the list;
+**▶▶ CURRENT STEP — in two batches (user, 2026-11-20): first 200 tasks, read, then the rest.** This block is the
+one to run; the "GO" block before it is replaced by it. The Docker Hub limit check and `docker login` are left
+aside for now (user, 2026-11-20): nothing about them is needed for this batch. Sizes: 1,215 tasks in the list;
 with about 93 % passing the gold check and 3 attempts each, about 3,400 attempts in all. New knob `FIRST_N`
 (printed): N tasks drawn from `all.ids` with seed 0 — not the head of the list, which is one source in alphabetical
 order — with all 3 attempts of each. First batch = 200 tasks ≈ 560 attempts ≈ $100, 200 image pulls.
@@ -863,7 +865,7 @@ sleep 60; head -4 runs/gen_h2_first.log        # must print: tasks of this run: 
 When it has ended: 📷 `OUT=runs/teach_h2 bash scripts/teacher_gen.sh report` and `… inspect all | head -16`, and
 upload `runs/teach_h2`. Read (set in advance): thoughts ≥ 90 % · the three gates · matches before the submit (a
 count, each read) and none after it · resolved share beside the pilot's 59 % · cost per attempt beside $0.172 ·
-attempts ended by the time limit · image pulls refused by the registry (the `ratelimit` check above still wanted).
+attempts ended by the time limit · image pulls refused by the registry, as a count from the log only.
 Then the second batch, the same command without `FIRST_N` and with `BUDGET_USD=800` (the 200 tasks are skipped;
 the ledger keeps what was spent).
 
