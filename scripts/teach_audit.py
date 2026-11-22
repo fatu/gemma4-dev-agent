@@ -221,7 +221,7 @@ def audit(out, ids=None, name="", attempts=3, min_thought=90.0, eval_repos=(), b
     A = []; B = []; checks = []; off = collections.defaultdict(list)       # off[check id] = [[attempt index, call, note]]
     k = C(); by_depth = collections.defaultdict(lambda: [0, 0]); by_tool = collections.defaultdict(lambda: [0, 0])
     th_len = []; multi = C(); tools = C(); res_stat = collections.defaultdict(C); prompts = set(); sig = C(); sig_res = C()
-    patches = collections.defaultdict(dict); echo_rows = []; gemma_max = []; shapes = C()
+    patches = collections.defaultdict(dict); echo_rows = []; gemma_max = []; shapes = C(); ctx_req = []; ctx_pre = []; ctx_sum = []
     for r in done:
         i = len(A); run = os.path.join(out, "runs", os.path.basename(r.get("run") or "?"))
         path = os.path.join(run, "traj", r["task"] + ".jsonl")
@@ -244,9 +244,16 @@ def audit(out, ids=None, name="", attempts=3, min_thought=90.0, eval_repos=(), b
         n_led = len(led.get(f"{r['task']}#{r['attempt']}", []))
         if lf and os.path.exists(lf) and n_led != f["calls"]:
             off["ledger"].append([i, 0, f"trajectory {f['calls']} calls, ledger {n_led}"])
-        seq = []; n_agent = 0
+        seq = []; n_agent = 0; last_tin = 0
         for st in steps:
             kd = st["kind"]; k[kd] += 1; th = bool(st["th"])
+            if a["resolved"]:               # the context sizes of what would be trained on: every request of a resolved attempt
+                if kd == "summary":
+                    ctx_sum.append(st["tin"]); ctx_pre.append(last_tin)
+                else:
+                    last_tin = st["tin"]
+                    if kd == "tool":
+                        ctx_req.append(st["tin"])
             if st["treason"] > 0 and not th:
                 off["reasoning"].append([i, st["n"], f"{st['treason']} reasoning tokens, no thought text"])
             if kd == "summary":
@@ -458,7 +465,13 @@ def audit(out, ids=None, name="", attempts=3, min_thought=90.0, eval_repos=(), b
     add("repos", G[6], "repositories among the resolved trajectories", "解出的轨迹涉及的仓库", "info", f"{len(rc)} repositories · top 5 hold {pct(sum(v for _, v in rc.most_common(5)), len(res))}",
         " · ".join(f"{r} {v}" for r, v in rc.most_common(5)), " · ".join(f"{r} {v}" for r, v in rc.most_common(5)))
     add("summaries", G[6], "resolved trajectories with at least one compaction", "有过压缩的解出轨迹", "info", pct(sum(1 for a in res if a["summaries"]), len(res)), f"{k['summary']:,} summary calls in all, {k['summary_thought']:,} with a thought", f"共 {k['summary']:,} 次摘要调用，其中 {k['summary_thought']:,} 次带思考")
-    add("gemma", G[6], "largest request of an attempt, Gemma tokens", "每次尝试最大的一次请求（Gemma token）", "info", f"p50 {q(gemma_max, .5):,} · p90 {q(gemma_max, .9):,} · max {max(gemma_max or [0]):,}", "the emulated window is 32,768", "模拟窗口是 32,768")
+    add("gemma", G[6], "largest request of an attempt, Gemma tokens", "每次尝试最大的一次请求（Gemma token）", "info", f"p50 {q(gemma_max, .5):,} · p90 {q(gemma_max, .9):,} · max {max(gemma_max or [0]):,}", "all done attempts", "全部 done 的尝试")
+    add("ctx", G[6], "context size of a tool-call turn in a resolved trajectory, Gemma tokens of the request", "解出轨迹里每个工具调用回合的上下文大小（请求的 Gemma token）", "info",
+        f"p10 {q(ctx_req, .1):,} · p50 {q(ctx_req, .5):,} · p90 {q(ctx_req, .9):,} · max {max(ctx_req or [0]):,}  ({len(ctx_req):,} turns)",
+        f"the request before a compaction: p10 {q(ctx_pre, .1):,} · p50 {q(ctx_pre, .5):,} · p90 {q(ctx_pre, .9):,} · max {max(ctx_pre or [0]):,} ({len(ctx_pre):,} compactions) — where the harness compacts in this setting; "
+        f"the summary request itself: p50 {q(ctx_sum, .5):,}",
+        f"压缩前那次请求：p10 {q(ctx_pre, .1):,} · p50 {q(ctx_pre, .5):,} · p90 {q(ctx_pre, .9):,} · max {max(ctx_pre or [0]):,}（{len(ctx_pre):,} 次压缩）——这个设置下 harness 在这里压缩；"
+        f"摘要请求本身：p50 {q(ctx_sum, .5):,}")
     # --- cost
     usd = [a["usd"] for a in A]; secs = [a["seconds"] for a in A]
     add("usd", G[7], "cost per attempt, $ (the ledger's price estimate)", "每次尝试的花费（美元，账本按单价估算）", "info", f"mean {sum(usd) / max(1, len(usd)):.4f} · p50 {q(usd, .5):.4f} · p95 {q(usd, .95):.4f} · max {max(usd or [0]):.4f}",
@@ -474,6 +487,10 @@ def audit(out, ids=None, name="", attempts=3, min_thought=90.0, eval_repos=(), b
         dict(en="thought on a tool-call turn, by the tool called first", zh="带思考的占比（按回合里第一个工具）", unit="%", bars=[[b, round(100 * v[1] / v[0], 1), f"{v[1]:,}/{v[0]:,}"] for b, v in sorted(by_tool.items(), key=lambda x: -x[1][0])]),
         dict(en="tasks by number of resolved attempts", zh="任务按解出次数", unit="", bars=[[f"{n}×", v, ""] for n, v in sorted(dist.items())]),
         dict(en="tool calls per resolved trajectory", zh="每条解出轨迹的工具调用数", unit="", bars=[[a_, b_, ""] for a_, b_ in hist([a["tool_calls"] for a in res], [0, 6, 11, 16, 21, 26, 31, 36])]),
+        dict(en="context size of a tool-call turn, resolved trajectories (Gemma tokens)", zh="工具调用回合的上下文大小（解出的轨迹，Gemma token）", unit="",
+             bars=[[a_, b_, ""] for a_, b_ in hist(ctx_req, [0, 4000, 6000, 8000, 10000, 12000, 14000, 16000, 20000, 24000])]),
+        dict(en="context size right before a compaction (Gemma tokens)", zh="压缩前那次请求的上下文大小（Gemma token）", unit="",
+             bars=[[a_, b_, ""] for a_, b_ in hist(ctx_pre, [0, 12000, 13000, 14000, 15000, 16000, 18000, 20000, 24000])]),
         dict(en="tool calls made", zh="各工具的调用数", unit="", bars=[[n, v, ""] for n, v in tools.most_common()]),
         dict(en="cost per attempt, $", zh="每次尝试的花费（美元）", unit="", bars=[[a_, b_, ""] for a_, b_ in hist([int(100 * u) for u in usd], [0, 5, 10, 20, 30, 50, 100])], label_div=100),
     ]
