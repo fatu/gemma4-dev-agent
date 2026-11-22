@@ -904,7 +904,44 @@ the ledger keeps what was spent).
 - Not checked: the 6 mentions were found by fixed phrases, paraphrases are not; the one closing reply that mentions
   a reminder was not traced to its own request (the counts above say closing requests carried none).
 
-**▶▶ B-11r · why does the teacher recall the upstream fix? — STEP 1: arm R1 + a probe (user's go 2026-11-22).**
+**▶▶ B-11r — CURRENT STEP: arm R2 (GLM-5.3 at effort low). R1 is done and read (2026-11-22).**
+
+R1, from the box's photos (GLM-5.3, the hidden-tests clause taken out of the request):
+
+| | R0 (prompt as it is) | R1 (clause out) |
+|---|---|---|
+| trajectories with recall | 15 of 20 | 14 of 20 |
+| mention the hidden tests | 16 of 20 | 7 of 20 |
+| resolved | 11 | 11 |
+| cost | — | $2.26, mean $0.113 |
+
+By the reading set in advance (13 or more = not a cause) the clause is not the cause. The gates hold: the clause in
+0 of 357 requests sent, in the logged system prompt of 20 of 20 trajectories, 64 characters removed. Guessing the
+hidden tests more than halves while the recall stays: two separate behaviours. Left: the model itself, or the
+thinking effort. The probe of DeepSeek V4 Pro: reasoning comes back only on the chat route with `reasoning_effort`
+high or max (about 360 characters); R3 / R4 need that route and a fix for the address with `/v1`, and wait for R2.
+
+This step, R2 (about $3, cap $8; no code change, same commit) — in the shell with the GLM-5.3 exports and `PRICE`:
+```bash
+git pull && git log --oneline -1
+export OUT=runs/teach_r2 REMINDER=1 SYS_CUT=0 THINK=effort:low TEACHER_LABEL=glm
+bash scripts/teacher_gen.sh setup | tail -12
+cp runs/teach_h2/gold.json runs/teach_r2/gold.json
+CONC=2 BUDGET_USD=8 RESERVE_USD=0.60 PRICE=<same three numbers>  bash scripts/teacher_gen.sh arm 2>&1 | tee runs/arm_r2.log
+head -3 runs/arm_r2.log | cut -c1-900          # 📷 must show: thinking effort:low · system-prompt cut 0 · reminder 1 · teacher label glm
+```
+📷 the `report` block and the `teach_recall` block. Read: `WITH RECALL n of 20` (R0 15, R1 14) · `thought chars per
+tool-call turn` and `compactions` (R0: mean 1,163 and 25) · resolved (R0 11; usable for generation only with 8 or
+more) · `sent: … clause in N of N` (all: this arm keeps the prompt). Reading as before: 7 or fewer = main cause ·
+8 to 12 = part · 13 or more = not a cause. If the gateway refuses `low` for GLM-5.3, the first request fails: 📷 the
+error, nothing else is run. Then upload `runs/teach_r1` and `runs/teach_r2` (five trajectories of each are read on
+the laptop; R1's thought length and compactions are not on the photos).
+
+The second batch is reported as paused. Its setting does not change because of R1. R2 decides whether it resumes at
+effort high (as it ran) or low; if R2 is not read within the day, it resumes as it ran — generation stops on
+2026-11-25 whatever the count.
+
+**B-11r · why does the teacher recall the upstream fix? — step 1: arm R1 + a probe (user's go 2026-11-22) — DONE, result above.**
 Readers found recall of the repository's later fix in 11 of 13 of our teacher trajectories and in 0 of 10 of the
 MetaCurate set; three things differ at once (the first sentence of our system prompt says the patch is "graded by
 hidden tests written from the issue specification" · the teacher model · the thinking effort). Each arm changes one
