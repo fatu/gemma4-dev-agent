@@ -11,7 +11,7 @@
 # Knobs (each printed): API messages|chat (the request format) · TEMP 0.7 · THINK effort:high (CEIL_THINK form) · CONC 4 ·
 # ATTEMPTS 3 · CHUNK 50 · BUDGET_USD (the ledger's budget; set by setup/check/pilot/gen ONLY when given) · PRICE "in,cached,out"
 # $ per 1M tokens (used when the gateway reports no cost) · RESERVE_USD (per attempt) · KEEP_IMAGES 0 · MIN_FREE_GB 50 ·
-# FIRST_N (gen: only N tasks drawn with seed 0, e.g. 200; unset = all) · SOURCES rebench,v2 (task sources kept by setup; SWE-Gym is left out, `all` keeps every source) · OUT runs/teach · TABLE runs/b10/tasks/all.jsonl · SUBMISSION runs/subs/v21_e4b · EXCLUDE_REPOS (files, one owner/name per line;
+# FIRST_N (gen: only N tasks drawn with seed 0, e.g. 200; unset = all) · SKIP_TASKS_OF (gen: directories whose tasks are left out) · SOURCES rebench,v2 (task sources kept by setup; SWE-Gym is left out, `all` keeps every source) · OUT runs/teach · TABLE runs/b10/tasks/all.jsonl · SUBMISSION runs/subs/v21_e4b · EXCLUDE_REPOS (files, one owner/name per line;
 # default: the 4 repositories of the evaluation tasks. splits/b7_repos.txt lists the repositories of the B-7 task sets: adding
 # it would remove about 31 % of the tasks, so a later evaluation on B-7 tasks takes only tasks of repositories not trained on).
 set -uo pipefail
@@ -119,6 +119,24 @@ gen)
   if [ -n "${FIRST_N:-}" ]; then
     $PY -c "import random,sys; a=open(sys.argv[1]).read().split(); random.Random(0).shuffle(a); open(sys.argv[2],'w').write('\n'.join(sorted(a[:int(sys.argv[3])]))+'\n')" "$OUT/all.ids" "$OUT/first_${FIRST_N}.ids" "$FIRST_N"
     IDS="$OUT/first_${FIRST_N}.ids"
+  fi
+  # SKIP_TASKS_OF (2026-11-22): a run in a NEW directory with another setting leaves out every task that already has a
+  # row in the attempts.jsonl of the directories listed here (space separated), so no task is generated under two settings.
+  if [ -n "${SKIP_TASKS_OF:-}" ]; then
+    $PY - "$IDS" "$OUT/rest.ids" $SKIP_TASKS_OF <<'PYEOF' || exit 1
+import json, os, sys
+ids = [x for x in open(sys.argv[1]).read().split() if x]; seen = set()
+for d in sys.argv[3:]:
+    p = os.path.join(d, "attempts.jsonl")
+    if not os.path.exists(p):
+        sys.exit(f"STOP: SKIP_TASKS_OF names {d}, which has no attempts.jsonl")
+    n0 = len(seen); seen |= {json.loads(l)["task"] for l in open(p) if l.strip()}
+    print(f"  SKIP_TASKS_OF {d}: {len(seen) - n0} tasks with a row there")
+rest = [i for i in ids if i not in seen]
+open(sys.argv[2], "w").write("\n".join(rest) + "\n")
+print(f"  SKIP_TASKS_OF: {len(ids) - len(rest)} of {len(ids)} tasks left out, {len(rest)} left → {sys.argv[2]}")
+PYEOF
+    IDS="$OUT/rest.ids"
   fi
   echo "  tasks of this run: $(wc -l < "$IDS" | tr -d ' ') of $(wc -l < "$OUT/all.ids" | tr -d ' ') in all.ids (FIRST_N ${FIRST_N:-unset = all}) · attempts per task $ATTEMPTS"
   gen all "$IDS" "$ATTEMPTS" "$CHUNK" "$KEEP_IMAGES" ;;

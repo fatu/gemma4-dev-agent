@@ -904,7 +904,63 @@ the ledger keeps what was spent).
 - Not checked: the 6 mentions were found by fixed phrases, paraphrases are not; the one closing reply that mentions
   a reminder was not traced to its own request (the counts above say closing requests carried none).
 
-**▶▶ B-11r — CURRENT STEP: arm R2 (GLM-5.3 at effort low). R1 is done and read (2026-11-22).**
+**▶▶ B-11 — CURRENT STEP: resume the generation; the user chooses the setting (2026-11-22, after R2).**
+
+R2 from the box's photos (GLM-5.3, prompt as it is, effort low), beside R0 and R1 on the same 20 tasks:
+
+| | R0 (high) | R1 (high, clause out) | R2 (low) |
+|---|---|---|---|
+| trajectories with recall | 15 | 14 | 10 |
+| mention the hidden tests | 16 | 7 | 5 |
+| resolved | 11 | 11 | 11 |
+| thought characters per tool-call turn, mean | 1,163 | 1,331 | 663 |
+| compactions | 25 | 24 | **12** |
+| cost per attempt | — | $0.113 | **$0.072** |
+| tool-call turns with a thought | — | 96.5 % | **87.8 %** (gate set on 2026-11-20: 90 %) |
+| turns with neither thought nor text | — | 1.6 % | 10.5 % |
+
+By the reading set in advance the effort is part of the cause of the recall (10 is in 8 to 12), not all of it; part
+of the drop may be the measure itself, which reads thoughts and finds fewer where there are fewer. What low changes
+for certain: half the compactions, the same solve count, 37 % less cost. What it costs: thoughts on 87.8 % of the
+tool-call turns, under the 90 % gate. The clause was sent in 307 of 319 requests; the other 12 are taken to be the
+summary requests, which carry no system prompt — not checked.
+
+Why the compactions weigh more than the recall (laptop, all 240 trainable trajectories of the first batch read by
+one reader each): the fix is taken from memory in 6, partly in 57, not in 177; of 355 compaction summaries 220 state
+something false about the history they cover, 45 are no summary at all, 38 are sound; of the 148 trajectories with a
+compaction 127 hold a wrong or malformed summary. Before the first compaction the context is tool results 38 %,
+thoughts 34 %, prompt and task 20 %; a trajectory that compacts has 1,689 thought characters per turn, one that never
+does 366, at the same median of 10 tool-call turns.
+
+State of `runs/teach_h2` (stopped; counted from the upload): 1,292 attempts done, 686 resolved, $220.07 spent, 445 of
+1,215 tasks touched (424 with all 3 attempts, 20 with 1 or 2), **770 tasks untouched**.
+
+**The choice (the user's): the 770 untouched tasks at effort low in a new directory, or at high as before.**
+Recommended: low — the summaries are the larger defect of the data, low halves the compactions at the same solve
+count and under half the price, and the version of the training set without thoughts does not use the thought share
+at all; the version with thoughts gets about one turn in eight without one. About 2,310 attempts ≈ $170.
+
+Low, a new directory (one directory = one setting); `SKIP_TASKS_OF` leaves out every task with a row in `teach_h2`:
+```bash
+git pull && git log --oneline -1
+export OUT=runs/teach_low REMINDER=1 SYS_CUT=0 THINK=effort:low TEACHER_LABEL=glm SKIP_TASKS_OF=runs/teach_h2
+bash scripts/teacher_gen.sh setup | tail -12
+cp runs/teach_h2/gold.json runs/teach_low/gold.json
+BUDGET_USD=250 RESERVE_USD=0.60 PRICE=<same three numbers>  nohup bash scripts/teacher_gen.sh gen > runs/gen_low.log 2>&1 &
+sleep 60; head -8 runs/gen_low.log | cut -c1-900     # 📷 must show: thinking effort:low · SKIP_TASKS_OF: 445 of 1215 tasks left out, 770 left · tasks of this run: 770
+```
+High, as it ran (nothing new; the same command as the second batch, it skips what is done):
+```bash
+export OUT=runs/teach_h2 REMINDER=1
+BUDGET_USD=800 RESERVE_USD=0.60 PRICE=<same three numbers>  nohup bash scripts/teacher_gen.sh gen > runs/gen_h2_rest2.log 2>&1 &
+```
+Either way: 📷 `report` two or three times a day; generation stops on 2026-11-25 whatever the count; the gateway's
+spend limit has to cover the run. With low, `teacher_gen.sh audit` will show the thought gate as FAIL (87.8 % in R2):
+expected, it is the known cost of this setting. Open on the laptop: five trajectories each of R1 and R2 read in full
+(the upload of `runs/teach_r1` / `runs/teach_r2` is not downloadable yet); arms R3 / R4 (DeepSeek V4 Pro) are not
+planned further — they need the chat route and would not change this choice.
+
+**B-11r arm R2 — DONE, result above. Its step as it was written:**
 
 R1, from the box's photos (GLM-5.3, the hidden-tests clause taken out of the request):
 
