@@ -32,3 +32,19 @@ def ident(value):
 def needles():
     """distinctive pieces of every preset: one of them in a trajectory log line = the reminder leaked into the data"""
     return ["<reminder>", "Reason Before EVERY Tool Call", "NEVER emit a tool call without thinking first"]
+
+
+# --- B-11r: text taken OUT of the teacher's system prompt (CEIL_SYS_CUT / SYS_CUT), in the outgoing request only
+HIDDEN_CLAUSE = " and graded by hidden tests written from the issue specification"      # V21 prompt, first sentence
+CUTS = {"hidden": HIDDEN_CLAUSE}
+
+
+def cut_text(value):
+    """SYS_CUT value → the text removed ('' = nothing)"""
+    v = "" if value is None else str(value)
+    return "" if v in ("", "0") else CUTS.get(v, v)
+
+
+def cut_ident(value):
+    v = "" if value is None else str(value)
+    return "off" if v in ("", "0") else v if v in CUTS else "text-" + hashlib.sha256(v.encode()).hexdigest()[:8]

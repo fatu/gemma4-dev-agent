@@ -194,7 +194,7 @@ def harness(a, name, ids, attempt):
     env = dict(os.environ, LATEST="0", ARMS="base", SUBMISSION=a.submission, MODEL_ALIAS=a.model_alias, MODELS_YAML=a.models_yaml,
                MAX_CALLS=str(a.max_calls), TIME_MIN=str(a.time_min), MAX_TURNS=str(a.max_turns), COMPACT_INTERVAL=str(a.compact_interval),
                NO_TESTDEPS="1", SPLIT=idf, TAG=name, CONC=str(a.conc), TRAJ="1", SANDBOX=a.sandbox,
-               CEIL_TEMP=str(a.temp), CEIL_THINK=a.think, CEIL_REMINDER=str(a.reminder), CEIL_REMINDER_PLACE=a.reminder_place, CEIL_HIST_THOUGHTS=str(a.hist_thoughts), CEIL_HIST_PROBE=str(a.hist_thoughts), TEACH_LEDGER_DIR=os.path.abspath(os.path.join(a.out, "ledger")),
+               CEIL_TEMP=str(a.temp), CEIL_THINK=a.think, CEIL_REMINDER=str(a.reminder), CEIL_REMINDER_PLACE=a.reminder_place, CEIL_SYS_CUT=str(a.sys_cut), CEIL_HIST_THOUGHTS=str(a.hist_thoughts), CEIL_HIST_PROBE=str(a.hist_thoughts), TEACH_LEDGER_DIR=os.path.abspath(os.path.join(a.out, "ledger")),
                TEACH_ATTEMPT=str(attempt), CEIL_CALL_LOG=os.path.abspath(os.path.join(a.out, "calls", name + ".jsonl")))
     os.makedirs(os.path.join(a.out, "calls"), exist_ok=True)
     if a.sandbox == "docker":
@@ -240,7 +240,7 @@ def cmd_gen(a):
     ids = [x for x in open(a.ids).read().split() if x]
     knobs = {k: getattr(a, k) for k in ("chunk", "attempts", "retries", "conc", "reserve_usd", "temp", "think", "submission", "model_alias",
                                         "models_yaml", "max_calls", "time_min", "max_turns", "compact_interval", "sandbox", "keep_images",
-                                        "min_free_gb", "tasks_dir", "table", "grader", "reopen_lost", "reopen_failed", "pull_waits", "pull_wait_min", "reminder", "reminder_place", "hist_thoughts")}
+                                        "min_free_gb", "tasks_dir", "table", "grader", "reopen_lost", "reopen_failed", "pull_waits", "pull_wait_min", "reminder", "reminder_place", "hist_thoughts", "sys_cut")}
     print(f"teacher_gen gen · name {a.name} · {len(ids)} tasks from {a.ids} · out {a.out}")
     print("   knobs: " + " · ".join(f"{k} {v}" for k, v in knobs.items()))
     print("   " + teach_ledger.fmt_status(L.status()))
@@ -253,6 +253,11 @@ def cmd_gen(a):
     other = [r for r in st.att.values() if r["state"] == "done" and r.get("reminder", "off") != rem]
     if other:
         sys.exit(f"STOP: {len(other)} done attempts in {a.out} were made with the reminder {other[0].get('reminder', 'off')}, this run has it {rem}. "
+                 f"Use another OUT for the other setting.")
+    cut = teach_reminder.cut_ident(a.sys_cut)
+    other = [r for r in st.att.values() if r["state"] == "done" and r.get("sys_cut", "off") != cut]
+    if other:
+        sys.exit(f"STOP: {len(other)} done attempts in {a.out} were made with the system-prompt cut '{other[0].get('sys_cut', 'off')}', this run has '{cut}'. "
                  f"Use another OUT for the other setting.")
     place = a.reminder_place if rem == "on" else "none"; rid = teach_reminder.ident(a.reminder)
     other = [r for r in st.att.values() if r["state"] == "done" and r.get("reminder", "off") == "on"
@@ -338,7 +343,7 @@ def cmd_gen(a):
                         st.put(dict(f, task=i, attempt=att, state=s, tries=tries, resolved=resolved.get(i) if s == "done" else None,
                                     usd=round(k.get("usd", 0.0), 6), tok_in=k.get("in", 0), tok_cached=k.get("cached", 0),
                                     tok_out=k.get("out", 0), tok_reasoning=k.get("reasoning", 0), model_calls=k.get("calls", 0),
-                                    est_calls=k.get("est_calls", 0), run=rundir, reminder=rem, reminder_place=place, reminder_id=rid, hist=hist))
+                                    est_calls=k.get("est_calls", 0), run=rundir, reminder=rem, reminder_place=place, reminder_id=rid, hist=hist, sys_cut=cut, think=a.think, teacher=os.environ.get("TEACHER_LABEL", "")))
                 finally:
                     for i in batch:
                         L.release(f"{i}#{att}")
@@ -490,6 +495,7 @@ def main():
         s.add_argument("--hist-thoughts", default=env_knob("HIST_THOUGHTS", "1", str), help="CEIL_HIST_THOUGHTS: 1 the teacher's earlier thoughts stay in its history, as the student's do · 0 the old behaviour")
         s.add_argument("--reminder-place", default=env_knob("REMINDER_PLACE", "end", str), choices=["end", "system"],
                        help="CEIL_REMINDER_PLACE: end = a block at the end of each request · system = appended to the system prompt of the outgoing request")
+        s.add_argument("--sys-cut", default=env_knob("SYS_CUT", "0", str), help="CEIL_SYS_CUT: 0 off · hidden = the hidden-tests clause is taken out of the system prompt of the teacher's request · other = that text")
         s.add_argument("--reminder", default=env_knob("REMINDER", "0", str), help="CEIL_REMINDER: 0 off · 1 the tagged line · rule = the same demand as a rule of the system prompt, no tag · other = that text (scripts/teach_reminder.py)")
         s.add_argument("--reopen-failed", type=int, default=env_knob("REOPEN_FAILED", 0, int), help="1 = failed rows run again")
         s.add_argument("--pull-waits", type=int, default=env_knob("PULL_WAITS", 16, int)); s.add_argument("--pull-wait-min", type=float, default=env_knob("PULL_WAIT_MIN", 30, float))

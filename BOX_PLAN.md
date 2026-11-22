@@ -904,6 +904,58 @@ the ledger keeps what was spent).
 - Not checked: the 6 mentions were found by fixed phrases, paraphrases are not; the one closing reply that mentions
   a reminder was not traced to its own request (the counts above say closing requests carried none).
 
+**▶▶ B-11r · why does the teacher recall the upstream fix? — STEP 1: arm R1 + a probe (user's go 2026-11-22).**
+Readers found recall of the repository's later fix in 11 of 13 of our teacher trajectories and in 0 of 10 of the
+MetaCurate set; three things differ at once (the first sentence of our system prompt says the patch is "graded by
+hidden tests written from the issue specification" · the teacher model · the thinking effort). Each arm changes one
+of them on the same 20 tasks (`splits/recall20.ids`, drawn with seed 0 from the 27 tasks of the third pilot), one
+attempt each, one chunk, everything else as in the scale (temperature 0.7, V21 budget, reminder at the end, earlier
+thoughts re-sent). One output directory per arm. Independent of the second batch: `runs/teach_h2` is not touched;
+use `CONC=2` while the batch runs.
+
+| arm | teacher | first sentence of the request's system prompt | thinking | directory |
+|---|---|---|---|---|
+| R0 | GLM-5.3 | as it is | effort high | third pilot, already there: **15 of 20 with recall**, resolved 11 |
+| R1 | GLM-5.3 | hidden-tests clause taken out | effort high | `runs/teach_r1` |
+| R2 | GLM-5.3 | as it is | effort low | `runs/teach_r2` |
+| R3 | DeepSeek V4 Pro | as it is | gateway default (after the probe) | `runs/teach_r3` |
+| R4 | DeepSeek V4 Pro | clause taken out | gateway default | `runs/teach_r4` |
+
+The measure (`scripts/teach_recall.py`, fixed before any arm): a trajectory has recall when a tool-call turn's
+thought holds a memory phrase, an upstream phrase, or a PR / issue number that is not in the task text. Against
+eleven trajectories read in full: 11 of 11 agree. Noise: the four existing pilots give 15 · 16 · 15 · 16 of these 20.
+**Reading, set in advance:** 7 or fewer of 20 = main cause · 8 to 12 = part of it · 13 or more = not a cause; the
+arm's setting is usable for generation only with 8 or more of 20 resolved (R0: 11; the pilots 10 to 12). Five
+trajectories of each arm are then read in full on the laptop to check the measure under the new condition.
+
+`SYS_CUT=hidden` removes ` and graded by hidden tests written from the issue specification` from the system prompt
+of the request that leaves the adapter, nothing else; the trajectory log and the harness's history keep the prompt
+(stand-in test, both request formats: the clause absent from 8 of 8 requests received, the rest of the prompt
+equal, the caller's messages unchanged; with the knob off it is sent). Not tested on the laptop: the real gateway,
+the driver's `arm` step end to end.
+
+This step, R1 (about $3.50, cap $8) — in the shell that holds the GLM-5.3 exports and the same `PRICE`:
+```bash
+git pull && git log --oneline -1
+export OUT=runs/teach_r1 REMINDER=1 SYS_CUT=hidden TEACHER_LABEL=glm
+bash scripts/teacher_gen.sh setup | tail -12
+cp runs/teach_h2/gold.json runs/teach_r1/gold.json
+CONC=2 BUDGET_USD=8 RESERVE_USD=0.60 PRICE=<same three numbers>  bash scripts/teacher_gen.sh arm 2>&1 | tee runs/arm_r1.log
+head -3 runs/arm_r1.log | cut -c1-900                      # 📷 must show: system-prompt cut hidden · reminder 1 · history thoughts 1 · teacher label glm
+grep -m1 "system-prompt cut" runs/dev33_base_recall20_c000_a1/*.log runs/eval_dev_recall20_c000_a1.log 2>/dev/null | cut -c1-260   # the adapter's own line, if the run log keeps it
+```
+📷 the `report` block and the `teach_recall` block at the end. Read in the `teach_recall` block: `WITH RECALL n of 20`
+(R0: 15) · `mention hidden tests` (R0: 16) · `sent: hidden-tests clause in the system prompt of 0 of N recorded
+calls` (must be 0) · `logged: … 20 of 20` (must be all) · resolved (R0: 11). Then upload `runs/teach_r1`.
+
+In the same visit, the probe for arms R3 / R4 (a few cents; another shell, so the GLM exports stay): 
+```bash
+export TEACHER=<the gateway's name for DeepSeek V4 Pro>     # address and key as for GLM-5.3
+.venv-eval/bin/python scripts/teacher_probe.py 2>&1 | tail -40        # 📷 all of it: where the reasoning comes back, usage per turn, RESULT
+```
+Needed from it and from the gateway's price page before R3: the three `PRICE` numbers for DeepSeek V4 Pro, which
+thinking field the gateway accepts for it, and whether the reasoning text comes back.
+
 **▶▶ CURRENT STEP — second batch: GO (user, 2026-11-21 evening).** This block is the one to run on the generation
 box. The same command as the first batch without `FIRST_N`, `BUDGET_USD=800`; the 200 tasks of the first batch are
 skipped and the ledger keeps the $104.61 already spent. By the first batch: about 1,015 tasks left ≈ 2,830 attempts

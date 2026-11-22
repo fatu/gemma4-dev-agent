@@ -101,6 +101,42 @@ if litellm is not None:
     if _REM_PLACE not in ("end", "system"):
         raise ValueError(f"CEIL_REMINDER_PLACE={_REM_PLACE!r}: end | system")
     _REM_N = [0, 0]                   # requests with the reminder · agent requests without (last message not user / tool)
+    # CEIL_SYS_CUT (B-11r, 2026-11-22): a piece of text taken OUT of the system prompt of the outgoing request, to test
+    # whether the teacher's recall of the upstream fix comes from being told about the hidden tests. Like the reminder
+    # it exists only in the request that leaves this adapter (a copy is changed): the trajectory log and every
+    # training prompt keep the submission's own prompt. unset / 0 = off · hidden = the clause below · other = that text.
+    _CUT = teach_reminder.cut_text(os.environ.get("CEIL_SYS_CUT", ""))
+    _CUT_ID = teach_reminder.cut_ident(os.environ.get("CEIL_SYS_CUT", ""))
+    _CUT_N = [0, 0]                   # requests where the text was taken out · requests with a system prompt that does not hold it
+
+    def _sys_cut(kwargs):
+        msgs = kwargs.get("messages")
+        if not _CUT or not isinstance(msgs, list) or not msgs:
+            return
+        first = msgs[0]
+        if not isinstance(first, dict) or first.get("role") != "system":
+            return
+        c = first.get("content"); hit = False
+        if isinstance(c, str) and _CUT in c:
+            c = c.replace(_CUT, "", 1); hit = True
+        elif isinstance(c, list):
+            blocks = []
+            for b in c:
+                if not hit and isinstance(b, dict) and isinstance(b.get("text"), str) and _CUT in b["text"]:
+                    b = dict(b, text=b["text"].replace(_CUT, "", 1)); hit = True
+                blocks.append(b)
+            c = blocks
+        if not hit:
+            _CUT_N[1] += 1; return
+        kwargs["messages"] = [dict(first, content=c)] + msgs[1:]; _CUT_N[0] += 1
+
+    def _sys_text(kwargs):
+        """the text of the outgoing request's system prompt ('' if none)"""
+        msgs = kwargs.get("messages")
+        if not isinstance(msgs, list) or not msgs or not isinstance(msgs[0], dict) or msgs[0].get("role") != "system":
+            return ""
+        c = msgs[0].get("content")
+        return c if isinstance(c, str) else "".join(b.get("text", "") for b in c if isinstance(b, dict)) if isinstance(c, list) else ""
 
     def _answers(msgs, tool):
         """is the last message the result of a call to `tool`?"""
@@ -258,6 +294,8 @@ if litellm is not None:
           f"ledger {os.environ.get('TEACH_LEDGER_DIR') or 'off'} · attempt {_ATTEMPT} (TEACH_ATTEMPT) · "
           f"reminder {('on [' + _REM_ID + '], ' + str(len(_REM)) + ' chars, sha ' + __import__('hashlib').sha256(_REM.encode()).hexdigest()[:8] + ': ' + _REM[:60] + '…') if _REM else 'off'} (CEIL_REMINDER) · place {_REM_PLACE} (CEIL_REMINDER_PLACE; "
           f"in the outgoing request only, never in the trajectory log)", flush=True)
+    print(f"ceil adapter: system-prompt cut {('on [' + _CUT_ID + '], ' + str(len(_CUT)) + ' chars removed: ' + repr(_CUT)) if _CUT else 'off'} (CEIL_SYS_CUT; "
+          f"in the outgoing request only, never in the trajectory log)", flush=True)
 
     def _is_remote(model):
         return _REMOTE_ALL or "anthropic/" in model or model.startswith("claude")
@@ -321,6 +359,7 @@ if litellm is not None:
                 kwargs["temperature"] = _TEMP; kwargs.pop("top_p", None)     # one of the two, as the provider advises
             for k in ("top_k",):
                 kwargs.pop(k, None)
+            _sys_cut(kwargs)     # before the cache mark: the mark is put on the changed copy
             if isinstance(kwargs.get("messages"), list):
                 kwargs["messages"] = _cache(_hist_out(kwargs["messages"], model))
             _remind(kwargs)      # after the cache mark: the mark stays on the conversation itself, the line follows it
@@ -409,6 +448,7 @@ if litellm is not None:
                "reasoning": (d.get("completion_tokens_details") or {}).get("reasoning_tokens") if isinstance(d.get("completion_tokens_details"), dict) else None,
                "temp": kwargs.get("temperature"), "reminder": bool(_REM) and _REM in json.dumps((kwargs.get("messages")[:1] if _REM_PLACE == "system" else kwargs.get("messages")[-1:]) if isinstance(kwargs.get("messages"), list) else "", default=str),
                "reminder_place": _REM_PLACE if _REM else None, "reminder_id": _REM_ID,
+               "sys_cut": _CUT_ID, "hidden_clause": teach_reminder.HIDDEN_CLAUSE in _sys_text(kwargs), "sys_chars": len(_sys_text(kwargs)),
                "cache_read": (d.get("prompt_tokens_details") or {}).get("cached_tokens") if isinstance(d.get("prompt_tokens_details"), dict) else d.get("cache_read_input_tokens"),
                "cache_write": d.get("cache_creation_input_tokens"), "err": (str(err)[:160] if err else None),
                "think_shape": shape, "hist": dict(zip(("assistant_msgs", "with_thought", "thought_chars"), _hist_stats(kwargs.get("messages"))))}

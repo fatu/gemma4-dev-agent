@@ -3,6 +3,7 @@
 #   bash scripts/teacher_gen.sh setup     # docker, versions, the V21 files, the task table → runs/teach/tasks.jsonl, models.yaml  (no token)
 #   bash scripts/teacher_gen.sh check     # step 2: 6 tasks (3 per source) × 1 attempt, gold + empty patch graded            (cents)
 #   bash scripts/teacher_gen.sh pilot     # step 3: the 30 tasks of B-10's pilot30 × 1 attempt                               (paid)
+#   bash scripts/teacher_gen.sh arm       # B-11r: the 20 tasks of splits/recall20.ids × 1 attempt (SYS_CUT, THINK, TEACHER set the arm) (paid)
 #   bash scripts/teacher_gen.sh gen       # step 4: every task × ATTEMPTS                                                    (paid)
 #   bash scripts/teacher_gen.sh report    # counts, tokens, cost      ·     inspect [NAME]   thoughts, tools, time per call
 # Environment (names are printed, values never): TEACHER = the gateway's name of the teacher model · the address in
@@ -15,16 +16,16 @@
 # it would remove about 31 % of the tasks, so a later evaluation on B-7 tasks takes only tasks of repositories not trained on).
 set -uo pipefail
 cd "$(dirname "$0")/.."
-STEP="${1:?setup|check|pilot|gen|report|inspect|audit}"
+STEP="${1:?setup|check|pilot|arm|gen|report|inspect|audit}"
 PY=.venv-eval/bin/python
 OUT="${OUT:-runs/teach}"; TABLE="${TABLE:-runs/b10/tasks/all.jsonl}"; TASKS_DIR="${TASKS_DIR:-runs/b10/tasks}"
 SUBMISSION="${SUBMISSION:-runs/subs/v21_e4b}"; API="${API:-messages}"; TEMP="${TEMP:-0.7}"; THINK="${THINK:-effort:high}"
 CONC="${CONC:-4}"; ATTEMPTS="${ATTEMPTS:-3}"; CHUNK="${CHUNK:-50}"; KEEP_IMAGES="${KEEP_IMAGES:-0}"; MIN_FREE_GB="${MIN_FREE_GB:-50}"
-export REMINDER="${REMINDER:-0}" REMINDER_PLACE="${REMINDER_PLACE:-end}" HIST_THOUGHTS="${HIST_THOUGHTS:-1}"; RESERVE_USD="${RESERVE_USD:-}"; BUDGET_USD="${BUDGET_USD:-}"; PRICE="${PRICE:-}"; EXCLUDE_REPOS="${EXCLUDE_REPOS:-splits/eval_repos.txt}"
+export REMINDER="${REMINDER:-0}" REMINDER_PLACE="${REMINDER_PLACE:-end}" HIST_THOUGHTS="${HIST_THOUGHTS:-1}"; export SYS_CUT="${SYS_CUT:-0}" TEACHER_LABEL="${TEACHER_LABEL:-}"; RESERVE_USD="${RESERVE_USD:-}"; BUDGET_USD="${BUDGET_USD:-}"; PRICE="${PRICE:-}"; EXCLUDE_REPOS="${EXCLUDE_REPOS:-splits/eval_repos.txt}"
 ALIAS=gemma-4-e4b-it-qat-w4a16-ct
 BASE_NAME=$([ -n "${GATEWAY_BASE_URL:-}" ] && echo GATEWAY_BASE_URL || { [ -n "${ANTHROPIC_BASE_URL:-}" ] && echo ANTHROPIC_BASE_URL || echo ""; })
 KEY_NAME=$(for k in GATEWAY_API_KEY ANTHROPIC_AUTH_TOKEN ANTHROPIC_API_KEY; do [ -n "${!k:-}" ] && { echo $k; break; }; done)
-echo "teacher_gen $STEP · out $OUT · table $TABLE · submission $SUBMISSION · api $API · temperature $TEMP · thinking $THINK · reminder $REMINDER (1 = the tagged think-before-every-call line · rule = the same as a system-prompt rule, no tag; in the teacher's request only) · reminder place $REMINDER_PLACE (end = a block at the end of each request · system = in the system prompt of the teacher's request) · history thoughts $HIST_THOUGHTS (1 = the teacher's earlier thoughts are re-sent, as the student's are) · conc $CONC · attempts $ATTEMPTS · chunk $CHUNK · keep images $KEEP_IMAGES · min free $MIN_FREE_GB GB · reserve ${RESERVE_USD:-unset} · budget ${BUDGET_USD:-unchanged} · price ${PRICE:-unset} · teacher $([ -n "${TEACHER:-}" ] && echo set || echo MISSING) · address from ${BASE_NAME:-MISSING} · key from ${KEY_NAME:-MISSING} · code $(git log --oneline -1 | cut -c1-60)"
+echo "teacher_gen $STEP · out $OUT · table $TABLE · submission $SUBMISSION · api $API · temperature $TEMP · thinking $THINK · reminder $REMINDER (1 = the tagged think-before-every-call line · rule = the same as a system-prompt rule, no tag; in the teacher's request only) · reminder place $REMINDER_PLACE (end = a block at the end of each request · system = in the system prompt of the teacher's request) · system-prompt cut $SYS_CUT (0 = none · hidden = the hidden-tests clause is taken out of the first sentence, in the teacher's request only) · teacher label ${TEACHER_LABEL:-unset} (a public name for the rows: glm | deepseek) · history thoughts $HIST_THOUGHTS (1 = the teacher's earlier thoughts are re-sent, as the student's are) · conc $CONC · attempts $ATTEMPTS · chunk $CHUNK · keep images $KEEP_IMAGES · min free $MIN_FREE_GB GB · reserve ${RESERVE_USD:-unset} · budget ${BUDGET_USD:-unchanged} · price ${PRICE:-unset} · teacher $([ -n "${TEACHER:-}" ] && echo set || echo MISSING) · address from ${BASE_NAME:-MISSING} · key from ${KEY_NAME:-MISSING} · code $(git log --oneline -1 | cut -c1-60)"
 
 need_env() {
   [ -n "${TEACHER:-}" ] && [ -n "$BASE_NAME" ] && [ -n "$KEY_NAME" ] || { echo "STOP: TEACHER, an address and a key are needed in this shell (names above; type them here, never into a file under git)"; exit 1; }
@@ -99,6 +100,16 @@ pilot)
   $PY scripts/teacher_gen.py report --out "$OUT"
   $PY scripts/teacher_gen.py inspect --out "$OUT" --name pilot30 | head -72
   echo "  📷 the report and inspect blocks (with the line 'replies that repeat or mention the reminder' and every match under it)" ;;
+arm)     # B-11r: one arm of the recall test = the tasks of IDS_FILE (default splits/recall20.ids) × 1 attempt, one chunk
+  need_env; ledger
+  IDS_FILE="${IDS_FILE:-splits/recall20.ids}"; NAME="${NAME:-recall20}"
+  [ -f "$IDS_FILE" ] || { echo "STOP: no $IDS_FILE"; exit 1; }
+  [ -n "$TEACHER_LABEL" ] || { echo "STOP: TEACHER_LABEL is not set (glm | deepseek: the public name written into the rows)"; exit 1; }
+  grep -Fxf "$OUT/all.ids" "$IDS_FILE" > "$OUT/$NAME.ids"; echo "  $NAME: $(wc -l < "$OUT/$NAME.ids" | tr -d ' ') of $(grep -c . "$IDS_FILE") tasks of $IDS_FILE are in all.ids"
+  gen "$NAME" "$OUT/$NAME.ids" 1 "$CHUNK" "${KEEP_IMAGES}"
+  $PY scripts/teacher_gen.py report --out "$OUT"
+  $PY scripts/teach_recall.py "$OUT" --name "$NAME"
+  echo "  📷 the report block and the teach_recall block" ;;
 gen)
   need_env; ledger
   IDS="$OUT/all.ids"

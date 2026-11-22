@@ -119,7 +119,7 @@ srv = teach_fake.start(os.environ["FAKE_DIR"], script=os.environ.get("FAKE_SCRIP
 import ceil_sitecustomize, litellm
 model = ("anthropic/" if os.environ["FAKE_FMT"] == "anthropic" else "openai/") + "stand-in-teacher"
 base = f"http://127.0.0.1:{port}" + ("" if os.environ["FAKE_FMT"] == "anthropic" else "/v1")
-msgs = [{"role": "system", "content": "sys"}, {"role": "user", "content": "task"}]
+msgs = [{"role": "system", "content": os.environ.get("FAKE_SYS", "sys")}, {"role": "user", "content": "task"}]
 if os.environ.get("FAKE_TOOLMSG"):     # an agent request as the harness sends it after a tool ran: the last message is the tool's
     msgs += [{"role": "assistant", "content": None, "tool_calls": [{"id": "c1", "type": "function", "function": {"name": ("submit_patch" if os.environ["FAKE_TOOLMSG"] == "submit" else "run_command"), "arguments": "{\"command\": \"ls\"}"}}]},
              {"role": "tool", "tool_call_id": "c1", "content": "{\"stdout\": \"a.py\"}"}]
@@ -220,6 +220,31 @@ def selftest():
                 logged = [json.loads(l) for l in open(os.path.join(tmp, "calls.jsonl"))]
                 assert all(x.get("reminder") is True for x in logged), logged[:1]
                 rows.append(f"reminder [{fmt}, last message {'tool' if toolmsg else 'user'}]: a text block of its own at the end of 8/8 requests, once, not inside the tool output; the caller's messages unchanged")
+            finally:
+                shutil.rmtree(tmp, ignore_errors=True)
+    # the system-prompt cut (B-11r): the hidden-tests clause is gone from the system prompt the server receives, on both
+    # routes, in every request, and the rest of the prompt is there; the caller's own messages keep it; the call log
+    # says what was sent; with the knob off the clause is sent
+    import teach_reminder
+    SYS = "You are an engineer. Your changes are collected via `git diff`" + teach_reminder.HIDDEN_CLAUSE + ".\n\n## Rules\n- one"
+    def sys_of(b):
+        x = b.get("system") if b.get("system") is not None else next((m.get("content") for m in b["messages"] if m.get("role") == "system"), "")
+        return x if isinstance(x, str) else "".join(y.get("text", "") for y in x if isinstance(y, dict))
+    for fmt in ("anthropic", "openai"):
+        for cut in ("hidden", "0"):
+            tmp = tempfile.mkdtemp(prefix="teach_fake_")
+            try:
+                teach_ledger.Ledger(os.path.join(tmp, "ledger")).init(1.0, [1.0, 0.1, 4.0])
+                res, _ = _one("effort:high", fmt, tmp, {"CEIL_REMINDER": "1", "CEIL_SYS_CUT": cut, "FAKE_SYS": SYS})
+                B = [x["body"] for x in bodies(tmp)]; got = [sys_of(b) for b in B]
+                assert len(B) == 8 and res["caller_messages_unchanged"], res
+                want = SYS.replace(teach_reminder.HIDDEN_CLAUSE, "") if cut == "hidden" else SYS
+                assert all(g == want for g in got), (fmt, cut, got[0])
+                assert ("system-prompt cut on [hidden]" if cut == "hidden" else "system-prompt cut off") in res["stdout"], res["stdout"][-600:]
+                logged = [json.loads(l) for l in open(os.path.join(tmp, "calls.jsonl"))]
+                assert all(x.get("hidden_clause") is (cut != "hidden") and x.get("sys_cut") == ("hidden" if cut == "hidden" else "off") and x.get("sys_chars") == len(want) for x in logged), logged[:1]
+                assert all("<reminder>" in json.dumps(b["messages"][-1]) for b in B)      # the reminder still goes out with the cut
+                rows.append(f"system-prompt cut [{fmt}, {cut}]: the clause is {'absent from' if cut == 'hidden' else 'in'} the system prompt of 8/8 requests received, the rest unchanged ({len(want)} chars); caller's messages unchanged; call log agrees")
             finally:
                 shutil.rmtree(tmp, ignore_errors=True)
     # earlier thoughts in the history, built through ADK's own conversions as the harness does: with the knob they reach
