@@ -904,7 +904,9 @@ the ledger keeps what was spent).
 - Not checked: the 6 mentions were found by fixed phrases, paraphrases are not; the one closing reply that mentions
   a reminder was not traced to its own request (the counts above say closing requests carried none).
 
-**▶▶ B-11 — CURRENT STEP: resume the generation; the user chooses the setting (2026-11-22, after R2).**
+**▶▶ B-11 — CURRENT STEP: second batch resumes at effort LOW in a new directory — GO (user, 2026-11-22).**
+
+Run the block "Low, a new directory" below. The reasons and the numbers behind the decision follow.
 
 R2 from the box's photos (GLM-5.3, prompt as it is, effort low), beside R0 and R1 on the same 20 tasks:
 
@@ -935,8 +937,7 @@ does 366, at the same median of 10 tool-call turns.
 State of `runs/teach_h2` (stopped; counted from the upload): 1,292 attempts done, 686 resolved, $220.07 spent, 445 of
 1,215 tasks touched (424 with all 3 attempts, 20 with 1 or 2), **770 tasks untouched**.
 
-**The choice (the user's): the 770 untouched tasks at effort low in a new directory, or at high as before.**
-Recommended: low — the summaries are the larger defect of the data, low halves the compactions at the same solve
+**Decided (user, 2026-11-22): the 770 untouched tasks at effort low in a new directory.** Why low — the summaries are the larger defect of the data, low halves the compactions at the same solve
 count and under half the price, and the version of the training set without thoughts does not use the thought share
 at all; the version with thoughts gets about one turn in eight without one. About 2,310 attempts ≈ $170.
 
@@ -949,14 +950,15 @@ cp runs/teach_h2/gold.json runs/teach_low/gold.json
 BUDGET_USD=250 RESERVE_USD=0.60 PRICE=<same three numbers>  nohup bash scripts/teacher_gen.sh gen > runs/gen_low.log 2>&1 &
 sleep 60; head -8 runs/gen_low.log | cut -c1-900     # 📷 must show: thinking effort:low · SKIP_TASKS_OF: 445 of 1215 tasks left out, 770 left · tasks of this run: 770
 ```
-High, as it ran (nothing new; the same command as the second batch, it skips what is done):
+NOT chosen — high, as it ran (kept for the record; do not run):
 ```bash
 export OUT=runs/teach_h2 REMINDER=1
 BUDGET_USD=800 RESERVE_USD=0.60 PRICE=<same three numbers>  nohup bash scripts/teacher_gen.sh gen > runs/gen_h2_rest2.log 2>&1 &
 ```
-Either way: 📷 `report` two or three times a day; generation stops on 2026-11-25 whatever the count; the gateway's
-spend limit has to cover the run. With low, `teacher_gen.sh audit` will show the thought gate as FAIL (87.8 % in R2):
-expected, it is the known cost of this setting. Open on the laptop: five trajectories each of R1 and R2 read in full
+While it runs: 📷 `OUT=runs/teach_low bash scripts/teacher_gen.sh report` two or three times a day — read: attempts done, resolved share beside R2's 11 of 20 and the first batch's 50.7 %, cost per attempt beside R2's $0.072; generation stops on 2026-11-25 whatever the count; the gateway's
+spend limit has to cover the run. `teacher_gen.sh audit` will show the thought gate as FAIL (87.8 % in R2): expected, the
+known cost of this setting, accepted with the decision. `runs/teach_h2` stays as it is (20 of its tasks have 1 or 2
+attempts and are not completed). At the end: 📷 the report and `OUT=runs/teach_low bash scripts/teacher_gen.sh inspect "" | head -60`, then upload `runs/teach_low`. Open on the laptop: five trajectories each of R1 and R2 read in full
 (the upload of `runs/teach_r1` / `runs/teach_r2` is not downloadable yet); arms R3 / R4 (DeepSeek V4 Pro) are not
 planned further — they need the chat route and would not change this choice.
 
