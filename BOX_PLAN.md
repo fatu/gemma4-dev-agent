@@ -41,7 +41,7 @@ dropped too.
 
 ---
 
-## B-11 · MetaCurate's method inside the competition harness: GLM-5.3 trajectories under the V21 setting → an E4B LoRA with loss on the tool calls only (plan 2026-11-18) — ▶ **steps 2–3 done, step 4 (scale, with the reminder) written 2026-11-20** (commands at the end of this section); step 1's last laptop part (rules, converter) is being written beside it
+## B-11 · MetaCurate's method inside the competition harness: GLM-5.3 trajectories under the V21 setting → an E4B LoRA with loss on the tool calls only (plan 2026-11-18) — ▶ **steps 2–3 done, step 4: first batch done and read, second batch GO 2026-11-21** (block "CURRENT STEP — second batch" near the end of this section); step 1's last laptop part (rules, converter) is being written beside it
 
 **Why.** B-9 part 3 (closed 2026-11-18) trained on MetaCurate's public trajectories, which are in mini-swe-agent's
 one-tool `bash` format and cannot be used in the competition harness; inside mini-swe-agent the action-only LoRA
@@ -850,7 +850,7 @@ sleep 60; head -3 runs/gen_h2.log; tail -5 runs/gen_h2.log
   (the user's choice, open); turns `inspect` lists lose their thought; the closing reply is left out; a hand-read
   sample of thoughts estimates the mentions the fixed phrases miss.
 
-**▶▶ CURRENT STEP — in two batches (user, 2026-11-20): first 200 tasks, read, then the rest.** This block is the
+**First batch (done 2026-11-21; the current step is the second batch, further down) — in two batches (user, 2026-11-20): first 200 tasks, read, then the rest.** This block was the
 one to run; the "GO" block before it is replaced by it. The Docker Hub limit check and `docker login` are left
 aside for now (user, 2026-11-20): nothing about them is needed for this batch. Sizes: 1,215 tasks in the list;
 with about 93 % passing the gold check and 3 attempts each, about 3,400 attempts in all. New knob `FIRST_N`
@@ -904,15 +904,44 @@ the ledger keeps what was spent).
 - Not checked: the 6 mentions were found by fixed phrases, paraphrases are not; the one closing reply that mentions
   a reminder was not traced to its own request (the counts above say closing requests carried none).
 
-**Second batch (waits for the user's go):** the same command without `FIRST_N`, `BUDGET_USD=800`. By the first
-batch: about 1,015 tasks left ≈ 2,830 attempts ≈ $530 (total about $640), about 50 h at this speed, about 1,700
-resolved trajectories from about 630 tasks in all. The gateway's spend limit must be raised first.
+**▶▶ CURRENT STEP — second batch: GO (user, 2026-11-21 evening).** This block is the one to run on the generation
+box. The same command as the first batch without `FIRST_N`, `BUDGET_USD=800`; the 200 tasks of the first batch are
+skipped and the ledger keeps the $104.61 already spent. By the first batch: about 1,015 tasks left ≈ 2,830 attempts
+≈ $530 (total about $640), about 50 h at the first batch's speed, about 1,700 resolved trajectories from about 630
+tasks in all.
+
+Before the start (typed on the box, nothing of it into a file under git):
+- **Raise the gateway's spend limit to cover about $550 more.** In the first batch the limit stopped two chunks:
+  76 attempts ended with no model call and about 6.5 h were lost.
+- `PRICE` is the same three numbers as before.
 ```bash
 git pull && git log --oneline -1
 export OUT=runs/teach_h2 REMINDER=1
 BUDGET_USD=800 RESERVE_USD=0.60 PRICE=<same three numbers>  nohup bash scripts/teacher_gen.sh gen > runs/gen_h2_rest.log 2>&1 &
-sleep 60; head -4 runs/gen_h2_rest.log        # tasks of this run: 1215 of 1215 · reminder 1 · reminder place end · history thoughts 1
+sleep 60; head -4 runs/gen_h2_rest.log        # 📷 must print: tasks of this run: 1215 of 1215 · reminder 1 · reminder place end · history thoughts 1
 ```
+While it runs:
+- 📷 two or three times a day: `OUT=runs/teach_h2 bash scripts/teacher_gen.sh report` — read: attempts done, spent,
+  resolved share beside the first batch's 50.7 %, cost per attempt beside $0.1875.
+- A sign of the spend limit again: attempts ending within seconds with no cost, or `report` showing attempts in the
+  state `infra` rising fast. Then raise the limit and start the same command again; finished attempts are skipped,
+  the ones that ended with no model call are run again.
+- The run stops starting attempts by itself when spent + reserved reaches $800. It can be stopped (`pkill -f
+  teacher_gen`) and started again with the same command at any time.
+- **Stop by 2026-11-25 whatever the count is**: `pkill -f teacher_gen`, then the lines below.
+
+When it has ended (or was stopped):
+```bash
+OUT=runs/teach_h2 bash scripts/teacher_gen.sh report                       # 📷
+OUT=runs/teach_h2 bash scripts/teacher_gen.sh inspect "" | head -60        # 📷 the check table, every gate
+```
+and upload `runs/teach_h2` as before. Read on the laptop against the first batch: the three gates · thoughts on
+tool-call turns ≥ 90 % · mentions of the reminder before the submit · resolved share · cost per attempt · attempts
+ended by a harness limit · the `trainable` row (240 from the first 200 tasks).
+
+Not decided by this step, and not waited for: how the trajectories are prepared for training (the rewriting rubric
+is being tried on the laptop on samples of the first batch); it works on the uploaded files and needs nothing from
+the box.
 
 **The audit of a directory of teacher trajectories, and its local page (2026-11-21).** `scripts/teach_audit.py`
 counts everything per (task, attempt) and sorts each model call into summary / tool-call turn / text-only reply /
