@@ -4,7 +4,7 @@
     .venv-eval/bin/python train/render.py runs/sft/e4b_w7 --tokenizer <hf snapshot dir or model id> \
         [--check runs/pod_w7/w7_example/rendered_base] [--pack] [--out runs/sft/e4b_w7.rendered.jsonl]
 
-Per call: the prompt is `apply_chat_template(input_messages, tools, add_generation_prompt=True, enable_thinking=True)`
+Per call: the prompt is `apply_chat_template(input_messages, tools, add_generation_prompt=True, enable_thinking=WIRE["think"])`
 after two normalisations that reproduce how the server saw the request (system content as one text part — the
 template appends a space per part; tool-call arguments deserialised). The reply is rendered by appending the
 assistant message built from `target` and taking the text after the prompt; it ends with the stop token the model
@@ -42,7 +42,7 @@ STOP_TOOL, STOP_TURN = "<|tool_response>", "<turn|>"
 CTRL = {"<|channel>", "<channel|>", "<|tool_call>", "<tool_call|>", "<|tool_response>", "<turn|>", "<|turn>"}
 
 
-WIRE = {"mode": "adk"}      # --wire: "adk" (the competition harness) or "mini" (mini-swe-agent through litellm)
+WIRE = {"mode": "adk", "think": True}      # --wire: "adk" (the competition harness) or "mini" (mini-swe-agent through litellm)
 
 
 def vllm0191_message(m):
@@ -102,7 +102,7 @@ class Renderer:
 
     def prompt(self, messages, tools):
         return self.tok.apply_chat_template(normalise(messages), tools=tools, tokenize=False,
-                                            add_generation_prompt=True, enable_thinking=True)
+                                            add_generation_prompt=True, enable_thinking=WIRE["think"])
 
     def reply_synthetic(self, target, open_in_prompt):
         """the reply rendered from `target` alone (a two-message conversation through the template, so thinking
@@ -111,10 +111,10 @@ class Renderer:
         conv = [{"role": "user", "content": "x"}, assistant_from_target(target)]
         if target.get("tool_calls"):
             txt = self.tok.apply_chat_template(normalise(conv), tokenize=False, add_generation_prompt=True,
-                                               enable_thinking=True)          # ends with <|tool_response>
+                                               enable_thinking=WIRE["think"])          # ends with <|tool_response>
         else:
             txt = self.tok.apply_chat_template(normalise(conv), tokenize=False, add_generation_prompt=False,
-                                               enable_thinking=True).rstrip("\n")
+                                               enable_thinking=WIRE["think"]).rstrip("\n")
         txt = txt.split("<|turn>model\n", 1)[1]
         if open_in_prompt:
             if txt.startswith("<|channel>thought\n"):
@@ -234,7 +234,12 @@ def main():
                          "the tool calls and the stop token after them only: thought and text get none, and a reply "
                          "without a tool call is no target at all. A record's own label_scope: tool_call still "
                          "applies to that call. Check any output with train/label_audit.py.")
+    ap.add_argument("--no-thinking", action="store_true",
+                    help="B-11 ablation B: render every prompt with enable_thinking=False (the template opens no thought "
+                         "channel); the records must hold no thoughts (train/b11_build.py writes such a copy)")
     a = ap.parse_args()
+    WIRE["think"] = not a.no_thinking
+    print(f"render · enable_thinking {WIRE['think']}")
     print(f"render · label scope {a.label_scope}" + {"action": " (thought spans get no loss)", "tool_call": " (loss on tool calls + their stop token only; text-only replies are no targets)"}.get(a.label_scope, ""))
     WIRE["mode"] = a.wire
     sh_i, sh_n = (int(x) for x in a.shard.split("/"))

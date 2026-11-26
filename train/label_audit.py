@@ -51,6 +51,11 @@ def classify(toks):
     run = []                                   # tool-call spans since the last tool response / text / turn start
     while i < n:
         t = toks[i]
+        if role is None and t not in ("<bos>", "<|turn>") and t.strip():
+            # the Gemma 4 template opens no new `<|turn>model` after a tool response: when the earlier reply also had
+            # visible text, that text follows the response and is closed by `<turn|>`, and the next reply (thought,
+            # text, tool calls) starts right after it with no header. Outside a turn only the model writes.
+            role = "model"
         if t == "<bos>":
             cls.append("bos"); i += 1
         elif t == "<|turn>":
