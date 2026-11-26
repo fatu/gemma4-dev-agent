@@ -904,7 +904,49 @@ the ledger keeps what was spent).
 - Not checked: the 6 mentions were found by fixed phrases, paraphrases are not; the one closing reply that mentions
   a reminder was not traced to its own request (the counts above say closing requests carried none).
 
-**▶▶ B-11 — CURRENT STEP: second batch resumes at effort LOW in a new directory — GO (user, 2026-11-22).**
+**▶▶ B-11 — CURRENT STEP: step 6, train the two E4B adapters on the 625-trajectory set (training box, 4 cards) — written 2026-11-25.**
+
+Data: private Kaggle dataset `gemma4-b11-train625` (built on the laptop, commit 9051b0f; `render.py` and `label_audit.py`
+PASS on all four files). A = teacher thoughts in the context, thinking on · B = no thoughts, rendered with thinking off.
+Both: loss on tool calls + their stop token only, 589,793 label tokens, validation = 15 tasks of 11 held-out repositories.
+Recipe = B-9 step 17, fixed before the run: r 32 · alpha 32 · LR 1e-5 · 2 epochs · accum 16 · max len 30,720
+(A 4,611 sequences ≈ 288 optimizer steps per epoch, B 4,469 ≈ 279). Adapter kept: the epoch with the lower validation
+NLL. Time is an estimate from B-9's speed, not measured: about 5 h for A, 4.5 h for B on 4 cards.
+
+```bash
+cd gemma4-dev-agent && git pull && git log --oneline -1                       # 9051b0f or later
+D=runs/kaggle_b11_train625; mkdir -p $D runs/sft/mc
+kaggle datasets download boaztu0/gemma4-b11-train625 -p $D --unzip
+(cd $D && sha256sum -c SHA256SUMS)                                            # 📷 6 lines, all OK
+for v in A B; do
+  ln -sf $PWD/$D/$v.train.rendered.jsonl runs/sft/mc/b11$v.rendered.jsonl
+  ln -sf $PWD/$D/$v.val.rendered.jsonl   runs/sft/mc/b11$v.holdout.rendered.jsonl
+done
+wc -l runs/sft/mc/b11*.jsonl                                                  # 4611 · 217 · 4469 · 217
+export MODEL=google/gemma-4-E4B-it-qat-w4a16-ct
+bash train/mc_box.sh env; bash train/mc_box.sh dequant                        # both should say "exists"
+nvidia-smi --query-gpu=index,memory.used --format=csv,noheader                # 📷 4 cards free
+ARM=b11A GPUS=0 bash train/mc_box.sh smoke                                    # 📷 peak GB and tok/s → stop here if it does not fit
+```
+
+Then the two trainings, one after the other (each prints its knobs first; 📷 the schedule line, every eval line, the
+`== epoch` lines and the done line):
+
+```bash
+ARM=b11A OUTD=runs/adapters/glm_v21_act    GPUS=0,1,2,3 nohup bash train/mc_box.sh train > runs/train_b11A.log 2>&1 &
+# when A's done line is there:
+ARM=b11B OUTD=runs/adapters/glm_v21_act_nt GPUS=0,1,2,3 nohup bash train/mc_box.sh train > runs/train_b11B.log 2>&1 &
+grep -E "schedule|eval|== epoch|done" runs/train_b11A.log runs/train_b11B.log | cut -c1-220
+```
+
+Checks to read off the photos: the knob line shows LR 1e-5 · EPOCHS 2 · ACCUM 16 · R/ALPHA 32/32 · MAX_LEN 30720 and
+`--eval …holdout… --holdout 0`; sequences dropped for length 0; validation NLL below the base at both epochs.
+Stop and photograph if the smoke run does not fit, a rank ends early, or the validation NLL rises from epoch 1 to 2 by
+more than 0.02. After both: `canary.py` on each adapter, then step 7 (live check, 3 tasks each) — written when this is in.
+
+**B-11 step 4 — DONE 2026-11-25 (H100 box, `teach_low_h100`): 2,076 attempts, 833 resolved, 698 trainable. Its step as it was written:**
+
+**B-11 step 4 (earlier text) · second batch resumes at effort LOW in a new directory — GO (user, 2026-11-22).**
 
 Run the block "Low, a new directory" below. The reasons and the numbers behind the decision follow.
 
