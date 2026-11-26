@@ -904,7 +904,42 @@ the ledger keeps what was spent).
 - Not checked: the 6 mentions were found by fixed phrases, paraphrases are not; the one closing reply that mentions
   a reminder was not traced to its own request (the counts above say closing requests carried none).
 
-**▶▶ B-11 — CURRENT STEP: step 6, train the two E4B adapters on the 625-trajectory set (training box, 4 cards) — written 2026-11-25.**
+**▶▶ B-11 — CURRENT STEP: step 7, live check of the two adapters in the competition harness (8-card box, cards 4 and 5, about 25 min) — written 2026-11-26.**
+
+Step 6 result (photo 2026-11-26): A 578 steps, validation NLL 0.4938 → 0.2589 → 0.2480 · B 560 steps, 0.5299 → 0.2859 →
+0.2752 · export check PASS at both epochs · kept `epoch2` of both. `canary.py` is not run on them: it trains its own
+steps and its export check is the one the trainer already printed. What is still untested is the adapter in vLLM and
+in the harness — that is this step.
+
+Setting: the V21 files (`runs/subs/v21_e4b`, as the teacher ran) with the model alias E4B, 36 calls · 7.5 min · 80
+turns · compaction interval 5, temperature 0.2. A: thinking on (V21 as it is). B: arm part `think0` = thinking budget 0,
+which is what makes the harness send `enable_thinking: false` (the old `nothink` part leaves thinking on). Three tasks
+outside the 51 evaluation tasks (`splits/b11_live3.txt`), one lane per adapter.
+
+```bash
+cd gemma4-dev-agent && git pull && git log --oneline -1
+E4B=google/gemma-4-E4B-it-qat-w4a16-ct
+ls runs/subs/v21_e4b/agent.yaml harness/tasks.jsonl && ls harness/snapshots | wc -l      # missing → stop + photo
+for p in glm_v21_act glm_v21_act_nt; do rm -rf runs/adapters/${p}_e2; cp -r runs/adapters/$p/epoch2 runs/adapters/${p}_e2; done
+ls -la runs/adapters/glm_v21_act_e2 runs/adapters/glm_v21_act_nt_e2                      # 📷 adapter_config.json + adapter_model.safetensors in both
+C="LATEST=0 MODEL=$E4B MODEL_ALIAS=gemma-4-e4b-it-qat-w4a16-ct SUBMISSION=runs/subs/v21_e4b SPLIT=splits/b11_live3.txt MAX_CALLS=36 TIME_MIN=7.5 MAX_TURNS=80 COMPACT_INTERVAL=5 REFS= TRAJ=1"
+env $C GPU=4 TAG=liveA ADAPTER=glm_v21_act_e2    ARMS=base   nohup bash scripts/lane.sh run > runs/lane_liveA.log 2>&1 &
+env $C GPU=5 TAG=liveB ADAPTER=glm_v21_act_nt_e2 ARMS=think0 nohup bash scripts/lane.sh run > runs/lane_liveB.log 2>&1 &
+# when both logs end (3 tasks × at most 7.5 min + the server start):
+grep -E "^adapter|adapter in the arm copy|think0:|budget:|compaction:|^== |served:|lacks|vLLM" runs/lane_liveA.log runs/lane_liveB.log | cut -c1-260   # 📷
+python3 scripts/b11_live.py --expect-thinking on  runs/dev33_base_liveA                 # 📷 whole output
+python3 scripts/b11_live.py --expect-thinking off runs/dev33_think0_liveB               # 📷 whole output
+```
+
+Read off the photos: the header shows `adapter (LATEST=0): glm_v21_act_e2 … r/alpha 32 32` (B: `_nt_e2`), the budget
+`--max-tool-calls 36 --max-time-minutes 7.5 … --max-turns 80`, compaction interval 5, `served:` lists the adapter name;
+B's `==` line shows `thinking_budget: 0 include_thoughts: false`. `b11_live.py` prints five checks per run (parse ·
+submit · copy · time · thinking). Any `LOOK`, or the server refusing the adapter → stop and photograph; no step 8
+before that is read. Resolved counts on 3 tasks mean nothing and are not read.
+Step 8 (the 7 arms × 4 passes on `splits/disc_e4b.txt`) is written when this is in.
+
+**B-11 step 6 — DONE 2026-11-26 (8-card box; result above). Its step as it was written:**
+**B-11 step 6, train the two E4B adapters on the 625-trajectory set (training box, 4 cards) — written 2026-11-25.**
 
 Data: private Kaggle dataset `gemma4-b11-train625` (built on the laptop, commit 9051b0f; `render.py` and `label_audit.py`
 PASS on all four files). A = teacher thoughts in the context, thinking on · B = no thoughts, rendered with thinking off.

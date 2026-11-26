@@ -200,6 +200,14 @@ if [ "$LSET" = e4b ] || [ "$LSET" = kit ]; then
     [ "$A_SHA" = "$(menv ADAPTER_SHA256)" ] || { echo "LATEST=e4b: $ADIR/adapter_model.safetensors sha256 $A_SHA ≠ model.env's $(menv ADAPTER_SHA256)"; exit 1; }
   fi
 fi
+# LATEST=0 ADAPTER=<name> (B-11, 2026-11-26): a box-trained LoRA on the base's own setting (e.g. the V21 files) — the
+# files of runs/adapters/<name>/ go into every arm copy with `adapter: <name>` on the root agent; no download, no pin.
+if [ "$LSET" = 0 ] && [ -n "${ADAPTER:-}" ]; then
+  L_ADAPTER="$ADAPTER"; ADIR="runs/adapters/$L_ADAPTER"
+  [ -f "$ADIR/adapter_model.safetensors" ] && [ -f "$ADIR/adapter_config.json" ] || { echo "ADAPTER=$L_ADAPTER: no $ADIR/adapter_model.safetensors + adapter_config.json"; exit 1; }
+  A_SHA=$(python3 -c "import hashlib,sys;print(hashlib.sha256(open(sys.argv[1],'rb').read()).hexdigest())" "$ADIR/adapter_model.safetensors")
+  echo "adapter (LATEST=0): $L_ADAPTER ← $ADIR, sha256 ${A_SHA:0:16} · r/alpha $(python3 -c "import json,sys;c=json.load(open(sys.argv[1]));print(c.get('r'),c.get('lora_alpha'))" "$ADIR/adapter_config.json")"
+elif [ "$LSET" = 0 ]; then echo "adapter (LATEST=0): none (ADAPTER unset) — the base model answers"; fi
 echo "latest set: $LSET ($LDIR)$([ "$LSET" != 31b ] && [ "$LATEST" = 1 ] && echo " · model $MODEL_ALIAS · adapter ${L_ADAPTER:-none (ADAPTER=)}${L_ADAPTER:+ ← $ADIR, sha256 ${A_SHA:0:16}}$([ -n "$L_ADAPTER" ] && [ "$L_ADAPTER" = "$(menv ADAPTER)" ] && echo " ✓ pinned")")"
 if [ "$LATEST" = 1 ]; then
   lval() { grep -oE "^ *$1: *[0-9.]+" "$LDIR/eval_config.yaml" | sed 's/.*: *//'; }
@@ -302,7 +310,7 @@ echo "tasks: ${#IDS[@]} from $SPLIT · tasks file $TASKS_FILE · snapshots $SNAP
 echo "dev split: ${#IDS[@]} tasks · arms: $ARMS · budget: ${BUDGET_FLAGS[*]:-none} · concurrency ${CONC:-1}"
 for arm in $ARMS; do                                  # check every arm up front, not 2 h into the first one
   for part in ${arm//+/ }; do
-    case "$part" in out8k|nothink|think1k|readdisc|noanalyzer|out6k|out4k|tools6|submit|editrecover|issuefirst|tmpfix|test1|t10|t07|repro|lean|edit1|r1|r2|r3|v4|t00|time7|tail40|outline|win100|course|callchain|grepbatch|twins5|dryhelper|noregress|ask3|editctx|editguard|tmprepro|coursefull|reprofirst|failstop|grepdef|latedit|edit2|spec) ;;
+    case "$part" in out8k|nothink|think0|think1k|readdisc|noanalyzer|out6k|out4k|tools6|submit|editrecover|issuefirst|tmpfix|test1|t10|t07|repro|lean|edit1|r1|r2|r3|v4|t00|time7|tail40|outline|win100|course|callchain|grepbatch|twins5|dryhelper|noregress|ask3|editctx|editguard|tmprepro|coursefull|reprofirst|failstop|grepdef|latedit|edit2|spec) ;;
       sample|base) [ "$arm" = "$part" ] || { echo "$part can't stack: $arm"; exit 1; } ;;
       *) echo "unknown arm part $part in $arm"; exit 1 ;; esac
   done
@@ -334,6 +342,9 @@ for arm in $ARMS; do
   if has out4k; then sedi 's/^max_output_tokens: .*/max_output_tokens: 4096/' "$Y"
     sedi 's/^\( *\)thinking_budget: .*/\1thinking_budget: 2048/' "$Y"; fi
   has nothink && sedi 's/^\( *\)include_thoughts: .*/\1include_thoughts: false/' "$Y"
+  if has think0; then   # thinking OFF: the harness sends enable_thinking false only when the budget is 0 (a budget > 0 turns it on whatever include_thoughts says)
+    sedi 's/^\( *\)thinking_budget: .*/\1thinking_budget: 0/' "$Y"; sedi 's/^\( *\)include_thoughts: .*/\1include_thoughts: false/' "$Y"
+    echo "think0: $(grep -hE 'thinking_budget|include_thoughts' "$Y" | tr -s ' \n' ' ')→ chat_template_kwargs.enable_thinking false in every request (check: the trajectory log's setup line)"; fi
   has think1k && sedi 's/^\( *\)thinking_budget: .*/\1thinking_budget: 1024/' "$Y"
   if has t10; then sedi 's/^temperature: .*/temperature: 1.0/' "$Y"
     if grep -q '^top_k:' "$Y"; then sedi 's/^top_k: .*/top_k: 64/' "$Y"; else sedi '/^top_p:/a\
@@ -361,7 +372,7 @@ top_k: 64' "$Y"; fi; fi
     mkdir -p "$SUB/adapters"; rm -rf "$SUB/adapters/$L_ADAPTER"; cp -r "$ADIR" "$SUB/adapters/$L_ADAPTER"
     awk -v a="$L_ADAPTER" '!/^adapter:/ {print} /^model:/ {print "adapter: " a}' "$SUB/agent.yaml" > "$SUB/agent.yaml.new"
     mv "$SUB/agent.yaml.new" "$SUB/agent.yaml"
-    echo "latest e4b: adapter $L_ADAPTER → $SUB/adapters/$L_ADAPTER · agent.yaml: $(grep -E '^(model|adapter):' "$SUB/agent.yaml" | tr '\n' ' ')"
+    echo "adapter in the arm copy: $L_ADAPTER → $SUB/adapters/$L_ADAPTER · agent.yaml: $(grep -E '^(model|adapter):' "$SUB/agent.yaml" | tr '\n' ' ')"
   fi
   has coursefull && cp scripts/arms/course_system.md "$SUB/prompts/system.md"   # replaces the whole prompt
   has lean && cp scripts/arms/lean_system.md "$SUB/prompts/system.md"   # first: rule arms then append to it
